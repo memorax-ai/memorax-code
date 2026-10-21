@@ -5,10 +5,16 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
+const installedSkillDir = dirname(scriptDir);
 const skillDir = process.env.MEMORAX_CODE_REPO_MEMORY_SKILL_DIR
   ? resolve(process.env.MEMORAX_CODE_REPO_MEMORY_SKILL_DIR)
-  : dirname(scriptDir);
+  : installedSkillDir;
 const pluginRoot = resolve(scriptDir, "../../..");
+const metadata = packageMetadata();
+if (!process.env.MEMORAX_CODE_HOME?.trim()) {
+  const home = packageValue("memoraxCodeHome");
+  if (home) process.env.MEMORAX_CODE_HOME = home;
+}
 const directEntrypoint = [
   "../../../../memorax-code-backend/dist/repo-memory/cli.js",
   "../../../../../../memorax-code-backend/dist/repo-memory/cli.js",
@@ -20,16 +26,17 @@ if (directEntrypoint) {
   const { runRepoMemoryCli } = await import(pathToFileURL(directEntrypoint).href);
   process.exitCode = await runRepoMemoryCli(process.argv.slice(2), { skillDir });
 } else {
-  const command = memoraxCodeCommand();
+  const command = packageValue("memoraxCodeCommand");
   if (!command) {
     process.stderr.write("Repo Memory runtime is unavailable; reinstall or rebuild MemoraX Code.\n");
     process.exit(1);
   }
   const args = ["repo-memory", ...process.argv.slice(2)];
   const nodeEntrypoint = resolveNodeEntrypoint(command);
+  const env = { ...process.env, MEMORAX_CODE_REPO_MEMORY_SKILL_DIR: skillDir };
   const result = nodeEntrypoint
-    ? spawnSync(process.execPath, [nodeEntrypoint, ...args], { stdio: "inherit", windowsHide: true })
-    : spawnSync(command, args, { stdio: "inherit", windowsHide: true });
+    ? spawnSync(process.execPath, [nodeEntrypoint, ...args], { env, stdio: "inherit", windowsHide: true })
+    : spawnSync(command, args, { env, stdio: "inherit", windowsHide: true });
   if (result.error) {
     process.stderr.write(`Repo Memory runtime failed: ${result.error.message}\n`);
     process.exitCode = 1;
@@ -50,18 +57,21 @@ function resolveNodeEntrypoint(command) {
   }
 }
 
-function memoraxCodeCommand() {
-  for (const root of [skillDir, pluginRoot]) {
+function packageMetadata() {
+  const records = [];
+  for (const root of [installedSkillDir, pluginRoot]) {
     const metadataPath = join(root, ".memorax-code-package.json");
     if (!existsSync(metadataPath)) continue;
     try {
-      const metadata = JSON.parse(readFileSync(metadataPath, "utf8"));
-      if (typeof metadata?.memoraxCodeCommand === "string" && metadata.memoraxCodeCommand.trim()) {
-        return metadata.memoraxCodeCommand.trim();
-      }
+      records.push(JSON.parse(readFileSync(metadataPath, "utf8")));
     } catch {
       // Try the package-level metadata next.
     }
   }
-  return undefined;
+  return records;
+}
+
+function packageValue(name) {
+  return metadata.map((record) => record?.[name])
+    .find((value) => typeof value === "string" && value.trim())?.trim();
 }

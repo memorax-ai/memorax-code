@@ -123,6 +123,12 @@ export async function runCursorAdapterCli() {
   await import(pathToFileURL(entrypoint).href);
 }
 
+export async function runQoderAdapterCli() {
+  if (!ensureSupportedNodeRuntime()) return;
+  const entrypoint = join(packageRoot, "lib", "memorax-code-qoder-adapter", "src", "cli.mjs");
+  await import(pathToFileURL(entrypoint).href);
+}
+
 function ensureSupportedNodeRuntime() {
   const message = unsupportedNodeVersionMessage();
   if (!message) return true;

@@ -36,10 +36,38 @@ Personal-memory writes do not require Git, a repository root, or a worktree. A
 stored `Applies when` condition may mention a repository, tool, or workflow, but
 the memory file is global to the user.
 
+## Decide Whether To Save
+
+Judge the user's intent, not trigger words. Save without waiting for
+"remember", "save", or "记住" when all three conditions hold:
+
+1. **Durable:** the user means it to keep applying after the current task.
+2. **General:** it covers a class of situations, not only the current file,
+   command, or object.
+3. **User-owned:** it is the user's own working rule or preference, not a
+   repository fact, a one-off arrangement, or a secret.
+
+| User statement | Action | Why |
+| --- | --- | --- |
+| "以后优先使用 node 来读取 git" | Save a procedure | A durable, general working rule |
+| "不要在 commit 里加 Claude 署名" | Save a procedure | A durable rule stated as a correction |
+| "读 git 用 node 更稳，按这个来" | Save a procedure | The same intent without trigger words |
+| "以后回答先给结论" | Save a profile preference | A durable presentation preference |
+| "这次先别跑测试" | Do not save | It applies only to the current task |
+| "用 node 读一下这个文件" | Do not save | It is a current-task action |
+| "这个仓库用 pnpm" | Do not save as personal memory | It is a repository fact |
+| "我觉得 node 读 git 好像更稳" | Ask once | It may be an opinion rather than a rule |
+
+Finish the current task first and keep memory remarks at the end of the answer.
+When the intent is clear, save it and tell the user briefly at the end; do not
+interrupt the current task. When durability or scope is unclear, do not save:
+finish the task and ask one short question at the end of the answer, never
+before or during the task. Do not save when any condition fails.
+
 ## Route The Write
 
-- **Procedure memory:** actions, ordering, checklists, prerequisites, gates, validation, exceptions, or repeatable work rules. Require the user to explicitly ask to remember, save, record, update, forget, or delete them.
-- **User-profile memory:** preferred name, language, tone, verbosity, explanation style, result presentation, or another safe personal profile fact. A durable preference may be saved implicitly when the user clearly states that it should persist.
+- **Procedure memory:** how the user wants work done: actions, ordering, tools, checklists, prerequisites, gates, validation, exceptions, or repeatable work rules, including single-sentence rules.
+- **User-profile memory:** how the user wants the agent to communicate and present results: preferred name, language, tone, verbosity, explanation style, result presentation, or another safe personal profile fact.
 
 Store each part under its own authority when a request genuinely contains both.
 Do not persist current-task instructions or temporary plans.
@@ -74,6 +102,13 @@ Choose the closest existing topic file before writing:
 - An old rule references a command, file, or workflow that no longer exists: update the invalid part; delete the file if the entire procedure is obsolete.
 - Equivalent content: do not add a duplicate.
 - If it is unclear whether the change is durable or only applies to the current task: ask the user.
+
+Merge a single rule into the closest existing topic instead of creating one file
+per rule. Procedure context is budgeted, so keep each topic concise and update
+rules in place rather than appending variants. Write `Use when:` narrowly
+enough that a rule learned for one repository, tool, or environment does not
+apply everywhere, and name that repository, tool, or environment when the rule
+depends on it.
 
 Do not modify existing memory because of a one-time instruction for the current
 task. Do not scan or clean up unrelated topics.
@@ -182,6 +217,7 @@ data, repository facts, code history, design rationale, one-off task details,
 raw transcripts, hidden tests, exact patches, raw diffs, target commits, or
 unsafe destructive commands.
 
-After a successful write, update, or deletion, identify the affected topic or
-preference briefly and confirm that it is stored in the user's global
-`MEMORAX_CODE_HOME` personal-memory directory.
+After a successful write, update, or deletion, tell the user in one sentence
+what was stored or changed and where it applies, and that they can ask to
+forget it. Confirm that it is stored in the user's global `MEMORAX_CODE_HOME`
+personal-memory directory.

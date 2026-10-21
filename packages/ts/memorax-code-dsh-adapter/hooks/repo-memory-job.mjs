@@ -6,6 +6,7 @@ import { runRepoMemoryJob } from "../memorax-code-adapter-common/src/repo-memory
 import { evaluateRepository } from "../memorax-code-adapter-common/src/repo-memory/repo-memory-update-policy-evaluator.mjs";
 import {
   buildDshCommand,
+  dshCommandEnvironment,
   requireEnabledDshRuntime,
 } from "../src/runtime-state.mjs";
 
@@ -17,6 +18,8 @@ const pluginRoot = dirname(hookDir);
 try {
   const runtime = requireEnabledDshRuntime(pluginRoot);
   process.env.MEMORAX_CODE_HOME = runtime.memoraxCodeHome;
+  process.env.DSH_HOME = runtime.dshHome;
+  Object.assign(process.env, dshCommandEnvironment(runtime.dshCommand));
   const profile = selectHeadlessProfile(runtime.dshHome, runtime.profiles);
   if (!profile) throw new Error("no existing DSH headless-capable profile is available");
   const payload = runRepoMemoryJob(process.argv.slice(2), {
@@ -47,6 +50,7 @@ function selectHeadlessProfile(dshHome, managedProfiles) {
   for (const entry of entries
     .filter((candidate) => candidate.isDirectory()
       && managedNames.has(candidate.name)
+      && candidate.name.toLowerCase() !== "desktop"
       && validProfileName(candidate.name))
     .sort((left, right) => left.name.localeCompare(right.name))) {
     try {

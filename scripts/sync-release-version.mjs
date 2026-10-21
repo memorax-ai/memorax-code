@@ -24,6 +24,7 @@ export const RELEASE_VERSION_TARGETS = Object.freeze([
   { file: "packages/ts/memorax-code-codebuddy-adapter/.codebuddy-plugin/plugin.json", field: ["version"] },
   { file: "packages/ts/memorax-code-trae-adapter/package.json", field: ["version"] },
   { file: "packages/ts/memorax-code-cursor-adapter/package.json", field: ["version"] },
+  { file: "packages/ts/memorax-code-qoder-adapter/package.json", field: ["version"] },
 ]);
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");

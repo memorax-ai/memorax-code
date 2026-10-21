@@ -121,6 +121,27 @@ const FORMAT_3_SESSION_EVENT_TYPES = new Set([
   "tool/ptc-dispatch",
   "tool/ptc-dispatch-start",
 ]);
+// The format 4 catalog includes developer messages and image projection events;
+// messages use producer-owned sources and results have a first-class tool role.
+const FORMAT_4_SESSION_EVENT_TYPES = new Set([
+  ...FORMAT_3_SESSION_EVENT_TYPES,
+  "developer/message",
+  "image/offload",
+  "job/registered",
+  "job/settled",
+  "workspace/changes",
+]);
+const FORMAT_4_HEADER_FIELDS = new Set([
+  "version", "id", "createdAt", "isSeeded", "delegationDepth",
+  "cwd", "parentSession", "origin", "agentPreset",
+]);
+const FORMAT_4_MESSAGE_ROLES = new Map([
+  ["user/message", "user"],
+  ["assistant/message", "assistant"],
+  ["system/message", "system"],
+  ["developer/message", "developer"],
+  ["tool/result", "tool"],
+]);
 const TURN_IDENTITY_REQUIRED_EVENT_TYPES = new Set([
   "turn/start",
   "turn/end",
@@ -130,9 +151,12 @@ const TURN_IDENTITY_REQUIRED_EVENT_TYPES = new Set([
 export function dshSessionEventTurn(input: DshSessionTurnInput): DshSessionTurnResult {
   const header = validateSessionHeader(input);
   if (header) return { ok: false, reason: header };
-  const knownEventTypes = input.sessionHeader.version === 3
-    ? FORMAT_3_SESSION_EVENT_TYPES
-    : FORMAT_0_SESSION_EVENT_TYPES;
+  const formatVersion = input.sessionHeader.version;
+  const knownEventTypes = formatVersion === 4
+    ? FORMAT_4_SESSION_EVENT_TYPES
+    : formatVersion === 3
+      ? FORMAT_3_SESSION_EVENT_TYPES
+      : FORMAT_0_SESSION_EVENT_TYPES;
   if (
     input.events.length === 0
     || input.endSeq - input.startSeq !== input.events.length - 1
@@ -168,6 +192,11 @@ export function dshSessionEventTurn(input: DshSessionTurnInput): DshSessionTurnR
     if (Object.prototype.hasOwnProperty.call(value, "ignorable") && value.ignorable !== true) {
       return { ok: false, reason: "event_invalid" };
     }
+    // A directory transition changes live scope without changing header.cwd.
+    // It cannot be ignored when materializing content for the pinned workspace.
+    if (formatVersion === 4 && type === "working-directory/change") {
+      return { ok: false, reason: "workspace_identity_mismatch" };
+    }
     if (!knownEventTypes.has(type)) {
       if (value.ignorable === true) continue;
       return { ok: false, reason: "unknown_required_event" };
@@ -180,12 +209,24 @@ export function dshSessionEventTurn(input: DshSessionTurnInput): DshSessionTurnR
       (carriesTurn && eventTurn === undefined)
       || (TURN_IDENTITY_REQUIRED_EVENT_TYPES.has(type) && eventTurn === undefined)
     ) return { ok: false, reason: "event_invalid" };
-    if (eventTurn !== undefined && eventTurn !== input.turn) {
+    // Native pruning preserves the original tool result's turn and step.
+    // Only a format 4 replacement may carry a prior turn; its complete message
+    // and surface references are still validated below and never contribute QA.
+    const historicalToolReplacement = formatVersion === 4
+      && type === "tool/result"
+      && isRecord(value.surfaceOp)
+      && value.surfaceOp.op === "replace"
+      && eventTurn !== undefined && eventTurn < input.turn;
+    if (eventTurn !== undefined && eventTurn !== input.turn && !historicalToolReplacement) {
       return { ok: false, reason: "turn_identity_mismatch" };
+    }
+    if (formatVersion === 4 && !validFormat4Event(value, type, data)) {
+      return { ok: false, reason: "event_invalid" };
     }
     if (
       (type === "turn/start" && index !== 0)
       || (type === "turn/end" && index !== input.events.length - 1)
+      || (formatVersion === 4 && type === "session/end-seed")
     ) {
       return { ok: false, reason: "turn_boundary_mismatch" };
     }
@@ -278,14 +319,19 @@ function validateSessionHeader(
 ): DshSessionTurnValidationFailureReason | undefined {
   const header = input.sessionHeader;
   if (
-    (header.version !== 0 && header.version !== 3)
+    (header.version !== 0 && header.version !== 3 && header.version !== 4)
     || safeIntegerField(header, "createdAt", 0) === undefined
   ) return "session_header_invalid";
   // Format 3 moved the inherited prefix length into Session state. Its header
   // carries an explicit seed classification and must not use the retired field.
-  if (header.version === 3 && (
+  if ((header.version === 3 || header.version === 4) && (
     typeof header.isSeeded !== "boolean"
     || Object.prototype.hasOwnProperty.call(header, "seedLength")
+  )) return "session_header_invalid";
+  if (header.version === 4 && (
+    safeIntegerField(header, "delegationDepth", 0) === undefined
+    || Object.keys(header).some((key) => !FORMAT_4_HEADER_FIELDS.has(key))
+    || (Object.hasOwn(header, "agentPreset") && typeof header.agentPreset !== "string")
   )) return "session_header_invalid";
   if (stringField(header, "id") !== input.sessionId) return "session_identity_mismatch";
   if (stringField(header, "cwd") !== input.cwd) return "workspace_identity_mismatch";
@@ -335,8 +381,77 @@ function validSurfaceOp(value: unknown, formatVersion: unknown): boolean {
   return isRecord(value)
     && Object.keys(value).length === 3
     && value.op === "replace"
-    && safeIntegerField(value, formatVersion === 3 ? "startSeq" : "start", 0) !== undefined
-    && safeIntegerField(value, formatVersion === 3 ? "endSeq" : "end", 0) !== undefined;
+    && safeIntegerField(value, formatVersion === 0 ? "start" : "startSeq", 0) !== undefined
+    && safeIntegerField(value, formatVersion === 0 ? "end" : "endSeq", 0) !== undefined;
+}
+
+function validFormat4Event(
+  event: Record<string, unknown>,
+  type: string,
+  data: Record<string, unknown> | undefined,
+): boolean {
+  const role = FORMAT_4_MESSAGE_ROLES.get(type);
+  if (!role) {
+    if (Object.hasOwn(event, "surfaceOp") || Object.hasOwn(event, "sourceEventSeqs")) return false;
+    // These log-only events carry messages without adding them to the surface.
+    const messageKey = type === "agent/inbox/spliced" ? "inserted"
+      : type === "session/title-llm-request" ? "messages" : undefined;
+    if (messageKey === undefined) return true;
+    const messages = data?.[messageKey];
+    return Array.isArray(messages) && messages.every((message) => validFormat4Message(message));
+  }
+  if (!data || !validSurfaceOp(event.surfaceOp, 4)) return false;
+  const message = role === "user" ? data : data.message;
+  if (!validFormat4Message(message) || message.role !== role) return false;
+  if (role !== "user" && (safeIntegerField(data, "turn", 1) === undefined
+    || safeIntegerField(data, "step", 1) === undefined)) return false;
+  const source = message.source as Record<string, unknown>;
+  const sources = event.sourceEventSeqs;
+  if (sources !== undefined && (!Array.isArray(sources) || sources.length === 0
+    || new Set(sources).size !== sources.length
+    || sources.some((seq) => !Number.isSafeInteger(seq) || seq < 0 || seq >= (event.seq as number)))) return false;
+  if (isRecord(event.surfaceOp)) {
+    const { startSeq, endSeq } = event.surfaceOp;
+    // Endpoints follow current surface order, which may differ from log order
+    // after an earlier replacement. Both must still name earlier source events.
+    if ((startSeq as number) >= (event.seq as number) || (endSeq as number) >= (event.seq as number)
+      || !Array.isArray(sources) || !sources.includes(startSeq) || !sources.includes(endSeq)) return false;
+  }
+  if (role === "assistant") {
+    return event.surfaceOp === "append" && sources === undefined && Array.isArray(data.stream)
+      && (data.interrupted === undefined || data.interrupted === true);
+  }
+  if (role === "system") return source.kind === "system-prompt";
+  if (role === "tool") {
+    return source.kind === "tool" && Boolean(stringField(source, "callId"))
+      && message.toolCallId === source.callId
+      && (message.isError === undefined || typeof message.isError === "boolean")
+      && (data.error === undefined || message.isError === true);
+  }
+  if (role === "developer") {
+    const hasAdditions = (message.content as Record<string, unknown>[])
+      .some((block) => block.type === "tool-addition");
+    const headerSeq = safeIntegerField(data, "headerSeq", 0);
+    return hasAdditions
+      ? headerSeq !== undefined && headerSeq < (event.seq as number)
+      : !Object.hasOwn(data, "headerSeq");
+  }
+  return true;
+}
+
+function validFormat4Message(value: unknown): value is Record<string, unknown> {
+  if (!isRecord(value) || !stringField(value, "id") || !Array.isArray(value.content)
+    || !isRecord(value.source) || !stringField(value.source, "kind")
+    || value.source.kind === "plugin") return false;
+  return value.content.every((block) => {
+    if (!isRecord(block) || !stringField(block, "type") || block.type === "tool-result") return false;
+    if (block.type === "text" && typeof block.text !== "string") return false;
+    if (block.type === "tool-addition" || block.type === "tool-removal") {
+      return value.role === "developer" && Boolean(stringField(block, "toolName"))
+        && (block.type !== "tool-addition" || !Object.hasOwn(block, "tool"));
+    }
+    return true;
+  });
 }
 
 function stringField(record: Record<string, unknown>, key: string): string | undefined {

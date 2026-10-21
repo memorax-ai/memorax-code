@@ -927,34 +927,36 @@ test("automatic code writes preserve legacy deduplication keys in immediate and 
   }
 });
 
-test("auto and work dispatch each completed turn independently without code chunks", async () => {
-  for (const route of [undefined, "auto", "work"]) {
-    const requests = [];
-    const runtime = createAutomaticMemoryWritebackRuntime();
-    try {
-      for (const turn of ["one", "two"]) {
-        assert.deepEqual(runtime.enqueue({ client: "workbuddy", sessionKey: "auto-session",
-          userText: `Discuss ${turn}`, assistantText: `Answer ${turn}`, repositoryScope: REPOSITORY_SCOPE,
-          env: { ...WRITEBACK_ENV, MEMORAX_CODE_MEMORAX_ADD_CONTENT_TYPE: route,
-            MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "true", MEMORAX_CODE_MEMORY_WRITEBACK_CHUNK_MAX_CHARS: "5" },
-          fetchImpl: memoraxFetch(requests),
-        }), { accepted: true });
-      }
-      await runtime.drain();
-      assert.equal(requests.length, 2);
-      for (const { body } of requests) {
-        assert.equal(body.content_type, route ?? "auto");
-        assert.equal(body.mode, "default");
-        assert.equal(body.chunk, undefined);
-        assert.equal(body.code_extraction_instructions, undefined);
-        assert.equal(body.messages.length, 2);
-        assert.ok(body.messages.every((message) => Number.isFinite(message.timestamp)));
-        assert.equal(body.session_id, "auto-session");
-        assert.equal(body.metadata.source, "memorax-code");
-      }
-    } finally { runtime.close(); }
-  }
-});
+for (const client of ["codex", "workbuddy", "qoder"]) {
+  test(`auto and work dispatch each completed ${client} turn independently without code chunks`, async () => {
+    for (const route of [undefined, "auto", "work"]) {
+      const requests = [];
+      const runtime = createAutomaticMemoryWritebackRuntime();
+      try {
+        for (const turn of ["one", "two"]) {
+          assert.deepEqual(runtime.enqueue({ client, sessionKey: "auto-session",
+            userText: `Discuss ${turn}`, assistantText: `Answer ${turn}`, repositoryScope: REPOSITORY_SCOPE,
+            env: { ...WRITEBACK_ENV, MEMORAX_CODE_MEMORAX_ADD_CONTENT_TYPE: route,
+              MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "true", MEMORAX_CODE_MEMORY_WRITEBACK_CHUNK_MAX_CHARS: "5" },
+            fetchImpl: memoraxFetch(requests),
+          }), { accepted: true });
+        }
+        await runtime.drain();
+        assert.equal(requests.length, 2);
+        for (const { body } of requests) {
+          assert.equal(body.content_type, route ?? "auto");
+          assert.equal(body.mode, "default");
+          assert.equal(body.chunk, undefined);
+          assert.equal(body.code_extraction_instructions, undefined);
+          assert.equal(body.messages.length, 2);
+          assert.ok(body.messages.every((message) => Number.isFinite(message.timestamp)));
+          assert.equal(body.session_id, "auto-session");
+          assert.equal(body.metadata.source, "memorax-code");
+        }
+      } finally { runtime.close(); }
+    }
+  });
+}
 
 test("auto and work reject oversized completed turns before clipping or dispatch", async () => {
   for (const route of ["auto", "work"]) {

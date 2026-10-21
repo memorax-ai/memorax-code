@@ -87,10 +87,10 @@ test("repository evaluator falls back to measured defaults for invalid env overr
     MEMORAX_CODE_REPO_MEMORY_UPDATE_COOLDOWN_HOURS: "invalid",
   });
   assert.equal(decision.trigger, false);
-  assert.equal(decision.policy, "adaptive");
+  assert.equal(decision.policy, "daily");
   assert.equal(decision.policySource, "invalid_fallback");
   assert.equal(decision.commitThreshold, 5);
-  assert.equal(decision.cooldownHours, 24);
+  assert.equal(decision.cooldownHours, 72);
 });
 
 test("repository evaluator forces update for a missing baseline", (t) => {

@@ -84,19 +84,29 @@ mention a repository, tool, or workflow, but the files are not repository-local.
 Examples:
 
 - "先测试再提 PR，帮我记住" routes to personal procedure write.
+- "以后优先使用 node 来读取 git" routes to personal procedure write even without "记住".
 - "我喜欢中文简短回答" routes to personal profile write.
+- "这次先别跑测试" stays with the current task and is not saved.
 - "之前这个 bug 怎么修的？" routes to MemoraX Code coding memory search unless the user asks for commit or PR evidence.
 - "这个仓库的架构是什么？" routes to repo memory read.
 - "重新生成仓库 memory" routes to repo memory build.
 - "更新一下 memory" requires clarification when no authority is identifiable.
 
-Procedure Memory writes require an explicit request to save or change the
-procedure. A durable User Profile preference may be saved implicitly when the
-user clearly states it as a lasting preference.
+Decide personal-memory writes by intent, not wording. Save a procedure or
+profile preference when the user means it to keep applying after the current
+task, it covers a class of situations rather than one current object, and it is
+the user's own rule or preference, even without words such as "remember" or
+"记住". Finish the current task first and keep memory remarks at the end of
+the answer: when the intent is clear, save it and say so briefly; when
+durability or scope is unclear, ask one short question instead of saving, never
+before or during the task. When a save accompanies another task, write it only
+after every task action, including any command the task still needs to run, has
+finished, and do not mention the planned save in preambles or progress messages.
+Deleting saved memory still requires an explicit request.
 
 ## Natural Final-Answer Mention
 
-In Codex, Claude Code, DeepSeek Harness, OpenCode, CodeBuddy/WorkBuddy, Trae, and Cursor, mention memory in the final answer when memory read in the current turn materially changed localization, a decision, implementation, validation, or the delivered answer. Eligible sources are an accepted Coding Memory or Work Memory result from a successful explicit `memorax-cli search`, a relevant Repo Memory read, applied Procedure Memory, or applied Profile Memory. A Search or read alone is insufficient: omit the mention for empty, unrelated, stale, rejected, merely confirmatory, or unused memory.
+In Codex, Claude Code, DeepSeek Harness, OpenCode, CodeBuddy/WorkBuddy, Trae, Cursor, and Qoder, mention memory in the final answer when memory read in the current turn materially changed localization, a decision, implementation, validation, or the delivered answer. Eligible sources are an accepted Coding Memory or Work Memory result from a successful explicit `memorax-cli search`, a relevant Repo Memory read, applied Procedure Memory, or applied Profile Memory. A Search or read alone is insufficient: omit the mention for empty, unrelated, stale, rejected, merely confirmatory, or unused memory.
 
 Treat accepted memory as materially helpful when the answer uses it to recover or substantiate historical intent, rationale, a prior decision, a constraint, or a reusable lesson, even when live code independently confirms the conclusion. `Merely confirmatory` means the answer does not rely on the memory for a claim and the memory changes neither its framing, scope, nor confidence.
 
@@ -104,7 +114,7 @@ When eligible, begin the final answer with one brief opening paragraph before th
 
 Keep it conversational. Do not add a heading, card, label, or colon-led report. Do not open with stock wording such as `MemoraX Code 的 Memory 提示：`, `本轮借助...`, `Memory impact:`, or `The memory said...`. Use only normal visible prose: do not include HTML or XML comments, Markdown markers, tags, zero-width text, hidden control text, or metadata. A natural shape is: `这次我参考了 MemoraX Code 的 Memory，避开了之前验证过无效的修复路径。`
 
-Do not report active Add, automatic writeback, or Repo Memory build or update as memory that helped the current turn. Omit the opening paragraph when no eligible memory materially helped.
+Do not report active Add, automatic writeback, or Repo Memory build or update as memory that helped the current turn. A personal-memory save, update, or deletion made in the current turn is not memory that helped the current turn. Omit the opening paragraph when no eligible memory materially helped.
 
 ## Shared Rules
 
@@ -112,8 +122,9 @@ For MemoraX Code coding memory, run the platform command from the active task wo
 
 The installed Hook and session binding supply the authoritative workspace root; do not run Git commands to discover or replace it. The Backend resolves repository scope from that trusted workspace and read-only filesystem Git metadata.
 
-Repo memory remains the repository-local `.repo_memory` authority. Personal
-memory is a separate global authority under `$MEMORAX_CODE_HOME/personal-memory`
+Repo memory remains a local repository authority. Resolve its shared mainline
+baseline with the repo-read reference; linked worktrees read the same published
+bundle. Explicit local builds remain in `.repo_memory`. Personal memory is a separate global authority under `$MEMORAX_CODE_HOME/personal-memory`
 (`~/.memorax-code/personal-memory` by default). Resolve that home using the
 personal read/write reference's environment and installation metadata rules; reads and writes
 do not require Git, a repository root, or a worktree. Existing personal-memory
@@ -121,6 +132,6 @@ files under `.repo_memory` are ignored and are not migrated.
 
 Apply instructions in this order: system and developer instructions, `AGENTS.md`, the current user request, then stored memory. Memory is guidance or historical context, not proof of current repository behavior.
 
-For MemoraX Code coding memory, use `memorax-cli` exactly as described by the selected reference. Invoke this skill as `$memorax-code` in Codex or `/memorax-code` in Claude Code. In OpenCode, ask the agent to use the `memorax-code` skill by name. These invocation forms are not shell commands. `memorax-code` is the lifecycle CLI and must not be used for memory search or add. Do not call MemoraX HTTP endpoints directly.
+For MemoraX Code coding memory, use `memorax-cli` exactly as described by the selected reference. Invoke this skill as `$memorax-code` in Codex or `/memorax-code` in Claude Code. In OpenCode, ask the agent to use the `memorax-code` skill by name. In Qoder, ask the agent to invoke the native `memorax-code` skill by name. These invocation forms are not shell commands. `memorax-code` is the lifecycle CLI and must not be used for memory search or add. Do not call MemoraX HTTP endpoints directly.
 
 Never store secrets, credentials, `.env` content, sensitive personal data, raw transcripts, hidden tests, exact patches, temporary target commits, or unsafe destructive commands. Do not announce internal routing or reference loading.

@@ -33,6 +33,7 @@ test("memorax-code is the single progressive router for all memory authorities",
   assert.match(skill, /`\$memorax-code` in Codex/);
   assert.match(skill, /`\/memorax-code` in Claude Code/);
   assert.match(skill, /In OpenCode, ask the agent to use the `memorax-code` skill by name/);
+  assert.match(skill, /In Qoder, ask the agent to invoke the native `memorax-code` skill by name/);
   assert.match(skill, /`memorax-code` is the lifecycle CLI and must not be used for memory search or add/);
 
   for (const reference of [
@@ -100,6 +101,7 @@ test("memorax-code keeps memory-impact attribution bounded and private", () => {
   assert.doesNotMatch(router, /memorax-impact/);
   assert.match(router, /raw memory text, IDs, scores, query text, private paths, or secrets/);
   assert.match(router, /Do not report active Add, automatic writeback, or Repo Memory build or update/);
+  assert.match(router, /A personal-memory save, update, or deletion made in the current turn is not memory that helped the current turn/);
 });
 
 test("memorax-code retries read-only search once after transport or sandbox failure", () => {

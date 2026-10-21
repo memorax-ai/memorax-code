@@ -75,6 +75,21 @@ If the directory is not a git repository, do not create `.repo_memory/` and do n
 - If you only want file inspection, continue by inspecting files without repo memory.
 ```
 
+## Shared Mainline Jobs
+
+A supervised shared build supplies a private Git snapshot as the target repository.
+Use that exact path and snapshot SHA for collection, project understanding,
+authoring, and validation. The ordinary collector and Wiki output contract stay
+the same. Keep evidence links repository-relative: the source checkout is temporary.
+Do not switch to the caller's development worktree or change Git refs.
+Do not run `git fetch`, `git pull`, or `git ls-remote` to refresh or select the snapshot.
+Continue using the packaged collector to retrieve GitHub/GitLab PR, MR, and issue evidence
+through `gh`/`glab`, including branch and commit metadata,
+when enabled by the history policy and provider access is available.
+The supervisor publishes the validated bundle to repository-shared storage.
+Explicit local builds remain scoped to the user-selected repository and do not
+replace the shared baseline.
+
 ## Path Convention
 
 `<skill-dir>` means the parent directory of the `references/` directory containing this file. Resolve it before running scripts, for example:

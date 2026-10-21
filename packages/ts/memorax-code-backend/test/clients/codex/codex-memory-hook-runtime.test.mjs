@@ -138,7 +138,7 @@ test("memory hook preserves registered workspace failures instead of rebinding t
   }
 });
 
-test("memory hook writeback accepts repeated authority metadata in the exact Codex rollout turn", async () => {
+test("memory hook writeback accepts repeated authority metadata and provider assistant turn IDs", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-hook-rollout-source-"));
   const workspace = join(root, "memorax-code");
   await mkdir(workspace, { recursive: true });
@@ -153,6 +153,18 @@ test("memory hook writeback accepts repeated authority metadata in the exact Cod
       payload: { id: "session-hook" },
     }],
   });
+  const records = (await readFile(transcriptPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+  const finalRecord = records.at(-1);
+  finalRecord.type = "response_item";
+  finalRecord.payload = {
+    type: "message",
+    id: "provider-message-1",
+    role: "assistant",
+    phase: "final_answer",
+    content: [{ type: "output_text", text: finalRecord.payload.message }],
+    internal_chat_message_metadata_passthrough: { turn_id: "provider-turn-1" },
+  };
+  await writeFile(transcriptPath, `${records.map((record) => JSON.stringify(record)).join("\n")}\n`, "utf8");
   const { fetchImpl, requests } = memoraxAddFetch();
   const events = [];
   const controller = createCodexMemoryHookRuntime({
@@ -187,6 +199,8 @@ test("memory hook writeback accepts repeated authority metadata in the exact Cod
       Date.parse("2026-07-16T00:00:02.000Z"),
       Date.parse("2026-07-16T00:00:03.000Z"),
     ]);
+    assert.equal(requests[0].body.session_id, "session-hook");
+    assert.equal(requests[0].body.metadata.memorax_code_session_id, "session-hook");
     assert.equal(requests[0].body.user_id, "user-1@memorax-code");
     assert.equal(requests[0].body.metadata.memorax_code_base_user_id, "user-1");
     assert.equal(requests[0].body.metadata.memorax_code_workspace, "memorax-code");
@@ -194,6 +208,9 @@ test("memory hook writeback accepts repeated authority metadata in the exact Cod
     assert.equal("memorax_code_repository" in requests[0].body.metadata, false);
     assert.match(requests[0].body.metadata.idempotency_key, /^automatic:codex:/);
     assert.equal(events.at(-1).source, "codex_hook_writeback");
+    assert.equal(events.at(-1).traceContext.client, "codex");
+    assert.equal(events.at(-1).traceContext.sessionId, "session-hook");
+    assert.equal(events.at(-1).traceContext.turnId, "turn-1");
   } finally {
     controller.close();
     await rm(root, { recursive: true, force: true });

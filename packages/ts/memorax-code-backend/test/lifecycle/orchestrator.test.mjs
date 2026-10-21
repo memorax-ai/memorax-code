@@ -877,3 +877,74 @@ test("memorax-code start refreshes an already-running Backend process", async ()
     await runCli(cliPath, ["stop", "--json", "--home", home, "--port", String(port), "--clients", "none"]);
   }
 });
+
+
+test("memorax-code lifecycle installs and disables only managed Qoder Hooks", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-lifecycle-qoder-"));
+  const home = join(root, "memorax-code-home");
+  const qoderHome = join(root, "qoder-home");
+  const hooksPath = join(qoderHome, "settings.json");
+  const port = await freePort();
+  const cliPath = fileURLToPath(new URL("../../dist/memorax-code.js", import.meta.url));
+  const userHook = { hooks: [{ type: "command", command: "user-owned-hook" }] };
+  await mkdir(qoderHome, { recursive: true });
+  await writeFile(hooksPath, `${JSON.stringify({
+    customSetting: true,
+    hooks: { UserPromptSubmit: [userHook] },
+  }, null, 2)}\n`);
+  const args = [
+    "--home", home,
+    "--port", String(port),
+    "--qoder-home", qoderHome,
+    "--clients", "qoder",
+  ];
+  try {
+    const started = await runCli(cliPath, ["start", "--json", ...args]);
+    assert.equal(started.code, 0, `${started.stdout}\n${started.stderr}`);
+    const startReport = JSON.parse(started.stdout);
+    assert.equal(startReport.ok, true);
+    assert.equal(startReport.backend.ok, true);
+    assert.equal(startReport.qoderAdapter.installed, true);
+    assert.equal(startReport.qoderAdapter.enabled, true);
+    assert.equal(startReport.qoderAdapter.integration, "hooks");
+    assert.equal(startReport.qoderAdapter.qoderHooks.configured, true);
+    assert.equal(startReport.qoderAdapter.qoderHooks.runtimeObserved, false);
+    assert.equal(startReport.qoderAdapter.globalHooksActivationRequired, undefined);
+    assert.equal(startReport.qoderAdapter.qoderSkills.ok, true);
+
+    const installedHooks = JSON.parse(await readFile(hooksPath, "utf8"));
+    assert.equal(installedHooks.customSetting, true);
+    assert.equal(JSON.stringify(installedHooks).includes("user-owned-hook"), true);
+    assert.equal(qoderHookCount(installedHooks), 4);
+    assert.equal(await pathExists(join(qoderHome, "skills", "memorax-code", "SKILL.md")), true);
+
+    const status = await runCli(cliPath, ["status", "--json", ...args]);
+    assert.equal(status.code, 0, `${status.stdout}\n${status.stderr}`);
+    assert.equal(JSON.parse(status.stdout).qoderAdapter.enabled, true);
+
+    const stopped = await runCli(cliPath, ["stop", "--json", ...args]);
+    assert.equal(stopped.code, 0, `${stopped.stdout}\n${stopped.stderr}`);
+    const stopReport = JSON.parse(stopped.stdout);
+    assert.equal(stopReport.ok, true);
+    assert.equal(stopReport.qoderAdapter.enabled, false);
+    const stoppedHooks = JSON.parse(await readFile(hooksPath, "utf8"));
+    assert.equal(stoppedHooks.customSetting, true);
+    assert.equal(JSON.stringify(stoppedHooks).includes("user-owned-hook"), true);
+    assert.equal(qoderHookCount(stoppedHooks), 0);
+    assert.equal(await pathExists(join(qoderHome, "skills", "memorax-code", "SKILL.md")), true);
+    const removed = await runCli(cliPath, ["uninstall", "--json", ...args]);
+    assert.equal(removed.code, 0, `${removed.stdout}\n${removed.stderr}`);
+    assert.equal(JSON.parse(removed.stdout).qoderPlugin.ok, true);
+    assert.equal(await pathExists(join(qoderHome, "skills", "memorax-code")), false);
+    assert.deepEqual(JSON.parse(await readFile(hooksPath, "utf8")), stoppedHooks);
+  } finally {
+    await runCli(cliPath, ["stop", "--json", ...args]);
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+function qoderHookCount(config) {
+  return Object.values(config.hooks).flatMap((groups) => groups)
+    .flatMap((group) => group.hooks ?? [])
+    .filter((hook) => hook.args?.includes("--memorax-code-qoder-hook-v1")).length;
+}

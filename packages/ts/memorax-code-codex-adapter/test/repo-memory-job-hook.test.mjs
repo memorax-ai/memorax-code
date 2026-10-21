@@ -10,6 +10,10 @@ import {
   repoMemoryJobsDir,
 } from "../../memorax-code-adapter-common/src/repo-memory/repo-memory-job-marker.mjs";
 
+import { defaultBranchSnapshot, prepareSharedRepoMemorySnapshot, publishSharedRepoMemorySnapshot, readSharedRepoMemory, sharedSnapshotRoot } from "../../memorax-code-adapter-common/src/repo-memory/repo-memory-shared-bundle.mjs";
+import { inspectRepoMemoryBundle } from "../../memorax-code-adapter-common/src/repo-memory/repo-memory-job-supervisor.mjs";
+
+const validator = fileURLToPath(new URL("../skills/memorax-code/scripts/repo-memory.mjs", import.meta.url));
 const jobHook = fileURLToPath(new URL("../hooks/repo-memory-job.mjs", import.meta.url));
 
 function runJob(args, env = {}) {
@@ -23,29 +27,42 @@ function tempRoot(prefix) {
   return realpathSync(mkdtempSync(join(tmpdir(), prefix)));
 }
 
-test("repo memory job launcher writes dry-run command with danger-full-access", () => {
-  const root = tempRoot("repo-memory-job-");
-  const repo = join(root, "repo");
-  const memoraxCodeHome = join(root, "memorax-code");
-  const head = initRepo(repo);
-  const result = runJob(["start", "--mode", "build", "--repo", repo, "--dry-run"], { MEMORAX_CODE_HOME: memoraxCodeHome });
-  assert.equal(result.status, 0, result.stderr);
-  const payload = JSON.parse(result.stdout);
-  assert.equal(payload.ok, true);
-  assert.equal(payload.mode, "build");
-  assert.equal(payload.runner, "codex");
-  assert.equal(payload.finalMessageSource, "file");
-  assert.equal(payload.repo, repo);
-  assert.equal(dirname(dirname(payload.jobPath)), repoMemoryJobsDir(memoraxCodeHome));
-  assert.deepEqual(payload.command.slice(0, 6), ["codex", "exec", "--cd", repo, "--sandbox", "danger-full-access"]);
-  assert.ok(payload.command.includes("--output-last-message"));
-  assert.match(payload.prompt, /\$memorax-code/);
-  assert.equal(payload.snapshotHead, head);
-  assert.match(
-    payload.workerCommand[1],
-    /memorax-code-adapter-common[\\/]src[\\/]repo-memory[\\/]repo-memory-job-worker\.mjs$/,
-  );
-});
+for (const mode of ["build", "update"]) {
+  test(`repo memory ${mode} uses medium reasoning without overriding the configured model`, () => {
+    const root = tempRoot("repo-memory-job-");
+    const repo = join(root, "repo");
+    const memoraxCodeHome = join(root, "memorax-code");
+    const codexHome = join(root, "codex");
+    const config = 'model = "fixture-model"\nmodel_reasoning_effort = "high"\n';
+    mkdirSync(codexHome);
+    writeFileSync(join(codexHome, "config.toml"), config);
+    const head = initRepo(repo);
+    if (mode === "update") writeValidMemoryBundle(repo, head);
+    const result = runJob(["start", "--mode", mode, "--repo", repo, "--dry-run"], {
+      MEMORAX_CODE_HOME: memoraxCodeHome,
+      CODEX_HOME: codexHome,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.ok, true);
+    assert.equal(payload.mode, mode);
+    assert.equal(payload.runner, "codex");
+    assert.equal(payload.finalMessageSource, "file");
+    assert.equal(payload.repo, repo);
+    assert.equal(dirname(dirname(payload.jobPath)), repoMemoryJobsDir(memoraxCodeHome));
+    assert.deepEqual(payload.command.slice(0, 6), ["codex", "exec", "--cd", repo, "--sandbox", "danger-full-access"]);
+    assert.equal(payload.command[payload.command.indexOf("--config") + 1], 'model_reasoning_effort="medium"');
+    assert.equal(payload.command.some(arg => arg === "--model" || arg === "-m"), false);
+    assert.equal(readFileSync(join(codexHome, "config.toml"), "utf8"), config);
+    assert.ok(payload.command.includes("--output-last-message"));
+    assert.match(payload.prompt, /\$memorax-code/);
+    assert.equal(payload.snapshotHead, head);
+    assert.match(
+      payload.workerCommand[1],
+      /memorax-code-adapter-common[\\/]src[\\/]repo-memory[\\/]repo-memory-job-worker\.mjs$/,
+    );
+  });
+}
 
 test("repo memory job launcher resolves Codex from installed plugin metadata", () => {
   const root = tempRoot("repo-memory-job-codex-metadata-");
@@ -79,7 +96,12 @@ for (const expectedMode of ["build", "update"]) {
     const memoraxCodeHome = join(root, "memorax-code");
     const baseline = initRepo(repo);
     if (expectedMode === "update") {
-      writeValidMemoryBundle(repo, baseline);
+      const snapshot = { ...defaultBranchSnapshot(repo), baseHead: null };
+      const source = join(root, "seed", "source");
+      const validate = path => inspectRepoMemoryBundle(path, validator).status === "usable";
+      prepareSharedRepoMemorySnapshot({ home: memoraxCodeHome, repo, snapshot, root: source, validate });
+      writeValidMemoryBundle(source, baseline);
+      assert.equal(publishSharedRepoMemorySnapshot({ home: memoraxCodeHome, repo, snapshot, root: source, validate }), true);
       for (let index = 1; index <= 5; index += 1) {
         writeFileSync(join(repo, `update-${index}.txt`), `update ${index}\n`);
         runGit(repo, ["add", `update-${index}.txt`]);
@@ -87,10 +109,14 @@ for (const expectedMode of ["build", "update"]) {
       }
     }
     const head = runGit(repo, ["rev-parse", "HEAD"]).trim();
+    runGit(repo, ["update-ref", "refs/remotes/origin/main", head]);
+    runGit(repo, ["switch", "-c", "feature"]);
+    writeFileSync(join(repo, "uncommitted.txt"), "feature work\n");
     const fakeCodex = writeCompletingFakeCodex(root);
     const result = runJob(["maintain", "--repo", repo], {
       MEMORAX_CODE_HOME: memoraxCodeHome,
       MEMORAX_CODE_CODEX_COMMAND: fakeCodex,
+      MEMORAX_CODE_REPO_MEMORY_UPDATE_POLICY: "every-commit",
       MEMORAX_CODE_REPO_MEMORY_PYTHON_COMMAND: join(root, "missing-python"),
     });
     assert.equal(result.status, 0, result.stderr);
@@ -103,12 +129,16 @@ for (const expectedMode of ["build", "update"]) {
     assert.equal(state.status, "succeeded");
     assert.equal(state.runner, "codex");
     assert.equal(state.finalMessageSource, "file");
-    assert.deepEqual(state.command.slice(0, 6), [fakeCodex, "exec", "--cd", repo, "--sandbox", "danger-full-access"]);
+    assert.deepEqual(state.command.slice(0, 6), [fakeCodex, "exec", "--cd", sharedSnapshotRoot(payload.job.jobPath), "--sandbox", "danger-full-access"]);
+    assert.equal(state.command[state.command.indexOf("--config") + 1], 'model_reasoning_effort="medium"');
     assert.equal(state.command[state.command.indexOf("--output-last-message") + 1], state.finalMessagePath);
     assert.equal(readFileSync(state.finalMessagePath, "utf8"), "Repo memory operation completed.\n");
     assert.equal(state.snapshotHead, head);
     assert.equal(state.validation.ok, true);
     assert.equal(state.validation.profileHead, head);
+    assert.equal(readSharedRepoMemory(memoraxCodeHome, repo).head, head);
+    assert.equal(readFileSync(join(repo, "uncommitted.txt"), "utf8"), "feature work\n");
+    assert.equal(existsSync(join(repo, ".repo_memory")), false);
     assert.equal(countJobDirs(memoraxCodeHome), 1);
     waitForMarkerAbsent(memoraxCodeHome, repo);
   });
@@ -185,6 +215,8 @@ function initRepo(repo) {
   writeFileSync(join(repo, "README.md"), "# Test Repo\n");
   runGit(repo, ["add", "README.md"]);
   runGit(repo, ["commit", "-m", "initial"]);
+  runGit(repo, ["update-ref", "refs/remotes/origin/main", "HEAD"]);
+  runGit(repo, ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"]);
   return runGit(repo, ["rev-parse", "HEAD"]).trim();
 }
 

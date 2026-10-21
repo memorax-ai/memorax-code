@@ -33,6 +33,7 @@ const nativeReaders = [
   "clients/codebuddy/jsonl-history.ts",
   "clients/cursor/database-snapshot.ts",
   "clients/cursor/database-turn.ts",
+  "clients/qoder/transcript-turn.ts",
 ];
 const clientMemoryRuntimes = [];
 for (const module of clientModules) {

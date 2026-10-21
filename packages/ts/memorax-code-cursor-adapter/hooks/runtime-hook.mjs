@@ -23,6 +23,7 @@ const { requestMemorySearchGuidance, readMemorySearchGuidanceEnabled } = await i
 const { evaluateMemorySkillReminder, markSupplementalReminderForSession } = await import(pathToFileURL(join(commonRoot, "hooks", "memory-skill-reminder-hook.mjs")).href);
 const { buildUserProfilePreferencesContext } = await import(pathToFileURL(join(commonRoot, "personal-memory", "user-profile-context.mjs")).href);
 const { buildProcedureMemoryContext } = await import(pathToFileURL(join(commonRoot, "personal-memory", "procedure-memory-context.mjs")).href);
+const { sharedRepoMemoryPath } = await import(pathToFileURL(join(commonRoot, "repo-memory", "repo-memory-shared-bundle.mjs")).href);
 const { isRepoMemoryJobWorker } = await import(pathToFileURL(join(commonRoot, "repo-memory", "repo-memory-job-context.mjs")).href);
 
 if (isRepoMemoryJobWorker()) process.exit(0);
@@ -119,9 +120,9 @@ if (event === "sessionStart") {
   const repoMemoryWorktree = absolutePath(turnStart?.repoMemoryWorktree);
   let buildContext;
   if (turnStart?.ok === true && turnStart.recorded === true && input.prompt.trim()
-    && repoMemoryWorktree && !existsSync(join(repoMemoryWorktree, ".repo_memory", "PROFILE.md"))) {
+    && repoMemoryWorktree) {
     try {
-      const decision = runCursorRepoMemoryJob(["maintain", "--repo", repoMemoryWorktree], {
+      const decision = existsSync(join(sharedRepoMemoryPath(home, repoMemoryWorktree), "baseline.json")) ? {} : runCursorRepoMemoryJob(["maintain", "--repo", repoMemoryWorktree], {
         memoraxCodeHome: home,
         helperPath: join(runtimeRoot, "hooks", "repo-memory-job.mjs"),
         sessionId,
@@ -207,8 +208,9 @@ async function post(path, body, timeoutMs = 12_000) {
 async function readJsonStdin() {
   try {
     let text = "";
-    for await (const chunk of process.stdin) text += chunk;
-    const value = JSON.parse(text);
+    for await (const chunk of process.stdin.setEncoding("utf8")) text += chunk;
+    // Cursor's Windows PowerShell pipeline can prefix Hook JSON with a UTF-8 BOM.
+    const value = JSON.parse(text.replace(/^\ufeff/, ""));
     return isRecord(value) ? value : {};
   } catch { return {}; }
 }
@@ -225,6 +227,11 @@ function uuid(value) {
 }
 
 function absolutePath(value) {
+  if (process.platform === "win32" && typeof value === "string") {
+    // Cursor workspace URI paths include a slash before the Windows drive.
+    if (/^\/[A-Za-z]:(?:$|[^/\\])/.test(value)) return undefined;
+    if (/^\/[A-Za-z]:\//.test(value)) value = value.slice(1);
+  }
   return typeof value === "string" && value.trim() && !/[\r\n\0]/.test(value)
     && (isAbsolute(value) || win32.isAbsolute(value)) ? value : undefined;
 }

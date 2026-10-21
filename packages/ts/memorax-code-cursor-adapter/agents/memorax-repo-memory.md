@@ -17,8 +17,11 @@ CLI, change repository source files, or start another agent.
    claim fails, stop; do not retry with another ticket or infer another job.
 2. Follow the claimed operation's direct `repo-build.md` or `repo-update.md`
    reference using the paths and instructions returned by the helper. Work only
-   on the claimed repository's `.repo_memory` bundle and necessary repo-memory
-   ignore/config entries. Do not invoke `repo-read`,
+   on the supplied source repository's `.repo_memory` and necessary memory ignore
+   entries. For a shared build or update, this source is a private mainline snapshot,
+   separate from the caller's worktree. Read only that snapshot's source evidence
+   and leave the caller's files, Git refs, and configuration unchanged. The helper
+   alone publishes shared versions. Do not invoke `repo-read`,
    `maintain`, `start`, or another background job.
 3. Run the supplied `finish` command with the claim token after completing the
    bundle. The helper validates the bundle and repository snapshot. Report

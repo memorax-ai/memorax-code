@@ -26,7 +26,7 @@ authoritative.
 ## 2. System Shape and Package Ownership
 
 MemoraX Code integrates Codex, Claude Code, DeepSeek Harness (DSH), OpenCode,
-CodeBuddy CLI, WorkBuddy, Trae, and Cursor with one local Backend. The Backend is a
+CodeBuddy CLI, WorkBuddy, Trae, Cursor, and Qoder with one local Backend. The Backend is a
 capability-oriented modular monolith. The clients retain ownership of models,
 model-provider credentials, native tools, model-provider traffic, and native
 transcript, message, or Hook-event creation. The Backend has one explicit
@@ -36,7 +36,7 @@ model-provider traffic.
 
 Around the Backend are:
 
-- seven client deployment adapters;
+- eight client deployment adapters;
 - one lower-level shared runtime source layer;
 - one npm assembly and installed-CLI layer; and
 - repository automation that builds, validates, stages, and tests artifacts.
@@ -52,6 +52,7 @@ flowchart LR
     WorkBuddy["WorkBuddy"]
     Trae["Trae"]
     Cursor["Cursor"]
+    Qoder["Qoder"]
   end
 
   subgraph Adapters["Client integrations"]
@@ -62,6 +63,7 @@ flowchart LR
     CodeBuddyAdapter["CodeBuddy adapter<br/>Hooks, transcript bridge, skill"]
     TraeAdapter["Trae adapter<br/>Global Hooks, skill"]
     CursorAdapter["Cursor adapter<br/>native Hooks, skill"]
+    QoderAdapter["Qoder adapter<br/>native Hooks, skill"]
   end
 
   Common["adapter-common<br/>records, locks, Hook and Repo Memory helpers"]
@@ -86,6 +88,7 @@ flowchart LR
   CodeBuddyAdapter -. "artifact source" .-> Build
   TraeAdapter -. "artifact source" .-> Build
   CursorAdapter -. "artifact source" .-> Build
+  QoderAdapter -. "artifact source" .-> Build
   Build -->|"assembles"| Artifact
   Artifact -->|"lifecycle start"| Service
   Artifact -->|"memory command"| MemoryCLI
@@ -99,6 +102,7 @@ flowchart LR
   CodeBuddyAdapter --> Common
   TraeAdapter --> Common
   CursorAdapter --> Common
+  QoderAdapter --> Common
 
   Codex --> CodexAdapter
   Claude --> ClaudeAdapter
@@ -108,6 +112,7 @@ flowchart LR
   WorkBuddy --> CodeBuddyAdapter
   Trae --> TraeAdapter
   Cursor --> CursorAdapter
+  Qoder --> QoderAdapter
   CodexAdapter -. "versioned local Hook HTTP" .-> Service
   ClaudeAdapter -. "versioned local Hook HTTP" .-> Service
   DshAdapter -. "versioned local plugin HTTP" .-> Service
@@ -115,6 +120,7 @@ flowchart LR
   CodeBuddyAdapter -. "versioned local Hook HTTP" .-> Service
   TraeAdapter -. "versioned local Hook HTTP" .-> Service
   CursorAdapter -. "versioned local Hook HTTP" .-> Service
+  QoderAdapter -. "versioned local Hook HTTP" .-> Service
 
   Clients -->|"shared Skill via client shell"| MemoryCLI
   Service -->|"automatic Add"| MemoraX
@@ -146,18 +152,19 @@ owns only normalized semantic evaluation requests.
 | [CodeBuddy/WorkBuddy adapter](packages/ts/memorax-code-codebuddy-adapter) | Marketplace plugin, Hooks, native transcript bridge, and supervised Repo Memory | Backend transcript interpretation or model-provider configuration |
 | [Trae adapter](packages/ts/memorax-code-trae-adapter) | Managed Global Hooks, versioned runtime and Skill deployment, and Hook observation | Global Hooks activation, provider settings, or guessed native Sessions |
 | [Cursor adapter](packages/ts/memorax-code-cursor-adapter) | Marker-owned native Hooks, versioned runtime, and independent shared Skill deployment | Native transcript interpretation or third-party import settings |
+| [Qoder adapter](packages/ts/memorax-code-qoder-adapter) | Marker-owned user settings Hooks, private runtime generations, canonical Skill and native Repo Memory subagent deployment, runtime observation, and native job coordination | Qoder plugin registry, provider settings, or native transcript interpretation |
 | [npm package](packages/npm/memorax-code) | Installed wrappers, setup and update reconciliation, trial provisioning, and package replacement | Backend lifecycle semantics, uninstall orchestration, or artifact staging |
 | [scripts](scripts) | Build, staging/materialization, and repository/artifact checks | Product runtime authority |
-| [.github](.github) | Issue and pull-request contribution templates | Product runtime behavior |
+| [.github](.github) | Contribution templates and CI workflows | Product runtime behavior |
 
 `memorax-code-adapter-common` is a source layer consumed by the Backend and all
-seven adapters; it is not an independently deployed service. The npm artifact
+eight adapters; it is not an independently deployed service. The npm artifact
 assembles all runtime trees, but package assembly does not make the npm wrapper
 the owner of their behavior.
 
 ### 2.2 Physical dependency directions
 
-- The Backend and the Codex, Claude Code, DSH, OpenCode, CodeBuddy, Trae, and Cursor deployment adapters
+- The Backend and the Codex, Claude Code, DSH, OpenCode, CodeBuddy, Trae, Cursor, and Qoder deployment adapters
   may import adapter-common. Adapter-common must not import those higher-level
   components back.
 - Adapter Hook and plugin runtimes do not import Backend implementation. They
@@ -174,7 +181,7 @@ the owner of their behavior.
 - The npm layer locates staged entrypoints. `scripts` owns how source is
   materialized into that staged layout.
 - The canonical user-facing `memorax-code` skill lives in the Codex adapter.
-  Packaging materializes the Claude Code, DSH, OpenCode, CodeBuddy, Trae, and Cursor
+  Packaging materializes the Claude Code, DSH, OpenCode, CodeBuddy, Trae, Cursor, and Qoder
   artifacts from that source; do not maintain independent skill copies.
 
 Client integration is deliberately not physically symmetric. Codex plugin
@@ -208,6 +215,8 @@ it does not depend on Claude Code or change third-party import settings. These
 implementations are loaded by their Backend lifecycle participants. Preserve
 the participant contract and each client's actual authority instead of forcing
 matching directory shapes.
+Qoder independently owns its user settings Hooks, Skill, and native Repo Memory
+subagent under the Qoder configuration root, without editing its plugin registry.
 
 Lifecycle report interpretation is shared in `lifecycle/client-reports.ts`.
 Its static client catalog maps lifecycle IDs and display names to existing
@@ -443,7 +452,12 @@ The DSH adapter installs content-addressed runtime generations from immutable
 staged source into managed Profiles through DSH's native plugin manager. It
 never installs or updates DSH or deletes user Profiles. The validated DSH
 entrypoint and version form durable runtime authority and are revalidated
-during reconciliation. The Backend lifecycle lock precedes the DSH state lock.
+during reconciliation. Reserved Desktop Profiles use the Desktop installation's
+native launcher and bundled package manager; ordinary Profiles retain the CLI
+launcher. The Desktop launcher and version are separately pinned in the private
+state and runtime-generation metadata when that Profile is managed. The adapter
+never enables reserved-profile access through an npm CLI or edits native package
+manager state directly. The Backend lifecycle lock precedes the DSH state lock.
 Start quiesces old authority, prepares artifacts while disabled, and activates
 them only after Backend readiness; stop, update, and uninstall disable
 authority before Profile mutation. Disabled or invalid runtime registers no
@@ -491,6 +505,16 @@ against its recorded digest, including copied dependencies and metadata. The sam
 check governs generation reuse; damaged generations fail closed without in-place
 mutation. Intact older generations are checked against their own identity rather
 than newer package contents.
+
+The Qoder adapter merges marker-owned entries in user `settings.json` and
+materializes a private runtime generation, the canonical Skill, and a managed
+Repo Memory subagent. It registers
+SessionStart, UserPromptSubmit, QueryEnd, and PreToolUse. Completion comes from
+a completed QueryEnd with exact request-set correlation; cancellation discards
+the pending turn. The native JSONL reader remains in `clients/qoder`. Its own
+native Repo Memory coordinator reuses common maintenance policy, locks, snapshots,
+and publication; it does not invoke a Qoder CLI or edit the internal plugin registry.
+See [Qoder configuration](docs/configuration.md#qoder-integration-paths).
 
 Account-free setup creates or restores versioned trial credentials through
 adapter-common's secure credential port and calls MemoraX provisioning to
@@ -568,10 +592,14 @@ Important distinctions:
   precedence. Recognition is client-owned; scope derivation stays shared.
   General sharing does not merge client/session identity or physical workspace
   keys. The [directory rules](docs/configuration.md#memory-scope) apply to Codex,
-  WorkBuddy, OpenCode, and Cursor; Cursor reports a no-folder conversation as
-  `workspaceKind: projectless` without a `cwd`, so no physical workspace root is
-  required. Cursor ingress rejects an identity containing both `cwd` and
-  `workspaceKind: projectless`. Ordinary workspaces retain their existing rules.
+  WorkBuddy, OpenCode, Cursor, and Qoder. Cursor reports a no-folder conversation
+  as `workspaceKind: projectless` without a `cwd`, so no physical workspace root
+  is required. Cursor ingress rejects an identity containing both `cwd` and
+  `workspaceKind: projectless`. Qoder still requires `cwd`; its Hook identifies
+  only the exact generated default task directory, and its Backend runtime
+  independently validates the convention and real-path containment before
+  accepting `projectless`. Qoder recognition does not depend on its SQLite
+  database. Ordinary workspaces retain their existing rules.
   Codex can recover an unbound session's General root from the matching
   rollout's first `session_meta` record when a new Turn resumes in a child
   directory. The native initial cwd must match the shared Codex default-directory
@@ -832,7 +860,7 @@ that recover do not produce terminal failure records.
 
 ### 3.5 Repo Memory coordination
 
-Repo Memory is repository-local guidance under `.repo_memory`, not a MemoraX
+Repo Memory is local repository guidance in a shared baseline or an explicitly authored `.repo_memory`, not a MemoraX
 provider response. In all supported clients, an accepted turn-start result exposes a
 worktree to the adapter integration only for a verified Git scope. Codex,
 Claude Code, and CodeBuddy/WorkBuddy Hooks, DSH's native pre-step integration,
@@ -846,6 +874,57 @@ Procedure Memory context, and returns a supervised native background delegation
 for a missing bundle. The foreground agent launches the managed
 `memorax-repo-memory` subagent through Cursor's Task tool. The Hook cannot launch
 a native Task by itself. No separate Cursor CLI, SDK, or CLI login is used.
+Qoder also returns a supervised missing-bundle delegation after accepted turn-start
+with a Backend-authorized Git worktree. Its foreground agent launches
+`memorax-repo-memory` through Qoder's native Agent tool with
+`run_in_background: true`; no separate Qoder CLI installation or login is required.
+
+Adapter-common coordinates jobs by the canonical Git common directory, resolved
+from local metadata without running Git for identity. Linked worktrees share
+the startup lock and active marker within one MemoraX home; independent clones
+remain separate. Worktree marker and lock compatibility is retained for older
+runtimes, which do not implement cross-worktree sharing.
+The startup lock remains owned while its process is alive, including slow snapshot
+preparation; elapsed initialization time alone does not permit takeover. Launchers
+recheck ownership before starting a worker or publishing a native delegation.
+
+One mainline baseline is published under `MEMORAX_CODE_HOME/repo-memory-bases`.
+Any authorized worktree may trigger maintenance. The target commit comes only
+from the local symbolic `refs/remotes/origin/HEAD` and its remote-tracking ref;
+missing authority defers without network discovery or a guessed branch name.
+The caller's branch, HEAD, and uncommitted changes do not select build content.
+The shared baseline commit and publication time feed the existing update policy.
+Mainline history replacement defers automatic updates but does not invalidate
+historical guidance for reading. An attempt record limits repeated failed jobs.
+
+For authoring, the common supervisor and Cursor and Qoder native launchers prepare a private
+local clone at the fixed target commit in the job directory. The clone borrows
+local Git objects, preserves the provider remote identity, disables checkout
+hooks, and never registers a linked worktree or changes source Git state.
+The existing collector, detector, authoring templates, and validator operate on
+that snapshot. Updates copy the shared bundle into its candidate memory directory;
+the Agent reviews affected Wiki pages and enabled historical resources.
+Launchers persist a preparing job and an attempt record before creating the snapshot.
+Preparation failures retain a failed job record, remove the temporary source checkout,
+and remain subject to the attempt cooldown without advancing the shared baseline.
+Validation checks candidate provenance and unchanged snapshot source. Publication
+also checks repository ownership, the previous baseline, and that the target
+still belongs to the locally identified mainline before atomically advancing
+the shared record to an immutable version. Failure keeps the old baseline.
+Completed workers remove the temporary source checkout. Old published versions
+remain readable for in-flight readers and are not automatically pruned.
+
+The canonical read-only resolver returns one validated bundle path for every
+branch and linked worktree. It is also available through the Backend Repo Memory
+CLI for Skill-only clients. Readers hold that version for a bounded retrieval,
+then run demand-triggered maintenance. They verify task-relevant current source
+and uncommitted changes; divergent history, file counts, deletions, and manifest
+edits do not reject the whole map. Source links resolve against the reader's
+worktree. No per-worktree copies, origin records, fingerprints, or automatic
+branch-specific updates are created. Existing local bundles remain untouched,
+are available as a fallback when no shared baseline exists, and may be explicitly
+authored without replacing shared storage. Personal-memory sidecars are excluded
+from publication, and bundle copies reject symbolic links.
 
 The Backend owns the TypeScript Repo Memory collector, delta detector, provider
 facets, and validator under `src/repo-memory`, exposed through
@@ -853,7 +932,9 @@ facets, and validator under `src/repo-memory`, exposed through
 `scripts/repo-memory.mjs` launcher that uses the staged Backend runtime in the
 npm package or the installed `memorax-code` command after the Skill is copied
 into a client-specific directory. Repo Memory therefore shares the required
-Node.js runtime with the rest of the package.
+Node.js runtime with the rest of the package. The launcher uses its installed
+Skill/package metadata for the default `MEMORAX_CODE_HOME` and passes its effective
+Skill directory to fallback subprocesses; explicit environment overrides take precedence.
 
 User Profile management lives separately under Backend `src/personal-memory`.
 The canonical Skill's `scripts/user-profile-memory.mjs` launcher runs the
@@ -898,7 +979,7 @@ completion and Hook delivery alone do not authorize it. This path does not promi
 immediate restoration inside a continuing long-running task.
 Repository Memory builders still require a Backend-resolved worktree. Global User
 Profile and Procedure Memory builders require neither repository scope nor an
-accepted turn-start: Claude Code, Codex, CodeBuddy/WorkBuddy, and OpenCode read
+accepted turn-start: Claude Code, Codex, CodeBuddy/WorkBuddy, OpenCode, and Qoder read
 them from `MEMORAX_CODE_HOME` on the normal reminder cadence even when turn-start
 fails, while search guidance, reminder traces, and Backend user notices keep
 their Backend conditions. Trae and Cursor evaluate all reminders only after an
@@ -906,12 +987,15 @@ accepted turn-start. DSH loads personal context after an accepted turn-start and
 retries on later turns until a load succeeds. The client workspace remains trace
 metadata for personal-memory delivery.
 
-A relevant repo-read can invoke supervised maintenance in the six supported
+A relevant repo-read can invoke supervised maintenance in the supported
 background-capable client integrations. The runner validates the bundle and
 selects a background build, update, or no-op according to policy. DSH
 maintenance runs through an enabled, managed headless-capable Profile. For
 OpenCode, both on-demand maintenance and first-eligible-prompt initialization
 run through a short-lived subagent session.
+The OpenCode plugin checks the resolved model's native variants during that
+agent's `chat.message` hook and selects `medium` when available. Missing variants
+or unavailable model metadata preserve native selection and defaults.
 The detached worker reuses the active OpenCode server when it is reachable.
 When no server URL is available or initial session creation fails at the
 transport layer, a worker with a configured OpenCode command can start an
@@ -920,24 +1004,24 @@ database and close it afterward. HTTP/session-response failures and later
 prompt failures do not select this fallback.
 Desktop-only installations with a reachable server do not require a standalone
 OpenCode CLI. Trae remains outside this supervised path until it exposes a
-suitable headless execution authority. Cursor reuses the common maintenance
+suitable headless execution authority. Cursor and Qoder reuse the common maintenance
 decision, policy, authoring instructions, and bundle validator with a native
-execution coordinator in its adapter. A versioned private job and bounded lease
+execution coordinator in each adapter. A versioned private job and bounded lease
 use the common repository marker and startup lock, so other runners also
 deduplicate, including immutable runtimes retained by older sessions. The shared
 marker preserves the version-1 envelope and a real per-job Node lease-guard PID;
 current readers additionally validate lease expiry and guard liveness. The guard
 reports bounded startup readiness, then checks state and ownership under the same
 lock as claim/finalization. It exits on terminal state, expiry, or replacement; it
-does not execute a model or supervise the native Task. The child must claim a single-use ticket before authoring and finish
+does not execute a model or supervise the native child. The child must claim a single-use ticket before authoring and finish
 with the returned claim capability. Finalization verifies job ownership, an
 unchanged snapshot HEAD, the canonical bundle validator, and PROFILE local_head;
-a Task launch or model summary is not completion authority. Expired or replaced
+a native launch or model summary is not completion authority. Expired or replaced
 claims cannot finalize. If finalization is interrupted during validation, the
 same claim capability can retry validation or abort the job. Each finish reruns
 the checks, and the final locked transition accepts only one result; late
 validation cannot overwrite an abort or replacement. A lease does not terminate
-a Cursor task or override tool approvals. Native task availability and the parent's delegation are required.
+a native task or override tool approvals. Native task availability and the parent's delegation are required.
 
 Cursor child composers identified by native subagent metadata are excluded at
 turn-start, before reminders or maintenance scheduling. A missing composer or
@@ -948,11 +1032,11 @@ The maintenance ticket authorizes local job operations, not native conversation
 identity; parent/child writeback authority remains in the Backend database reader.
 
 For Skill-driven maintenance, a helper supplied by the current native session
-takes precedence over the Skill's package-relative helper. Cursor supplies its
-runtime generation's helper, executable, and MemoraX home through session and
-reminder context so an imported Skill uses the current client's runner. A supplied
+takes precedence over the Skill's package-relative helper. Cursor and Qoder supply
+their runtime generation's helper, executable, and explicit MemoraX home environment
+through native context so an imported Skill uses the current client's runner. A supplied
 entrypoint that is missing or fails does not authorize a fallback to another
-client. A returned Cursor delegation is passed unchanged to the managed native
+client. A returned native delegation is passed unchanged to the managed
 background subagent; foreground repo-read never authors the bundle. Clients without that context retain the packaged helper convention.
 
 ## 4. Backend Modular Monolith
@@ -1157,7 +1241,7 @@ and
 | MemoraX memory results and Add acceptance | Normalized response from `provider/memorax` | Observability and trace |
 | Persisted current-turn operational state | Client-qualified current-turn records with Session and Turn checks | CLI workspace association and exact recovery; native content is independently validated |
 | Trace history | Client-qualified local trace events | Diagnostics; not native content or general Turn-identity authority |
-| Repo Memory bundle | Repository-local `.repo_memory` files authored through explicit Skill operations or supervised jobs | Backend readiness and client-injected guidance |
+| Repo Memory bundle | One repository-shared mainline baseline published from a validated private snapshot; explicit local bundles remain separate | All worktrees read the same immutable version and verify current source; Backend readiness does not establish artifact validity |
 | Personal Memory | User-owned files under `$MEMORAX_CODE_HOME/personal-memory`: `user-profile/preferences.md` and direct `procedure-memory/*.md` topics | Repository-local `.repo_memory` sidecars, client workspace labels, and reminder delivery do not define personal-memory authority |
 
 #### Native writeback authority
@@ -1176,6 +1260,36 @@ contract coverage, not real-client E2E results.
 | CodeBuddy/WorkBuddy | Correlated native transcript JSONL | [CodeBuddy](packages/ts/memorax-code-backend/test/clients/codebuddy) | [CodeBuddy adapter](packages/ts/memorax-code-codebuddy-adapter/test) |
 | Trae | Validated Turn-ID and correlated `UserPromptSubmit`/`Stop` Hook pair | [Trae](packages/ts/memorax-code-backend/test/clients/trae) | [Trae adapter](packages/ts/memorax-code-trae-adapter/test) |
 | Cursor | Correlated native SQLite turn/steps, completed Stop, and matching final-response digest | [Cursor](packages/ts/memorax-code-backend/test/clients/cursor) | [Cursor adapter](packages/ts/memorax-code-cursor-adapter/test) |
+| Qoder | Exact human `uuid`/`requestSetId`, matching `parentUuid` branch, and final assistant `end_turn` in native transcript JSONL | [Qoder](packages/ts/memorax-code-backend/test/clients/qoder) | [Qoder adapter](packages/ts/memorax-code-qoder-adapter/test) |
+
+Qoder requires a non-meta human record whose UUID and request-set ID both
+match the registered turn, using `humanInput.text` as prompt authority. It
+selects the unique final assistant on that request-set parent chain, requires
+`stop_reason: end_turn`, and reads only text blocks. Session, workspace, and
+sidechain checks apply throughout; duplicate identities, missing links,
+branch ambiguity, partial content, and files changed during reading fail closed.
+The active leaf proves branch membership, not a latest-turn guess. Native
+transcripts are read-only regular files with a bounded 32 MiB read.
+Strict task-notification-shaped Qoder submissions defer turn registration,
+Jev guidance, and reminders. QueryEnd can register a deferred turn only when the
+completed native chain proves an exact original human prompt. Native notifications
+remain excluded; a user who pastes the same notification shape can receive delayed
+automatic writeback but no immediate guidance or reminder for that turn.
+
+Codex selects messages using the rollout Session header and local Turn lifecycle
+boundaries. Assistant passthrough metadata may retain a provider turn ID; it
+does not select or replace the local Turn, and a difference alone does not
+reject its final response. Conflicting user-message metadata and mismatched
+client, Session, or Turn identities in the local coordinator still fail closed.
+
+CodeBuddy and WorkBuddy correlate the Hook prompt digest against native user
+text unchanged, or with CR/LF characters removed for a single input-text block, matching the
+client's Hook text projection. Both forms participate in one candidate set after
+the original transcript byte boundary; more than one candidate fails closed.
+This projection is only for correlation: completed and interrupted content still comes from the
+matching native transcript with its original line breaks. Multi-block inputs
+retain exact prompt-digest matching; spaces, tabs, and Unicode line separators
+are not removed by this compatibility rule.
 
 ### 6.2 State classes and shutdown ownership
 
@@ -1418,6 +1532,13 @@ paths are used below unless a different package or the repository root is named.
 
 Placement rules:
 
+- Native-client CI runners and their adjacent helper tests live in
+  `scripts/ci/<harness>`. CodeBuddy and WorkBuddy share
+  `scripts/ci/codebuddy-workbuddy` because they reuse the same runtime checks.
+  Cross-harness process cleanup tests, Windows PATH utilities, the
+  first-failure evidence recorder and the workflow scenario contract live in
+  `scripts/ci/shared`; repository build, packaging, and release scripts stay
+  in `scripts`. Cursor App image assets remain in `scripts/fixtures/cursor-app`.
 - Cross-capability server composition belongs in `test/app`; wire-level Hook
   protocol behavior belongs in `test/transport/http`.
 - Area-specific fixtures belong in `test/<area>/support`; only helpers truly
@@ -1447,11 +1568,11 @@ Placement rules:
   final-message delivery, canonical-validator wiring, Hook context injection,
   and Backend-authorized worktree selection.
 - Backend, adapter-common, and shared Skill suites discover nested tests
-  recursively. The seven adapter suites currently discover only flat
+  recursively. The eight adapter suites currently discover only flat
   `test/*.test.mjs`; their package scripts must change before tests are nested.
 - Adapter-common and shared Skill suites have independent Make targets without
   separate package manifests. Common changes also require affected consumer
-  coverage: Backend, shared Skill, all seven adapters, and package checks when
+  coverage: Backend, shared Skill, all eight adapters, and package checks when
   staged runtime layout is involved.
 - Before moving, splitting, or renaming tests, search `scripts` and `.github`
   for explicit paths and test-name patterns.
@@ -1474,7 +1595,7 @@ contracts without introducing a separate adapter test framework.
 | Hook HTTP or adapter-visible command schema | `test/transport/http` and affected adapter suites | Backend source boundaries and package shape when staged | Backend + Adapter-common/shared Hook; add Install/artifacts when staged package shape changes |
 | Backend root entrypoint or compatibility facade | Entrypoint, architecture, and npm package tests | Source boundaries and package shape | Backend + Install/artifacts |
 | Client-native parsing or identity | `test/clients/<client>` | Source boundaries | Backend |
-| Client adapter plugin or Hook deployment | Matching adapter suite and affected Backend contract tests | Package shape when staged | Codex, Claude Code, DSH, OpenCode, CodeBuddy/WorkBuddy, Trae, or Cursor; add Adapter-common/shared Hook for shared Hook source and Install/artifacts for staged package shape |
+| Client adapter plugin or Hook deployment | Matching adapter suite and affected Backend contract tests | Package shape when staged | Codex, Claude Code, DSH, OpenCode, CodeBuddy/WorkBuddy, Trae, Cursor, or Qoder; add Adapter-common/shared Hook for shared Hook source and Install/artifacts for staged package shape |
 | Adapter-common | Direct common contracts and affected Backend, shared Skill, and adapter tests | Package shape when staged layout changes | Adapter-common/shared Hook; add Install/artifacts when staged runtime or package layout changes |
 | MemoraX or Jev provider, trace, or outbound transport | Matching Backend tests | Local-only trace boundary | Backend + Trace/local-only boundary |
 | Test relocation | Moved owning suite | Platform-specific consumers | Matching named profile |

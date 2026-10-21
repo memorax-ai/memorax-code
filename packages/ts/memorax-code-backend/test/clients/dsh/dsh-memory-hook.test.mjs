@@ -17,7 +17,7 @@ import {
   waitForFile,
   withEnv,
 } from "../codex/support/memory-hook-fixtures.mjs";
-import { dshTurnInterval } from "./support/dsh-session-fixtures.mjs";
+import { dshFormat4TurnInterval, dshTurnInterval } from "./support/dsh-session-fixtures.mjs";
 
 const TEST_WORKSPACE = fileURLToPath(new URL("../../..", import.meta.url));
 const TEST_REPO_ROOT = resolve(TEST_WORKSPACE, "../../..");
@@ -174,7 +174,7 @@ test("DSH leaves pending write quota notices unclaimed for other clients", async
   }
 });
 
-test("Backend runs DSH Turn tracking, normalized Trace, and Add from one native Turn interval", async (t) => {
+test("Backend runs DSH Turn tracking, normalized Trace, and Add from one native format 4 Turn interval", async (t) => {
   const runtimeRoot = await mkdtemp(join(tmpdir(), "memorax-code-dsh-http-runtime-"));
   t.after(() => rm(runtimeRoot, { recursive: true, force: true }));
   await mkdir(join(runtimeRoot, "src"));
@@ -191,7 +191,7 @@ test("Backend runs DSH Turn tracking, normalized Trace, and Add from one native 
   }
   const { createHttpBackendClient } = await import(pathToFileURL(join(runtimeRoot, "src", "http-client.mjs")));
   const sessionHome = await mkdtemp(join(tmpdir(), "memorax-code-dsh-hook-"));
-  const interval = dshTurnInterval({
+  const interval = dshFormat4TurnInterval({
     sessionId: "session-dsh-http",
     cwd: TEST_WORKSPACE,
     turn: 3,
@@ -281,6 +281,13 @@ test("Backend runs DSH Turn tracking, normalized Trace, and Add from one native 
       reason: "turn_metadata_mismatch",
     });
 
+    const retiredSource = structuredClone(interval);
+    retiredSource.events[3].data.source = { kind: "plugin", plugin: "memorax-code-dsh" };
+    assert.deepEqual(await backendClient.writebackTurn({
+      version: 1, client: "dsh", ...retiredSource,
+    }), { ok: true, scheduled: false, reason: "event_invalid" });
+    assert.equal(requests.length, 0);
+
     const writeback = await backendClient.writebackTurn({
       version: 1,
       client: "dsh",
@@ -296,7 +303,7 @@ test("Backend runs DSH Turn tracking, normalized Trace, and Add from one native 
       { role: "assistant", content: "I will inspect.\n\nThe adapter is ready." },
     ]);
     assert.deepEqual(requests[0].body.messages.map(({ timestamp }) => timestamp), [
-      1_700_000_000_001,
+      1_700_000_000_002,
       1_700_000_000_010,
     ]);
     assert.equal(JSON.stringify(requests[0].body).includes("recalled memory"), false);
@@ -354,14 +361,16 @@ test("Backend runs DSH Turn tracking, normalized Trace, and Add from one native 
   }
 });
 
-test("Backend recovers DSH turn metadata and writeback across a restart", async () => {
+test("Backend recovers DSH format 4 fork turn metadata and writeback across a restart", async () => {
   const sessionHome = await mkdtemp(join(tmpdir(), "memorax-code-dsh-recovery-"));
-  const interval = dshTurnInterval({
+  const interval = dshFormat4TurnInterval({
     sessionId: "session-dsh-recovered",
     cwd: TEST_WORKSPACE,
     turn: 2,
     startSeq: 20,
   });
+  interval.sessionHeader.isSeeded = true;
+  interval.sessionHeader.parentSession = "ordinary-parent";
   const { fetchImpl, requests } = memoraxAddFetch();
   const restoreEnv = withEnv({
     MEMORAX_CODE_HOME: sessionHome,

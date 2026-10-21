@@ -21,6 +21,7 @@ export type MemoraxCodeConfig = Readonly<{
     workbuddy?: boolean;
     trae?: boolean;
     cursor?: boolean;
+    qoder?: boolean;
   }>;
   memorax?: Readonly<{
     endpoint?: string;
@@ -136,6 +137,13 @@ export type MemoraxCodeConfig = Readonly<{
       max_event_chars?: number;
       max_file_bytes?: number;
     }>;
+    qoder?: Readonly<{
+      enabled?: boolean;
+      capture_content?: boolean;
+      retention_days?: number;
+      max_event_chars?: number;
+      max_file_bytes?: number;
+    }>;
   }>;
 }>;
 
@@ -183,9 +191,9 @@ export function renderDefaultMemoraxCodeConfig(): string {
     "",
     "# Relevant repo reads batch generated repo-memory updates by commit count or elapsed time.",
     "[memory.repo_update]",
-    'policy = "adaptive" # every-commit / commit-count / daily / pull-request / pull-request-or-daily / adaptive.',
+    'policy = "daily" # every-commit / commit-count / daily / pull-request / pull-request-or-daily / adaptive.',
     "commit_threshold = 5 # Pending local commits needed by commit-count and adaptive.",
-    "cooldown_hours = 24 # Pending-commit age used by daily, pull-request-or-daily, and adaptive.",
+    "cooldown_hours = 72 # Hours since the last successful update; used by daily, pull-request-or-daily, and adaptive.",
     "",
     "# Local traces may contain prompts, responses, recalled memories, and local paths.",
     "[trace.codex]",
@@ -219,6 +227,10 @@ export function renderDefaultMemoraxCodeConfig(): string {
     "[trace.cursor]",
     "enabled = true # Enable local Cursor session memory trace collection.",
     "capture_content = true # Store content in local Cursor trace events.",
+    "",
+    "[trace.qoder]",
+    "enabled = true # Enable local Qoder session memory trace collection.",
+    "capture_content = true # Store content in local Qoder trace events.",
     "",
   ].join("\n");
 }
@@ -308,6 +320,7 @@ function normalizeMemoraxCodeConfig(value: unknown): MemoraxCodeConfig {
   const traceWorkBuddy = recordValue(trace?.workbuddy) ?? traceCodeBuddy;
   const traceTrae = recordValue(trace?.trae);
   const traceCursor = recordValue(trace?.cursor);
+  const traceQoder = recordValue(trace?.qoder);
 
   return (prune({
     clients: prune({
@@ -319,6 +332,7 @@ function normalizeMemoraxCodeConfig(value: unknown): MemoraxCodeConfig {
       workbuddy: booleanField(clients, "workbuddy"),
       trae: booleanField(clients, "trae"),
       cursor: booleanField(clients, "cursor"),
+      qoder: booleanField(clients, "qoder"),
     }),
     memorax: prune({
       endpoint: stringField(memorax, "endpoint"),
@@ -428,6 +442,13 @@ function normalizeMemoraxCodeConfig(value: unknown): MemoraxCodeConfig {
         max_event_chars: numberField(traceCursor, "max_event_chars"),
         max_file_bytes: numberField(traceCursor, "max_file_bytes"),
       }),
+      qoder: prune({
+        enabled: booleanField(traceQoder, "enabled"),
+        capture_content: booleanField(traceQoder, "capture_content"),
+        retention_days: numberField(traceQoder, "retention_days"),
+        max_event_chars: numberField(traceQoder, "max_event_chars"),
+        max_file_bytes: numberField(traceQoder, "max_file_bytes"),
+      }),
     }),
   }) ?? {}) as MemoraxCodeConfig;
 }
@@ -440,7 +461,7 @@ function validateRawLifecycleConfig(value: unknown, path: string): void {
   if (rawClients !== undefined) {
     const clients = tableValue(rawClients);
     if (!clients) throw invalidLifecycleConfig(path, "clients must be a table");
-    for (const field of ["codex", "claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor"] as const) {
+    for (const field of ["codex", "claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor", "qoder"] as const) {
       if (clients[field] !== undefined && typeof clients[field] !== "boolean") {
         throw invalidLifecycleConfig(path, `clients.${field} must be a boolean`);
       }

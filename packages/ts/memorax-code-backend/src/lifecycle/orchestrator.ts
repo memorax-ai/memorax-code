@@ -48,6 +48,7 @@ import { openCodeAdapterLifecycle } from "../clients/opencode/lifecycle.js";
 import { codeBuddyAdapterLifecycle, workBuddyAdapterLifecycle, resolveCodeBuddyClientSelection } from "../clients/codebuddy/lifecycle.js";
 import { traeAdapterLifecycle } from "../clients/trae/lifecycle.js";
 import { cursorAdapterLifecycle } from "../clients/cursor/lifecycle.js";
+import { qoderAdapterLifecycle } from "../clients/qoder/lifecycle.js";
 import type {
   AdapterReport,
 } from "./participant.js";
@@ -76,6 +77,7 @@ export type MemoraxCodeLifecycleReport = ClientAdapterReports & {
   workbuddyPlugin?: Awaited<ReturnType<typeof workBuddyAdapterLifecycle.remove>>;
   traePlugin?: Awaited<ReturnType<typeof traeAdapterLifecycle.remove>>;
   cursorPlugin?: Awaited<ReturnType<typeof cursorAdapterLifecycle.remove>>;
+  qoderPlugin?: Awaited<ReturnType<typeof qoderAdapterLifecycle.remove>>;
   npmPackageRemoval?: NpmPackageRemovalReport;
   removesPlugin?: boolean;
   removesUserState?: false;
@@ -173,7 +175,10 @@ export async function collectMemoraxCodeStatus(
   const cursorAdapter = clients.cursor
     ? await cursorAdapterLifecycle.status({ argv, serviceOptions, backendUrl })
     : undefined;
-  const adapters = lifecycleAdapterReports({ codexAdapter, claudeAdapter, dshAdapter, opencodeAdapter, codebuddyAdapter, workbuddyAdapter, traeAdapter, cursorAdapter });
+  const qoderAdapter = clients.qoder
+    ? await qoderAdapterLifecycle.status({ argv, serviceOptions, backendUrl })
+    : undefined;
+  const adapters = lifecycleAdapterReports({ codexAdapter, claudeAdapter, dshAdapter, opencodeAdapter, codebuddyAdapter, workbuddyAdapter, traeAdapter, cursorAdapter, qoderAdapter });
   const optionalDshUnavailable = isOptionalUnavailableDshAdapter(dshAdapter);
   return {
     ok: backend.ok
@@ -192,6 +197,7 @@ export async function collectMemoraxCodeStatus(
     ...(workbuddyAdapter ? { workbuddyAdapter } : {}),
     ...(traeAdapter ? { traeAdapter } : {}),
     ...(cursorAdapter ? { cursorAdapter } : {}),
+    ...(qoderAdapter ? { qoderAdapter } : {}),
   };
 }
 
@@ -366,6 +372,9 @@ async function executeMemoraxCodeStart(
   const deselectedCursor = previousClients?.cursor && !clients.cursor
     ? await cursorAdapterLifecycle.disable({ argv, serviceOptions })
     : undefined;
+  const deselectedQoder = previousClients?.qoder && !clients.qoder
+    ? await qoderAdapterLifecycle.disable({ argv, serviceOptions })
+    : undefined;
   if (deselectedCodex?.ok === false
     || deselectedClaude?.ok === false
     || deselectedDsh?.ok === false
@@ -373,7 +382,8 @@ async function executeMemoraxCodeStart(
     || deselectedCodeBuddy?.ok === false
     || deselectedWorkBuddy?.ok === false
     || deselectedTrae?.ok === false
-    || deselectedCursor?.ok === false) {
+    || deselectedCursor?.ok === false
+    || deselectedQoder?.ok === false) {
     const recovery = await recoverPreparationFailure("adapter_disable_failed");
     return {
       ok: false,
@@ -389,6 +399,7 @@ async function executeMemoraxCodeStart(
       ...(deselectedWorkBuddy ? { workbuddyAdapter: deselectedWorkBuddy } : {}),
       ...(deselectedTrae ? { traeAdapter: deselectedTrae } : {}),
       ...(deselectedCursor ? { cursorAdapter: deselectedCursor } : {}),
+      ...(deselectedQoder ? { qoderAdapter: deselectedQoder } : {}),
     };
   }
   // The marker is a conservative cleanup scope, not a readiness signal. Persist
@@ -439,6 +450,9 @@ async function executeMemoraxCodeStart(
   const cursorAdapter = clients.cursor
     ? await cursorAdapterLifecycle.prepareEnable({ argv, serviceOptions, backendUrl })
     : undefined;
+  const qoderAdapter = clients.qoder
+    ? await qoderAdapterLifecycle.prepareEnable({ argv, serviceOptions, backendUrl })
+    : undefined;
   if (opencodeAdapter?.ok === false) {
     const recovery = await recoverPreparationFailure("opencode_adapter_enable_failed");
     return {
@@ -453,6 +467,7 @@ async function executeMemoraxCodeStart(
       ...(workbuddyAdapter ? { workbuddyAdapter } : {}),
       ...(traeAdapter ? { traeAdapter } : {}),
       ...(cursorAdapter ? { cursorAdapter } : {}),
+      ...(qoderAdapter ? { qoderAdapter } : {}),
     };
   }
   if (codebuddyAdapter?.ok === false) {
@@ -469,6 +484,7 @@ async function executeMemoraxCodeStart(
       ...(workbuddyAdapter ? { workbuddyAdapter } : {}),
       ...(traeAdapter ? { traeAdapter } : {}),
       ...(cursorAdapter ? { cursorAdapter } : {}),
+      ...(qoderAdapter ? { qoderAdapter } : {}),
     };
   }
   if (workbuddyAdapter?.ok === false) {
@@ -485,6 +501,7 @@ async function executeMemoraxCodeStart(
       ...(codebuddyAdapter ? { codebuddyAdapter } : {}),
       ...(traeAdapter ? { traeAdapter } : {}),
       ...(cursorAdapter ? { cursorAdapter } : {}),
+      ...(qoderAdapter ? { qoderAdapter } : {}),
     };
   }
   if (traeAdapter?.ok === false) {
@@ -501,6 +518,7 @@ async function executeMemoraxCodeStart(
       ...(workbuddyAdapter ? { workbuddyAdapter } : {}),
       traeAdapter,
       ...(cursorAdapter ? { cursorAdapter } : {}),
+      ...(qoderAdapter ? { qoderAdapter } : {}),
     };
   }
   if (cursorAdapter?.ok === false) {
@@ -517,6 +535,24 @@ async function executeMemoraxCodeStart(
       ...(workbuddyAdapter ? { workbuddyAdapter } : {}),
       ...(traeAdapter ? { traeAdapter } : {}),
       cursorAdapter,
+      ...(qoderAdapter ? { qoderAdapter } : {}),
+    };
+  }
+  if (qoderAdapter?.ok === false) {
+    const recovery = await recoverPreparationFailure("qoder_adapter_enable_failed");
+    return {
+      ok: false,
+      action: "start",
+      backend: recovery.backend,
+      ...(codexAdapter ? { codexAdapter } : {}),
+      ...(claudeAdapter ? { claudeAdapter } : {}),
+      ...(recovery.dshAdapter ? { dshAdapter: recovery.dshAdapter } : {}),
+      ...(opencodeAdapter ? { opencodeAdapter } : {}),
+      ...(codebuddyAdapter ? { codebuddyAdapter } : {}),
+      ...(workbuddyAdapter ? { workbuddyAdapter } : {}),
+      ...(traeAdapter ? { traeAdapter } : {}),
+      ...(cursorAdapter ? { cursorAdapter } : {}),
+      qoderAdapter,
     };
   }
   const preparedDshAdapter = markOptionalDshAdapter(
@@ -541,6 +577,7 @@ async function executeMemoraxCodeStart(
       ...(workbuddyAdapter ? { workbuddyAdapter } : {}),
       ...(traeAdapter ? { traeAdapter } : {}),
       ...(cursorAdapter ? { cursorAdapter } : {}),
+      ...(qoderAdapter ? { qoderAdapter } : {}),
     };
   }
   const backend = await startBackendService(serviceOptions);
@@ -563,6 +600,9 @@ async function executeMemoraxCodeStart(
     const disabledCursor = cursorAdapter
       ? await cursorAdapterLifecycle.disable({ argv, serviceOptions })
       : undefined;
+    const disabledQoder = qoderAdapter
+      ? await qoderAdapterLifecycle.disable({ argv, serviceOptions })
+      : undefined;
     return {
       ok: false,
       action: "start",
@@ -575,6 +615,7 @@ async function executeMemoraxCodeStart(
       ...(disabledWorkBuddy ? { workbuddyAdapter: disabledWorkBuddy } : {}),
       ...(disabledTrae ? { traeAdapter: disabledTrae } : {}),
       ...(disabledCursor ? { cursorAdapter: disabledCursor } : {}),
+      ...(disabledQoder ? { qoderAdapter: disabledQoder } : {}),
     };
   }
   const dshAdapter = markOptionalDshAdapter(preparedDshAdapter?.installed === true
@@ -586,6 +627,7 @@ async function executeMemoraxCodeStart(
       && (!codebuddyAdapter || isAdapterReady(codebuddyAdapter))
       && (!workbuddyAdapter || isAdapterReady(workbuddyAdapter))
       && (!cursorAdapter || isAdapterReady(cursorAdapter))
+      && (!qoderAdapter || isAdapterReady(qoderAdapter))
       && (!dshAdapter || isAdapterReady(dshAdapter) || optionalDshUnavailable),
     action: "start",
     ...(optionalDshUnavailable ? { degraded: true } : {}),
@@ -598,6 +640,7 @@ async function executeMemoraxCodeStart(
     ...(workbuddyAdapter ? { workbuddyAdapter } : {}),
     ...(traeAdapter ? { traeAdapter } : {}),
     ...(cursorAdapter ? { cursorAdapter } : {}),
+    ...(qoderAdapter ? { qoderAdapter } : {}),
   };
 }
 
@@ -660,6 +703,7 @@ async function executeMemoraxCodeStop(
       workbuddy: activeClients.workbuddy && !clients.workbuddy,
       trae: activeClients.trae && !clients.trae,
       cursor: activeClients.cursor && !clients.cursor,
+      qoder: activeClients.qoder && !clients.qoder,
     }
     : undefined;
   const hasRemainingClients = LIFECYCLE_CLIENTS.some(({ id }) => remaining?.[id] === true);
@@ -728,7 +772,10 @@ async function executeMemoraxCodeStop(
   const cursorAdapter = clients.cursor
     ? await cursorAdapterLifecycle.disable({ argv, serviceOptions })
     : undefined;
-  const adaptersOk = lifecycleAdapterReports({ codexAdapter, claudeAdapter, dshAdapter, opencodeAdapter, codebuddyAdapter, workbuddyAdapter, traeAdapter, cursorAdapter })
+  const qoderAdapter = clients.qoder
+    ? await qoderAdapterLifecycle.disable({ argv, serviceOptions })
+    : undefined;
+  const adaptersOk = lifecycleAdapterReports({ codexAdapter, claudeAdapter, dshAdapter, opencodeAdapter, codebuddyAdapter, workbuddyAdapter, traeAdapter, cursorAdapter, qoderAdapter })
     .every(({ report }) => report.ok !== false);
   const backend = stoppedBackend
     ?? (adaptersOk
@@ -748,6 +795,7 @@ async function executeMemoraxCodeStop(
       ...(workbuddyAdapter ? { workbuddyAdapter } : {}),
       ...(traeAdapter ? { traeAdapter } : {}),
       ...(cursorAdapter ? { cursorAdapter } : {}),
+      ...(qoderAdapter ? { qoderAdapter } : {}),
     },
     remainingClients: packageReplacement
       ? activeClients
@@ -888,6 +936,9 @@ async function executeMemoraxCodeUninstall(
   const cursorPlugin = clients.cursor
     ? await cursorAdapterLifecycle.remove({ argv, serviceOptions })
     : undefined;
+  const qoderPlugin = clients.qoder
+    ? await qoderAdapterLifecycle.remove({ argv, serviceOptions })
+    : undefined;
   const pluginCleanupOk = codexPlugin?.ok !== false
     && claudePlugin?.ok !== false
     && dshPlugin?.ok !== false
@@ -895,7 +946,8 @@ async function executeMemoraxCodeUninstall(
     && codebuddyPlugin?.ok !== false
     && workbuddyPlugin?.ok !== false
     && traePlugin?.ok !== false
-    && cursorPlugin?.ok !== false;
+    && cursorPlugin?.ok !== false
+    && qoderPlugin?.ok !== false;
   const npmPackageRemoval = !pluginCleanupOk
     ? skippedNpmPackageRemoval("plugin_cleanup_failed")
     : canRemoveSharedPackage
@@ -922,6 +974,7 @@ async function executeMemoraxCodeUninstall(
     ...(workbuddyPlugin ? { workbuddyPlugin } : {}),
     ...(traePlugin ? { traePlugin } : {}),
     ...(cursorPlugin ? { cursorPlugin } : {}),
+    ...(qoderPlugin ? { qoderPlugin } : {}),
     npmPackageRemoval,
     removesPlugin: codexPlugin?.ok === true
       || claudePlugin?.ok === true
@@ -930,7 +983,8 @@ async function executeMemoraxCodeUninstall(
       || codebuddyPlugin?.ok === true
       || workbuddyPlugin?.ok === true
       || traePlugin?.ok === true
-      || cursorPlugin?.ok === true,
+      || cursorPlugin?.ok === true
+      || qoderPlugin?.ok === true,
     removesUserState: false,
   };
 }
@@ -1090,7 +1144,8 @@ function includesManagedClients(selection: ManagedClients, required: ManagedClie
     && (!required.codebuddy || selection.codebuddy === true)
     && (!required.workbuddy || selection.workbuddy === true)
     && (!required.trae || selection.trae === true)
-    && (!required.cursor || selection.cursor === true);
+    && (!required.cursor || selection.cursor === true)
+    && (!required.qoder || selection.qoder === true);
 }
 
 function isPackageReplacement(): boolean {

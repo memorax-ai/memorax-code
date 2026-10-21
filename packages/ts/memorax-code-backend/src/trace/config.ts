@@ -5,7 +5,7 @@ import { loadMemoraxCodeConfig, type MemoraxCodeConfig } from "../config/memorax
 import { isTraceClient, type TraceClient } from "./context.js";
 
 export const TRACE_CLIENTS: readonly TraceClient[] = ["codex", "claude", "dsh", "opencode"];
-export const TRACE_RUNTIME_CLIENTS: readonly TraceClient[] = [...TRACE_CLIENTS, "codebuddy", "workbuddy", "trae", "cursor"];
+export const TRACE_RUNTIME_CLIENTS: readonly TraceClient[] = [...TRACE_CLIENTS, "codebuddy", "workbuddy", "trae", "cursor", "qoder"];
 
 export type ClientTraceConfig = Readonly<{
   enabled: boolean;
@@ -88,6 +88,7 @@ const TRACE_DEFAULT_CONFIGS: Readonly<Record<TraceClient, ClientTraceConfig>> = 
   workbuddy: CODEBUDDY_TRACE_DEFAULT_CONFIG,
   trae: TRAE_TRACE_DEFAULT_CONFIG,
   cursor: OPENCODE_TRACE_DEFAULT_CONFIG,
+  qoder: OPENCODE_TRACE_DEFAULT_CONFIG,
 };
 
 const TRACE_ENV_PREFIXES: Readonly<Record<TraceClient, string>> = {
@@ -99,6 +100,7 @@ const TRACE_ENV_PREFIXES: Readonly<Record<TraceClient, string>> = {
   workbuddy: "MEMORAX_CODE_WORKBUDDY_TRACE",
   trae: "MEMORAX_CODE_TRAE_TRACE",
   cursor: "MEMORAX_CODE_CURSOR_TRACE",
+  qoder: "MEMORAX_CODE_QODER_TRACE",
 };
 
 export const TRACE_CLEANUP_DEBOUNCE_MS = 60 * 60 * 1000;

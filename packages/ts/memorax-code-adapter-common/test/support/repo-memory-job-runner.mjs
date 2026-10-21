@@ -2,18 +2,24 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-const [repo, finalMessagePath] = process.argv.slice(2);
+const [repo, finalMessagePath, memoryRoot = repo] = process.argv.slice(2);
 const behavior = process.env.REPO_MEMORY_TEST_BEHAVIOR || "complete";
 
 switch (behavior) {
   case "wait":
     await new Promise((resolve) => setTimeout(resolve, 30_000));
     break;
-  case "complete": {
-    const memory = join(repo, ".repo_memory");
+  case "complete":
+  case "complete-dirty":
+  case "complete-move-origin":
+  case "complete-change-branch": {
+    const memory = join(memoryRoot, ".repo_memory");
     mkdirSync(memory, { recursive: true });
     const head = process.env.MEMORAX_CODE_REPO_MEMORY_SNAPSHOT_HEAD;
     writeFileSync(join(memory, "PROFILE.md"), `---\nfixture_valid: true\nlocal_head: "${head}"\n---\n# Profile\n`);
+    if (behavior === "complete-dirty") writeFileSync(join(repo, "during-job.txt"), "source changed\n");
+    if (behavior === "complete-move-origin") execFileSync("git", ["update-ref", "refs/remotes/origin/trunk", "HEAD^"], { cwd: repo });
+    if (behavior === "complete-change-branch") execFileSync("git", ["switch", "-c", "during-job"], { cwd: repo });
     break;
   }
   case "change-head":
@@ -23,6 +29,9 @@ switch (behavior) {
     break;
   case "break-git":
     rmSync(join(repo, ".git", "HEAD"));
+    break;
+  case "invalid-profile":
+    writeFileSync(join(memoryRoot, ".repo_memory/PROFILE.md"), "invalid profile\n");
     break;
   case "final-only":
     break;

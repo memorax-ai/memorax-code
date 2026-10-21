@@ -70,6 +70,11 @@ test("seeded MemoraX Code config exposes high-signal choices without a tuning ca
   assert.match(config, /\[memory\.add\]\noutput_language = "zh" # Language for newly generated MemoraX memories\./);
   assert.match(config, /interval_turns = 5 # Show the MemoraX Code skill reminder every N native client turns, starting on the first turn\./);
   assert.match(config, /\[memory\.repo_update\]/);
+  assert.deepEqual(loadMemoraxCodeConfig(root).memory.repo_update, {
+    policy: "daily",
+    commit_threshold: 5,
+    cooldown_hours: 72,
+  });
   assert.match(config, /\[trace\.codex\]/);
   assert.match(config, /enabled = true # Enable local Codex session memory trace collection\./);
   assert.match(config, /capture_content = true # Store content in local Codex trace events\./);

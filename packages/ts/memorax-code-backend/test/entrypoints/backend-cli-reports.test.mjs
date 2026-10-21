@@ -88,6 +88,7 @@ for (const { key, name, label } of [
   { key: "workbuddyAdapter", name: "WorkBuddy", label: "WorkBuddy" },
   { key: "traeAdapter", name: "Trae", label: "Trae" },
   { key: "cursorAdapter", name: "Cursor", label: "Cursor" },
+  { key: "qoderAdapter", name: "Qoder", label: "Qoder" },
 ]) {
   test(`${name}-only lifecycle guidance describes the changed integration`, (t) => {
     const started = captureReport(t, printLifecycleResult, {
@@ -132,6 +133,46 @@ for (const { key, name, label } of [
     assert.ok(status.includes(`${label} adapter is not enabled.`));
     assert.doesNotMatch(status, /MemoraX Code needs attention/);
   });
+}
+
+for (const action of ["start", "restart", "status"]) {
+  for (const mixed of [false, true]) {
+    test(`Qoder ${action} guidance distinguishes activation from an unchanged observed runtime${mixed ? " with other clients" : ""}`, (t) => {
+      for (const { name, changed, runtimeObserved, activationRequired } of [
+        { name: "first activation", changed: true, runtimeObserved: false, activationRequired: true },
+        { name: "changed artifacts", changed: true, runtimeObserved: true, activationRequired: true },
+        { name: "not yet observed", changed: false, runtimeObserved: false, activationRequired: true },
+        { name: "observation unavailable", changed: false, runtimeObserved: undefined, activationRequired: true },
+        { name: "unchanged observed runtime", changed: false, runtimeObserved: true, activationRequired: false },
+      ]) {
+        const report = {
+          ok: true,
+          action,
+          backend,
+          ...(mixed ? { codexAdapter: readyAdapter } : {}),
+          qoderAdapter: {
+            ...readyAdapter,
+            changed,
+            qoderSkills: { ok: true, status: "installed" },
+            qoderHooks: { ok: true, configured: true, runtimeObserved, status: runtimeObserved ? "observed" : "unverified" },
+          },
+        };
+        const before = structuredClone(report);
+        const output = captureReport(t, action === "status" ? printMemoraxCodeStatus : printLifecycleResult, report);
+        assert.match(output, /Qoder adapter: ok integration=hooks skills=installed/, name);
+        if (activationRequired) {
+          assert.match(output, /Restart Qoder and open a new task to load the managed Hooks, Skill, and background subagent[.]/, name);
+          assert.doesNotMatch(output, /Restart or refresh a client/, name);
+          if (mixed) assert.match(output, /Restart or refresh another client/, name);
+          else assert.doesNotMatch(output, /Restart or refresh/, name);
+        } else {
+          assert.doesNotMatch(output, /Restart Qoder and open a new task/, name);
+          assert.match(output, /Restart or refresh a client (?:only )?if/, name);
+        }
+        assert.deepEqual(report, before, name);
+      }
+    });
+  }
 }
 
 test("Trae activation remains explicit before a Hook has been observed", (t) => {
@@ -192,7 +233,7 @@ test("adapter report output preserves all supported client labels and summary fi
     backend,
     codexAdapter: { ...readyAdapter, codexSkills: { status: "ok" } },
     claudeAdapter: { ...readyAdapter, claudeSkills: { status: "ok" } },
-    dshAdapter: { ...readyAdapter, integration: "plugin", version: "1.0.0", dshVersionTested: false },
+    dshAdapter: { ...readyAdapter, integration: "plugin", version: "1.0.0" },
     opencodeAdapter: { ...readyAdapter, integration: "plugin", opencodeSkills: { status: "ok" } },
     codebuddyAdapter: { ...readyAdapter, codebuddySkills: { status: "ok" }, codebuddyHooks: { status: "observed" } },
     workbuddyAdapter: { ...readyAdapter, codebuddySkills: { status: "ok" }, codebuddyHooks: { status: "observed" } },
@@ -201,7 +242,7 @@ test("adapter report output preserves all supported client labels and summary fi
   assert.deepEqual(output.split("\n").filter((line) => line.includes(" adapter:")), [
     "[MemoraX Code Backend]: Codex adapter: ok integration=hooks skills=ok",
     "[MemoraX Code Backend]: Claude adapter: ok integration=hooks skills=ok",
-    "[MemoraX Code Backend]: DSH adapter: ok integration=plugin version=1.0.0 tested=false",
+    "[MemoraX Code Backend]: DSH adapter: ok integration=plugin version=1.0.0",
     "[MemoraX Code Backend]: OpenCode adapter: ok integration=plugin skills=ok",
     "[MemoraX Code Backend]: CodeBuddy adapter: ok integration=hooks skills=ok hook-runtime=observed",
     "[MemoraX Code Backend]: WorkBuddy adapter: ok integration=hooks skills=ok hook-runtime=observed",

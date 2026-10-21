@@ -11,8 +11,8 @@ const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const runtimeHookPath = join(packageRoot, "hooks", "runtime-hook.mjs");
 const hookPath = [runtimeHookPath, "memory-skill-reminder"];
 const captureHookPath = [runtimeHookPath, "capture-cwd"];
-const MEMORY_REMINDER_CONTEXT = "MemoraX Code reminder: proactively invoke $memorax-code whenever coding memory might help, even when uncertain; follow the skill's router to decide whether any memory operation is needed. Also use $memorax-code for global personal memory, and classify the authority before reading or writing.";
-const PROFILE_REMINDER_CONTEXT = "MemoraX Code personal-memory reminder: Use $memorax-code when the user states a durable identity or interaction preference, asks to list or recall stored personal memory, or explicitly asks to save, update, forget, or delete it. Route reusable action sequences and work rules to procedure memory; do not store repository facts, one-off task details, or secrets.";
+const MEMORY_REMINDER_CONTEXT = "MemoraX Code reminder: proactively invoke $memorax-code whenever coding memory might help, even when uncertain; follow the skill's router to decide whether any memory operation is needed. Also use $memorax-code for global personal memory, including working rules or preferences the user wants kept, and classify the authority before reading or writing. When a personal-memory save accompanies another task, write it only after every task action has finished, do not mention the planned save in preambles or progress messages, and report it only at the end of the final answer.";
+const PROFILE_REMINDER_CONTEXT = "MemoraX Code personal-memory reminder: Use $memorax-code when the user states a working rule or preference meant to keep applying after the current task, judged by intent rather than by trigger words such as remember, or asks to list, recall, update, forget, or delete personal memory. Route how-to-work rules to procedure memory and communication or presentation preferences to profile memory; do not store repository facts, one-off task details, or secrets. When a personal-memory save accompanies another task, write it only after every task action has finished, do not mention the planned save in preambles or progress messages, and report it only at the end of the final answer.";
 const authorizedWorktreeOverrides = new Map();
 const authorizedGuidanceDecisions = new Map();
 const authorizedBackendRequests = [];
@@ -82,6 +82,7 @@ test("active preferences join the first prompt and the first prompt after compac
     assert.match(firstContext, /begin the final answer with one brief opening paragraph/);
     assert.match(firstContext, /successful explicit `memorax-cli search`/);
     assert.match(firstContext, /Do not report active Add, automatic writeback, or Repo Memory build or update/);
+    assert.match(firstContext, /A personal-memory save, update, or deletion made in the current turn is not memory that helped the current turn/);
     assert.doesNotMatch(firstContext, /memorax-impact/);
     for (const index of [1, 2]) assert.equal(outputs[index].stdout, "");
     const laterCadenceContext = reminderContext(outputs[3].stdout);

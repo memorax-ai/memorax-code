@@ -13,6 +13,7 @@ memorax-code-opencode doctor
 memorax-code-codebuddy status --json
 memorax-code-trae status --json
 memorax-code-cursor status --json
+memorax-code-qoder status --json
 memorax-code logs
 ```
 
@@ -23,10 +24,10 @@ same command once with `memorax-cli.cmd`, preserving its arguments and working
 directory. Do not run `Set-ExecutionPolicy` for MemoraX commands.
 
 `memorax-code status` checks the Backend and selected client integrations,
-including DSH, OpenCode, CodeBuddy/WorkBuddy, Trae, and Cursor. `memorax-cli status`
+including DSH, OpenCode, CodeBuddy/WorkBuddy, Trae, Cursor, and Qoder. `memorax-cli status`
 checks credentials, scope, and memory switches without printing secrets.
 Codex, Claude Code, and OpenCode provide client-specific `doctor` commands;
-CodeBuddy/WorkBuddy, Trae, and Cursor provide adapter status commands, and DSH uses the
+CodeBuddy/WorkBuddy, Trae, Cursor, and Qoder provide adapter status commands, and DSH uses the
 shared lifecycle status.
 
 Lifecycle summaries include every selected client. A configured integration
@@ -458,6 +459,11 @@ If no diagnostic explains the symptom, check each stage in order:
    instead requires its validated `UserPromptSubmit`/`Stop` pair. Cursor requires
    matching native database content and a completed Hook;
    see [Cursor writeback checks](#cursor-hooks-skill-or-automatic-writeback-is-unavailable).
+   For Codex, a provider-supplied assistant internal turn ID can differ from
+   the local rollout turn ID without blocking writeback. A remaining
+   `turn_metadata_mismatch` can indicate conflicting user-message metadata or
+   a mismatch between locally registered and completed client/session/turn
+   identities; those checks still reject writeback.
 3. Check whether the turn was rejected before buffering. In
    `memory.automatic_writeback`, `skipReason=disabled` means the effective
    settings rejected it; `workspace_scope_*` reasons require the scope checks
@@ -764,6 +770,45 @@ Start an ordinary prompt to establish fresh authority, or explicitly save a
 selected lesson through the Skill. See
 [Cursor configuration](configuration.md#cursor-integration-paths).
 
+## Qoder Hooks or Skill is inactive
+
+```bash
+memorax-code start --clients qoder
+memorax-code-qoder status --json
+```
+
+Use the same `QODER_CONFIG_DIR` as Qoder (default `~/.qoder`). Setup writes
+managed entries to `settings.json` and the shared Skill to
+`skills/memorax-code/`, plus the managed `agents/memorax-repo-memory.md` subagent.
+It does not require a Qoder CLI installation or plugin
+registry edits. Restart Qoder and begin a new task. The verified native target
+is Desktop 0.4.3/runtime 1.1.64; CLI and IDE behavior needs separate validation.
+
+A configured Hook with `hook-runtime=unverified` has not yet been observed for
+the installed runtime. Run a small task, then check status again. Qoder's
+Settings → Hooks view proves only that configuration is present. Preserve
+unrelated settings when repairing invalid JSON, and rerun setup for damaged
+managed artifacts rather than editing runtime paths or markers by hand.
+
+Automatic Add requires a completed QueryEnd and an exact matching native
+transcript branch. Missing, partial, conflicting, or interrupted turns do not
+fall back to the Hook's text. Search and manual Add remain available through
+the shared Skill. Native task notifications are excluded. A user prompt that
+matches the strict task-notification shape is deferred until completed native
+human content is verified; that turn has no immediate Jev guidance or reminder.
+
+Repo Memory jobs run through Qoder's native background Agent. If a job stays
+pending, confirm that the parent launched `memorax-repo-memory` with
+`run_in_background: true` and that the child is not waiting for tool approval.
+A launch or completion notification is not success: the helper must validate
+and finalize the bundle. Do not start a replacement while the original child
+is still editing, including after lease expiry. If the managed Agent is missing
+or modified, rerun setup after resolving the conflict; do not substitute a CLI.
+
+If diagnostics report `session_turn_history_full`, start a new Qoder task; the
+live session has reached its 4,096-request replay-protection limit.
+See [Qoder paths](configuration.md#qoder-integration-paths).
+
 ## Trae Global Hooks or Skill is inactive
 
 ```sh
@@ -818,10 +863,19 @@ means neither the selected DSH command nor an existing Profile-linked DSH
 runtime supplied a valid semantic version. A `dsh_profile_runtime_stale` result
 means that Profile-linked package is invalid or its original package cache is
 no longer available. Repair or relaunch DSH itself, then rerun the MemoraX Code
-start command. MemoraX Code never invokes `npx` or installs or updates DSH. The
-tested versions are `0.1.0-rc.6` and `0.1.2-rc.1`; another valid version is allowed but marked
-untested. A `pnpm_not_found` result means DSH's native Profile plugin manager
+start command. MemoraX Code never invokes `npx` or installs or updates DSH. A
+`pnpm_not_found` result means DSH's native Profile plugin manager
 could not find `pnpm` on `PATH`; install `pnpm`, then rerun the start command.
+
+For Desktop, open the application once to initialize its reserved `desktop`
+Profile, then fully quit it before changing plugins. A
+`dsh_desktop_command_unavailable` result means its bundled launcher could not be
+validated. Restore the Desktop installation or set
+`MEMORAX_CODE_DSH_DESKTOP_COMMAND` to its native launcher; an npm CLI cannot
+manage this Profile. CLI and Desktop commands may point to different versions.
+`dsh_desktop_version_changed` means the pinned Desktop installation changed:
+run `memorax-code start --clients dsh` to reconcile its new version. Status
+reports the Desktop version separately.
 
 After repairing the command, Profile manifest, or home selection, rerun the
 start command and restart or refresh DSH. `profile_drift`,
@@ -978,6 +1032,38 @@ MemoraX Code does not proxy client model requests. If `memorax-code status` and
 the available client-specific diagnostics are healthy, inspect the provider
 URL, credentials, model selection, and network settings owned by that client.
 Do not copy model-provider credentials into `$MEMORAX_CODE_HOME`.
+
+## A new worktree does not build Repo Memory
+
+Linked worktrees intentionally share one mainline Repo Memory baseline within
+one MemoraX home. They do not each build or receive a local copy. The read-only
+`repo-memory resolve --repo-path PATH` helper returns the shared bundle path.
+An existing local bundle is a fallback only when shared memory is absent.
+
+Automatic build and update require a locally resolvable `origin/HEAD` target.
+The helper does not discover or retrieve it from a server. Normal fetch/pull
+workflows supply updated mainline commits. The caller may remain on a feature
+branch with uncommitted changes; authoring uses a separate fixed snapshot.
+Feature-only commits do not advance the shared baseline. The configured policy
+requires new mainline commits, and failed attempts wait for the cooldown.
+
+Source links in memory refer to the reader's worktree. Verify relevant current
+files when branches differ; file counts, deletions, and manifest edits do not
+invalidate the whole map. A large refactor can make individual mapped areas
+unreliable. Mainline history replacement defers automatic maintenance for explicit
+recovery while supported parts of the old map remain useful historical guidance.
+
+Shared state is under `$MEMORAX_CODE_HOME/repo-memory-bases/<repository-key>/`.
+`baseline.json` identifies the current published commit and immutable version.
+Failed candidates do not advance that record. Existing local bundles and personal
+memory are not removed. If the shared artifact is corrupt, stop that repository's
+jobs, back up and remove only its matching shared directory, then let an eligible
+maintenance call build again from the locally identified mainline. Do not remove
+other repository state or publish private files in an issue. There is no automatic
+version pruning; readers may still hold an older immutable version.
+
+See [repository maintenance configuration](configuration.md#skill-reminder-and-repository-maintenance)
+for trigger timing, storage, and policy settings.
 
 ## Safe issue reports
 

@@ -6,6 +6,171 @@ behavior.
 
 ## Unreleased
 
+## [0.1.21] - 2026-10-21
+
+### Added
+
+- Added Qoder Desktop integration with managed Hooks, shared Skill Search/Add,
+  personal-memory reminders, and automatic writeback from verified native
+  turns. Recognized default chat directories use General memory scope.
+- Added a managed Qoder background Repo Memory agent with single-use job claims
+  and validated finalization.
+
+### Changed
+
+- DSH status now reports CLI and Desktop versions and integration readiness.
+  Removed tested/untested labels and the `dshVersionTested` and
+  `testedDshVersions` JSON fields.
+
+### Fixed
+
+- Restored DSH memory handling for native Session format 4, including agent
+  creation and resume, producer-attributed context, and compaction, while
+  retaining support for formats 0 and 3.
+- Fixed DSH Desktop Profile management to use its bundled launcher, including
+  installations with both CLI and Desktop or Desktop alone.
+- Stopped automatic DSH memory handling after a native working-directory
+  change, including after resume, to preserve the Session's original scope.
+
+### Upgrade notes
+
+For DSH Desktop, open the application once to initialize its Profile, then
+fully quit it before changing plugins. Run `memorax-code start --clients dsh`
+after changing the runtime or Profiles. Start a new Session after changing its
+working directory. Update scripts that consume the removed DSH status fields.
+See [DSH configuration](docs/configuration.md#deepseek-harness-integration-paths).
+
+For Qoder, run setup or `memorax-code start --clients qoder`, then restart Qoder
+and open a new task. A separate Qoder CLI is not required. Setup and update
+reconciliation can enable a detected Qoder installation when its client setting
+is absent; an explicit `qoder = false` remains disabled.
+See [Qoder configuration](docs/configuration.md#qoder-integration-paths).
+
+### Known limitations
+
+Qoder's complete native Repo Memory build and publication flow remains
+unverified. The native probe stopped at `Unknown agent type` before the worker
+claimed its job. In containers whose PID 1 does not reap orphaned children,
+Qoder Repo Memory lease guards can also leave defunct processes.
+
+## [0.1.20] - 2026-10-12
+
+### Added
+
+- Added a shared Repo Memory baseline for linked Git worktrees using the same
+  MemoraX Code home. Branches and dirty worktrees reuse one validated mainline
+  snapshot while agents continue to verify relevant current source files.
+
+### Changed
+
+- Changed automatic Repo Memory builds and updates to use the locally known
+  `origin/HEAD` commit. The default update policy now requires new mainline
+  commits and at least 72 hours since the last successful publication.
+  Explicit policy and interval settings remain in effect.
+- Requested medium reasoning for background Repo Memory builds and updates
+  in Codex, Claude Code, and CodeBuddy/WorkBuddy. OpenCode selects medium only
+  when the background model exposes that variant. Model selection and
+  foreground settings remain unchanged.
+
+### Fixed
+
+- Restored Codex automatic writeback when assistant responses carry a provider
+  turn ID that differs from the local rollout turn, while retaining strict
+  user-message correlation.
+- Preserved CodeBuddy and WorkBuddy multiline prompts in automatic writeback
+  when native Hooks remove line breaks, using unique native transcript matches.
+- Prevented CodeBuddy and WorkBuddy Repo Memory workers from inheriting the
+  foreground client's listening endpoint.
+- Fixed Cursor Hook input handling for split UTF-8 characters and Windows
+  PowerShell BOMs, and recognized Windows workspace URI paths.
+- Supported deep Windows paths when preparing Repo Memory source snapshots.
+- Retained distinct connection permission errors in MemoraX request diagnostics.
+
+### Upgrade notes
+
+Shared Repo Memory lives under
+`$MEMORAX_CODE_HOME/repo-memory-bases/<repository-key>/`. Existing local
+`.repo_memory` bundles are preserved and remain a read fallback until a shared
+baseline exists. Independent clones do not share a baseline merely because
+remote URLs match. Update all client integrations together; older runtimes
+retain their previous local maintenance behavior.
+
+Automatic maintenance requires a resolvable local `refs/remotes/origin/HEAD`.
+It does not fetch or guess the default branch. Fetch or pull through your
+normal Git workflow to make new mainline commits available. Explicit local
+Build and Update operations remain local and do not publish a shared baseline.
+Background Repo Memory jobs in Claude Code and CodeBuddy/WorkBuddy require a
+native runtime that supports `--effort`.
+See [Repo Memory configuration](docs/configuration.md#skill-reminder-and-repository-maintenance).
+
+## [0.1.19] - 2026-09-28
+
+### Added
+
+- Added independently managed Cursor integration with native Hooks, the shared
+  Skill, scoped Search/Add, automatic writeback from verified native
+  conversation records, personal-memory context, and local diagnostics.
+  Repo Memory builds and maintenance use Cursor's native background subagent.
+- Added optional Jev guidance for Coding Memory Search. When explicitly
+  enabled with a separate API key, it evaluates each eligible user request and
+  guides the agent to the shared Skill's Search workflow. Jev is disabled by
+  default; unavailable or failed evaluations retain the usual reminder cadence.
+  Setup and npm upgrades add disabled defaults when no Jev configuration exists,
+  preserving existing settings.
+
+### Changed
+
+- Removed automatic remote Search from prompt Hooks. Search runs through the
+  shared Skill or `memorax-cli search`; Hooks continue to provide local memory
+  context and reminders, and automatic writeback remains available.
+- Made User Profile and Procedure Memory local to the user's MemoraX Code home
+  and shared across repositories and non-Git workspaces. Clients using the same
+  home reuse the same preferences and procedures.
+- Updated the shared Skill to recognize durable, general working rules and
+  communication preferences from user intent without requiring "remember"
+  wording. Agents are instructed to finish the current task before saving and
+  confirm the change at the end, asking when scope or permanence is unclear.
+
+### Fixed
+
+- Retried transient Windows JSON-lock acquisition failures within the existing
+  timeout, improving concurrent local-state and personal-memory writes.
+- Fixed DSH plugin installation on Windows when the `pnpm.cmd` launcher points
+  to the standalone `pnpm.exe` distribution.
+- Reduced redundant Backend restarts during foreground and automatic npm
+  updates by reusing a healthy, successfully restored Backend when the selected
+  clients still match. Other cases retain the full reconciliation path.
+- Preserved explicit client choices during reinstall and update when a legacy
+  `[clients]` table omits Codex or Claude. Invalid client values now stop setup
+  without rewriting the saved configuration.
+
+### Upgrade notes
+
+Personal memory now lives under `$MEMORAX_CODE_HOME/personal-memory`, defaulting
+to `~/.memorax-code/personal-memory`. Existing personal-memory files under
+`.repo_memory/` are ignored without migration or fallback; Repo Memory remains
+repository-local. `memorax-code user-profile` accepts `--home DIR` in place of
+the removed `--repo` option. See [personal memory storage](docs/configuration.md#personal-memory-storage).
+
+The former `[memory.retrieval].enabled` and `[memorax].startup_timeout_ms`
+settings and their environment overrides are ignored. The
+`search.retrievalEnabled` and `search.startupTimeoutMs` status fields have also
+been removed; update scripts that consume them. Explicit Search retains its
+other retrieval settings and normal request timeout. See [retrieval](docs/configuration.md#retrieval).
+
+Cursor database-backed features require the Backend to run on Node.js 22.13 or
+later with built-in SQLite; Node.js 24 is recommended. Restart or refresh Cursor
+and open a new conversation after activation. During automatic update
+reconciliation, a detected Cursor installation is enabled when `cursor` is
+absent from an existing `[clients]` selection; an explicit `cursor = false`
+is preserved.
+See [Cursor integration](docs/configuration.md#cursor-integration-paths).
+
+Enabling Jev sends the current request and, when available, the preceding
+validated user request and final assistant reply to TypeSafe. Each text field
+is trimmed and limited to 4,000 characters without content redaction. A key
+alone does not enable Jev. See [Jev configuration](docs/configuration.md#jev-provider-configuration).
+
 ## [0.1.18] - 2026-09-16
 
 ### Added
@@ -364,6 +529,9 @@ Later upgrades do not require this workaround.
 - Required a non-empty MemoraX user ID and API key during interactive setup,
   with clearer registration guidance.
 
+[0.1.21]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.21
+[0.1.20]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.20
+[0.1.19]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.19
 [0.1.18]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.18
 [0.1.17]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.17
 [0.1.15]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.15

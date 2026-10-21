@@ -7,12 +7,12 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { createDatabaseFixture } from "../packages/ts/memorax-code-backend/test/clients/cursor/support/database-fixtures.mjs";
+import { createDatabaseFixture } from "../../../packages/ts/memorax-code-backend/test/clients/cursor/support/database-fixtures.mjs";
 
 // The input is an already materialized npm package. Every mutable client,
 // native database, Backend record, and provider request belongs to this fixture.
 const packageRoot = resolve(process.argv[2] ?? "");
-assert.ok(process.argv[2], "Usage: node scripts/cursor-npm-package-smoke.mjs PACKAGE_ROOT");
+assert.ok(process.argv[2], "Usage: node scripts/ci/cursor/cursor-npm-package-smoke.mjs PACKAGE_ROOT");
 const packageManifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
 assert.equal(packageManifest.name, "@memorax/memorax-code");
 const root = await realpath(await mkdtemp(join(tmpdir(), "memorax cursor package smoke-")));
@@ -125,6 +125,8 @@ try {
   for (const args of [["init", "--quiet"], ["config", "user.name", "Cursor Package Test"],
     ["config", "user.email", "cursor-package@example.invalid"], ["config", "commit.gpgsign", "false"],
     ["commit", "--quiet", "--allow-empty", "-m", "fixture"]]) await run("git", args, { cwd: maintenanceRepo });
+  await run("git", ["update-ref", "refs/remotes/origin/main", "HEAD"], { cwd: maintenanceRepo });
+  await run("git", ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"], { cwd: maintenanceRepo });
   const cursorAgent = join(root, "missing cursor agent");
   // Both Skill origins use the session's absolute helper; no shell environment
   // inheritance or client installation path determines the selected runner.
@@ -135,7 +137,7 @@ try {
         env: { ...env, ...maintenance.env, MEMORAX_CODE_CURSOR_AGENT_COMMAND: cursorAgent },
       }));
     assert.equal(decision.ok, true);
-    assert.equal(decision.reason, "bundle_missing");
+    assert.equal(decision.reason, "shared_build_due");
     assert.equal(decision.job.dryRun, true);
     assert.equal(decision.job.runner, "cursor");
     assert.equal(decision.job.repo, maintenanceRepo);
@@ -277,6 +279,11 @@ function run(command, args, options = {}) {
     const timeout = setTimeout(() => child.kill(), 20_000);
     child.stdout.on("data", (chunk) => { stdout += String(chunk); });
     child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+    child.stdin.on("error", (error) => {
+      // A child may exit before consuming stdin. Its exit status and captured
+      // response still determine the result instead of an unhandled EPIPE.
+      if (error.code !== "EPIPE") { clearTimeout(timeout); reject(error); }
+    });
     child.on("error", (error) => { clearTimeout(timeout); reject(error); });
     child.on("close", (code) => {
       clearTimeout(timeout);

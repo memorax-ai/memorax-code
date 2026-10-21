@@ -46,9 +46,9 @@ are not a compatibility contract.
 ## New configuration
 
 The generated template selects the existing client integrations, including the
-optional CodeBuddy/WorkBuddy, Trae, and Cursor adapters, enables automatic
+optional CodeBuddy/WorkBuddy, Trae, Cursor, and Qoder adapters, enables automatic
 writeback, sets the preferred language to Chinese (`zh`), uses a five-turn skill
-reminder and the adaptive repository-update policy, and
+reminder and a 72-hour repository-update interval, and
 enables content-bearing local traces for every supported client. Foreground
 setup may narrow `[clients]` to clients detected on the host. The tables below
 list all fallbacks, including tuning fields omitted from the generated file.
@@ -67,10 +67,10 @@ fails rather than performing an unlocked update.
 ## Client selection
 
 If `[clients]` is absent, lifecycle commands select Codex, Claude Code, DSH,
-and OpenCode; CodeBuddy/WorkBuddy, Trae, and Cursor are opt-in unless detected during
+and OpenCode; CodeBuddy/WorkBuddy, Trae, Cursor, and Qoder are opt-in unless detected during
 foreground setup. If the table is present, `codex`, `claude`, `dsh`,
-`opencode`, `codebuddy`, `workbuddy`, `trae`, and `cursor` are boolean fields. Direct lifecycle
-commands treat omitted `codex`, `claude`, `opencode`, `codebuddy`, `workbuddy`, `trae`, or `cursor`
+`opencode`, `codebuddy`, `workbuddy`, `trae`, `cursor`, and `qoder` are boolean fields. Direct lifecycle
+commands treat omitted `codex`, `claude`, `opencode`, `codebuddy`, `workbuddy`, `trae`, `cursor`, or `qoder`
 values as disabled. Setup and update reconciliation retain an omitted field as
 an undecided choice for client support added after the configuration was
 written. An omitted `dsh` value remains enabled so configurations written
@@ -79,7 +79,7 @@ explicitly to disable that integration. The command-line override accepts a
 comma-separated subset:
 
 ```text
---clients codex|claude|dsh|opencode|codebuddy|workbuddy|trae|cursor|<comma-separated subset>|all|none
+--clients codex|claude|dsh|opencode|codebuddy|workbuddy|trae|cursor|qoder|<comma-separated subset>|all|none
 ```
 
 Foreground `memorax-code setup` refreshes `[clients]` from the clients
@@ -92,8 +92,12 @@ application is detected. `TRAE_CN_HOME`, then `TRAE_HOME`, overrides its
 default `~/.trae-cn` data home.
 Cursor is available when its application or a supported installation path is
 detected, or when `CURSOR_HOME` explicitly selects its configuration root.
+Qoder is available when `QODER_CONFIG_DIR`, `QODER_CLI_HOME`, or
+`QODER_CONFIG_DIR_NAME` selects its configuration root, the
+default `~/.qoder` directory exists, or its macOS application is detected.
 
 On later setup runs, explicit `true` and `false` client choices are preserved.
+This also applies to partial `[clients]` tables that omit `codex` or `claude`.
 A detected client whose field is absent is offered for activation with a
 default of yes; declining records `false`. An absent client that is not
 detected remains absent, while a selected client that is temporarily
@@ -293,11 +297,30 @@ For npm-installed DSH, built-in bundle checks resolve from the selected DSH
 installation first, then the Profile module tree for legacy installations.
 A first session is not required to create `profiles/node_modules` before setup.
 
-MemoraX Code is tested with DSH `0.1.0-rc.6` and `0.1.2-rc.1`. Other valid semantic versions are
-accepted but appear as untested in status output; compatibility is not
-guaranteed. An unavailable or malformed `dsh --version` result fails Profile
+The reserved `desktop` Profile is managed through the installed Desktop
+application's own launcher, even when an npm CLI is also available. Open the
+Desktop application once to initialize that Profile, then fully quit it before
+plugin installation or removal. Desktop supplies its own package manager.
+An installation containing only Desktop can also supply the native launcher
+for the managed `headless` worker Profile.
+
+Set `MEMORAX_CODE_DSH_COMMAND` for the ordinary CLI and, when Desktop discovery
+needs an explicit path, set `MEMORAX_CODE_DSH_DESKTOP_COMMAND` to its bundled
+launcher. The lifecycle equivalents are `--dsh-command` and
+`--dsh-desktop-command`. Use the actual Desktop launcher, not an npm CLI or
+`npx`. The Desktop command and version are recorded separately from the CLI;
+changes require lifecycle reconciliation. Do not edit those private records.
+
+Status reports the installed CLI and Desktop versions alongside integration
+readiness. An unavailable or malformed `dsh --version` result fails Profile
 reconciliation when a Profile exists. Run `memorax-code start --clients dsh`
 after changing `DSH_HOME`, DSH, or its Profiles.
+
+Automatic memory handling supports native Session formats 0, 3, and 4. Unknown
+formats fail closed. If a Session records a native working-directory change,
+automatic memory handling stops for that Session, including after resume; start a
+new Session in the intended workspace. The immutable Session header cannot
+rebind an existing memory scope to its new effective directory.
 
 ## OpenCode integration paths
 
@@ -577,6 +600,86 @@ SQLite/protobuf interpretation is a private-format integration; unknown content
 fails closed. Tool, thinking, simulated/steered user, and unsupported external-text
 records never become fallback Add content.
 
+## Qoder integration paths
+
+The verified target is Qoder Desktop 0.4.3 with its bundled runtime 1.1.64.
+Qoder CLI and IDE compatibility is not covered by that Desktop result.
+The integration uses the documented user settings and Skills directories;
+a separately installed Qoder CLI is not required.
+
+| Artifact | Path |
+| --- | --- |
+| User Hook configuration | `$QODER_CONFIG_DIR/settings.json`, default `~/.qoder/settings.json` |
+| Shared Skill | `$QODER_CONFIG_DIR/skills/memorax-code/` |
+| Repo Memory subagent | `$QODER_CONFIG_DIR/agents/memorax-repo-memory.md` |
+| Managed state | `$MEMORAX_CODE_HOME/adapters/qoder/state.json` |
+| Private Hook runtime | `$MEMORAX_CODE_HOME/adapters/qoder/runtime/generations/<digest>/` |
+
+`memorax-code start --clients qoder` merges only marker-owned `SessionStart`,
+`UserPromptSubmit`, `QueryEnd`, and `PreToolUse` entries. Other settings and
+Hooks are preserved; an unmanaged Skill or Agent at the target path is rejected.
+`stop` removes managed Hooks and retains the Skill and Agent; `uninstall` also removes
+owned Skill, Agent, and runtime artifacts. Qoder's internal plugin registry is not
+used. `--qoder-home DIR` overrides the target root for lifecycle commands.
+Otherwise, `QODER_CONFIG_DIR` takes precedence. When it is absent, the root is
+`QODER_CONFIG_DIR_NAME` (default `.qoder`) beneath `QODER_CLI_HOME` (default the
+user home). `QODER_HOME` is not a configuration-root alias. Use the same root
+configuration for Qoder and MemoraX Code setup.
+
+SessionStart ensures the local Backend is available. UserPromptSubmit binds
+the native session and request-set ID. Completed QueryEnd events trigger
+writeback from the matching native JSONL branch; interrupted or failed queries
+do not write back. Hook text never substitutes for native transcript content.
+PreToolUse supplies client/session identity to explicit MemoraX CLI calls.
+Search remains Skill-driven. After accepted turn-start with a Backend-authorized
+Git worktree, a missing Repo Memory baseline can produce a native delegation.
+The foreground agent launches `memorax-repo-memory` with Qoder's Agent tool and
+`run_in_background: true`, then continues its task. Relevant repo-read maintenance
+uses the same path. Native context supplies the active generation's helper,
+Node executable, and explicit MemoraX home environment. A missing helper or native
+background capability skips maintenance; it does not select a Qoder CLI or
+foreground authoring fallback. The child uses Qoder's normal tool permissions
+and must claim and finalize its job through the helper.
+
+Strict task-notification-shaped submissions defer registration, Jev guidance,
+and reminders. QueryEnd permits delayed registration only when the native
+completed chain proves the exact original human prompt. Native task notifications
+do not enter automatic Add. A user who pastes the same notification shape can
+receive delayed automatic Add, but no immediate guidance or reminder for that turn.
+
+Profile context is injected on the first prompt; Procedure context follows the
+configured reminder interval. Successful native compaction emits
+`SessionStart(source=compact)`, so the next prompt refreshes Profile context and
+the personal-memory reminder once without resetting the interval. Resuming the
+same session preserves its reminder count.
+
+Pending automatic-writeback correlation is held in Backend memory. A Backend
+restart during a turn prevents that turn from writing back; a new accepted
+UserPromptSubmit can register the next turn. Backend availability is checked at
+SessionStart, not on every prompt, so a Backend that stops during an active task
+must be restarted before writeback can resume.
+
+Qoder requires a native workspace path, including for default chats. The current
+Desktop default is `~/Documents/Qoder/<YYYY-MM-DD>/<session-key>`. The session
+key is the first eight characters of a safe native session ID (the entire ID
+if shorter), or Qoder's eight-character hash fallback. Only the exact generated
+task directory is recognized; arbitrary descendants are not. The Hook marks a
+matching directory as `projectless`, and the Backend independently validates
+the directory convention and real-path containment. A verified Git repository
+still takes precedence; an eligible non-Git default chat uses
+`<base-user-id>@General`. Other non-Git directories retain their ordinary folder
+namespace. Recognition does not read Qoder's SQLite database or move native
+chat files. See [memory scope](#memory-scope).
+
+Each live Backend session retains up to 4,096 distinct request-set IDs to reject
+late replay of completed, aborted, or superseded submissions.
+After that limit, new submissions fail with `session_turn_history_full`; the
+current accepted turn can still complete. Start a new Qoder task to continue.
+
+Restart Qoder and open a new task after setup. `memorax-code-qoder status --json`
+reports configuration and runtime observation separately. See
+[Qoder troubleshooting](troubleshooting.md#qoder-hooks-or-skill-is-inactive).
+
 ## MemoraX connection
 
 MemoraX is the required remote-memory service:
@@ -619,6 +722,7 @@ workspaces. Recognized default chat directories instead share
 | WorkBuddy | A valid `YYYY-MM-DD-HH-mm-ss` direct child of `~/WorkBuddy`, or of WorkBuddy's configured `defaultWorkspacePath`. |
 | OpenCode | The exact `Default Project` directory under the system Documents directory, including supported Documents redirection. |
 | Cursor | A conversation with no selected workspace or folder (`workspace_roots: []`); no physical directory is required. |
+| Qoder | The exact generated `~/Documents/Qoder/<YYYY-MM-DD>/<session-key>` task directory, with a valid date and native session key; real-path containment is required. |
 
 A verified Git repository takes precedence over default-directory detection.
 Other selected directories retain the ordinary repository or folder rules;
@@ -635,8 +739,9 @@ identity and physical workspace identity remain separate even when remote
 memory is shared. Resolution never falls back to the bare base user ID.
 
 The change applies to subsequent writes and queries. Existing memories under
-`Codex-General`, WorkBuddy date-directory names, or OpenCode's `Default-Project`
-name are not migrated, and Search does not also query those previous names.
+`Codex-General`, WorkBuddy date-directory names, OpenCode's `Default-Project`,
+or Qoder task-directory names are not migrated, and Search does not also query
+those previous names.
 
 ## Jev provider configuration
 
@@ -986,22 +1091,99 @@ The repository-update fields below belong in `[memory.repo_update]`.
 
 | Field | Environment override | Fallback |
 | --- | --- | --- |
-| `policy` | `MEMORAX_CODE_REPO_MEMORY_UPDATE_POLICY` | `adaptive` |
+| `policy` | `MEMORAX_CODE_REPO_MEMORY_UPDATE_POLICY` | `daily` |
 | `commit_threshold` | `MEMORAX_CODE_REPO_MEMORY_STALE_COMMIT_THRESHOLD` | `5` |
-| `cooldown_hours` | `MEMORAX_CODE_REPO_MEMORY_UPDATE_COOLDOWN_HOURS` | `24` |
+| `cooldown_hours` | `MEMORAX_CODE_REPO_MEMORY_UPDATE_COOLDOWN_HOURS` | `72` |
 
 Supported policies are `every-commit`, `commit-count`, `daily`,
 `pull-request`, `pull-request-or-daily`, and `adaptive`. Invalid policy values
-fall back to `adaptive`.
+fall back to `daily`. The `daily` policy uses `cooldown_hours` as its interval;
+despite its name, it is not fixed to 24 hours. `commit_threshold` applies only
+to `commit-count` and `adaptive`, so it does not bypass the default interval.
 
-In Codex, Claude Code, CodeBuddy/WorkBuddy, DSH, OpenCode, and Cursor, the first
-eligible prompt starts a background build only when the Backend has authorized
-a Git worktree and that worktree has no `.repo_memory/PROFILE.md`. If the
-Backend or workspace authority is unavailable, the client integration skips
-that attempt instead of falling back to its local workspace path. DSH schedules
-this work through its native pre-step integration rather than a Hook. Trae
-receives the shared Skill, User Profile, and Procedure reminders, but does not
-start this background build because Trae has no supported headless worker.
+In Codex, Claude Code, CodeBuddy/WorkBuddy, DSH, OpenCode, Cursor, and Qoder, an eligible
+prompt checks initialization when the Backend has authorized a Git worktree and
+its repository has no shared baseline. Backend or workspace-authority failures
+skip the attempt. Trae reads through the shared Skill but has no automatic worker.
+A relevant repo-read can check maintenance after reading an existing baseline;
+commits, merges, and elapsed time do not themselves start a timer or Agent.
+
+One baseline lives under `$MEMORAX_CODE_HOME/repo-memory-bases/<repository-key>/`.
+The key comes from the canonical Git common directory, so linked worktrees share
+it within one MemoraX home. Independent clones do not share it merely because
+remote URLs match. All branches and detached checkouts read the same baseline
+through `repo-memory resolve --repo-path PATH`, including dirty worktrees.
+Existing local bundles are preserved and used only as a read fallback when no
+shared baseline exists. Explicit local builds and updates do not publish shared
+memory or participate in automatic per-worktree maintenance.
+
+Both initial builds and updates target only the local `refs/remotes/origin/HEAD`
+commit (for example, the locally known `origin/main`). There is no fetch, remote
+discovery, branch-name guess, or additional configuration entry. Missing or
+unresolvable refs skip automatic maintenance. Any worktree can trigger the job;
+it need not be clean or checked out on the default branch. Normal fetch/pull
+workflows must first make newly merged mainline commits available locally.
+
+This local snapshot selection preserves the existing Build and Update collection
+flow. When enabled by the history policy and provider access is available, the
+packaged collector and delta detector still use `gh`/`glab` to retrieve remote
+PR, MR, and issue evidence, including branch and commit metadata. Provider
+collection does not refresh Git refs or change the selected source snapshot.
+
+The update policy compares the last successful shared commit with that target
+and uses the shared publication time, falling back to PROFILE time for legacy
+records. The default requires new mainline commits and at least 72 hours since
+the last successful publication. More commits do not trigger an earlier update;
+without new commits, elapsed time alone does not trigger one. Explicit policy
+and interval settings continue to override these defaults. Feature-only commits
+and local file changes do not count. Ordinary file deletions, moves, dependency
+edits, or large diffs do not automatically
+invalidate the map or prohibit incremental updates. An incompatible mainline
+history defers automatic update for explicit recovery; readers may still use
+supported historical guidance while verifying current source. Repeated attempts
+against the same baseline wait for the configured cooldown after dispatch,
+including failure and unclaimed native tasks; initial-build retries use 24 hours.
+
+Only when a job is needed, the supervisor creates a private local Git clone at
+the fixed target commit under `repo-memory-jobs/<job-id>/source/`. It shares local
+objects and does not register a worktree, move user branches, or access Git remotes.
+The existing collector and Agent build/update workflow operate in that snapshot.
+The Agent reviews affected Wiki pages and enabled history resources. Source and
+artifact validation precede publication: `baseline.json` atomically points to
+one immutable `versions/<version-id>/.repo_memory` directory. A newer local mainline
+commit during execution is allowed if the authored target is still its ancestor.
+Failures leave the shared record unchanged. Terminal jobs remove the temporary
+source snapshot; published versions are retained without automatic pruning.
+
+Readers resolve once and hold that version throughout retrieval. They use the
+map for navigation and verify relevant current files, including uncommitted
+changes. Branch divergence and diff size do not trigger another build or copy.
+There are no per-worktree borrowed records or fingerprint refreshes. Old local
+files and personal sidecars remain untouched. Update all clients together;
+older installed runtimes retain their previous local maintenance behavior.
+
+Supervised Repo Memory builds and updates request `medium` reasoning effort
+where the native runner exposes a task-scoped control:
+
+- Codex passes `--config 'model_reasoning_effort="medium"'` to `codex exec`.
+- Claude Code and CodeBuddy/WorkBuddy pass `--effort medium` to their print
+  runners. The installed CLI must support this flag. Claude Code also passes
+  a per-process `--settings` override setting `env.CLAUDE_CODE_EFFORT_LEVEL`
+  to `medium`, because that environment setting takes precedence over `--effort`.
+- OpenCode's plugin checks the resolved background model's native variants,
+  including when using a temporary fallback server. It selects `medium` only
+  when that variant exists and leaves provider-specific parameter mapping to
+  OpenCode. Otherwise, or if model metadata cannot be read, it preserves the
+  native model and agent defaults, including any selected variant.
+- DSH's managed headless Profile and Cursor's and Qoder's inherited-model subagents retain
+  their native reasoning settings. Their current integration paths do not
+  expose an independent per-task effort override. Trae has no automatic runner.
+
+These overrides leave model selection to the native client and do not modify
+user configuration or foreground conversation settings. Model support and
+native client handling determine the effective effort; `medium` is not a fixed
+token budget. Explicit foreground Skill execution keeps the foreground agent's
+settings.
 
 CodeBuddy/WorkBuddy repository jobs run the headless client under a bounded
 worker. `MEMORAX_CODE_REPO_MEMORY_JOB_TIMEOUT_MS` sets the client execution
@@ -1011,7 +1193,7 @@ the grace period before the worker force-terminates a client that ignores
 `codebuddy_timeout` (or `<runner>_timeout`) in the job state, so a stalled
 headless client cannot leave an active job and repository marker indefinitely.
 
-A relevant repo-read runs supervised maintenance in the six background-capable
+A relevant repo-read runs supervised maintenance in the background-capable
 client integrations. The configured policy may select a build, update, or
 no-op. DSH maintenance requires an enabled, managed Profile that includes
 `@deepseek-ai/dsh-headless`. OpenCode executes the job through its active local
@@ -1023,8 +1205,11 @@ Cursor CLI, additional SDK, or CLI authentication is required; legacy
 `MEMORAX_CODE_CURSOR_AGENT_COMMAND` and `CURSOR_AGENT_COMMAND` overrides no longer
 select a Repo Memory runner. The subagent inherits the Cursor model and normal
 tool permissions, so Cursor may ask for command approval.
+Qoder uses its own managed native background subagent and helper, inherits the
+session model and normal tool permissions, and needs no Qoder CLI installation
+or login.
 
-The Cursor helper returns a delegation only for a newly reserved job. The child
+The Cursor and Qoder helpers return a delegation only for a newly reserved job. The child
 claims that job before entering the shared build/update workflow and finalizes
 it through local snapshot and bundle checks. Repository jobs deduplicate across
 clients using the shared marker. Requested and claimed tasks are not completed
@@ -1032,7 +1217,7 @@ jobs; an expired or replaced claim cannot finalize. If a finish helper stops
 during validation, the child can retry finish or abort with the same claim
 capability. Retrying reruns validation; only one terminal result is accepted,
 and a late validator cannot overwrite an abort or replacement. The bounded lease
-does not terminate a native task or guarantee progress while Cursor is closed. Native
+does not terminate a native task or guarantee progress while the client is closed. Native
 subagent sessions and simulated completion notifications do not enter automatic
 Add. Parent conversation content retains its ordinary writeback rules.
 
@@ -1173,7 +1358,7 @@ nor configuration or response content. See
 ## Local traces
 
 `[trace.codex]`, `[trace.claude]`, `[trace.dsh]`, `[trace.opencode]`,
-`[trace.codebuddy]`, `[trace.workbuddy]`, `[trace.trae]`, and `[trace.cursor]` support the same fields:
+`[trace.codebuddy]`, `[trace.workbuddy]`, `[trace.trae]`, `[trace.cursor]`, and `[trace.qoder]` support the same fields:
 
 | Field | Codex environment | Claude environment | DSH environment | OpenCode environment | CodeBuddy CLI environment | Trae environment | Fallback |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -1188,6 +1373,7 @@ falling back to the older `MEMORAX_CODE_CODEBUDDY_TRACE_*` variables when absent
 When `[trace.workbuddy]` is absent, its configuration inherits the older
 `[trace.codebuddy]` settings so existing trace preferences survive migration.
 Cursor uses the corresponding `MEMORAX_CODE_CURSOR_TRACE_*` environment variables.
+Qoder uses `MEMORAX_CODE_QODER_TRACE_*` and keeps native transcript files local.
 
 Depending on the enabled client capabilities, content capture can include
 prompts, responses, recalled memory, writeback content, reminder text, and
@@ -1272,6 +1458,7 @@ memorax-code-opencode doctor
 memorax-code-codebuddy status --json
 memorax-code-trae status --json
 memorax-code-cursor status --json
+memorax-code-qoder status --json
 ```
 
 The status commands do not print the MemoraX API key or Backend token.

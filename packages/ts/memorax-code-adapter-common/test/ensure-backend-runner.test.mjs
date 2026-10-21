@@ -220,10 +220,42 @@ async function recoveryDiagnostics(home) {
   return await Promise.all(files.map(async (name) => JSON.parse(await readFile(join(directory, name), "utf8"))));
 }
 
-test("Hook recovery retains timeout, spawn errno, and termination signal without changing its return", async (t) => {
+test("Hook recovery skips child start when its second health check exhausts the recovery budget", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-ensure-budget-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  let now = Date.now();
+  let healthChecks = 0;
+  let starts = 0;
+  const debug = [];
+  t.mock.method(Date, "now", () => now);
+  t.mock.method(globalThis, "fetch", async () => {
+    if (++healthChecks === 2) now += 50;
+    return new Response(null, { status: 503 });
+  });
+  const result = await ensureBackendAvailable({
+    client: "codex",
+    backendConnection: { url: "http://127.0.0.1:9", source: "environment" },
+    memoraxCodeCommand: process.execPath,
+    healthTimeoutValue: "50",
+    startTimeoutValue: "50",
+    resolveHomes: () => ({ memoraxCodeHome: root }),
+    buildStartArgs: () => { starts += 1; throw new Error("must not start after budget exhaustion"); },
+    debug: (message) => debug.push(message),
+  });
+  assert.equal(result, undefined);
+  assert.equal(healthChecks, 2);
+  assert.equal(starts, 0);
+  assert.deepEqual(debug, []);
+  assert.deepEqual(await recoveryDiagnostics(root), []);
+});
+
+test("Hook recovery retains timeout, spawn errno, and termination signal without changing its return", { timeout: 15_000 }, async (t) => {
+  // Filesystem and health-check scheduling must not consume the child-timeout fixture's budget.
+  const now = Date.now();
+  t.mock.method(Date, "now", () => now);
   t.mock.method(globalThis, "fetch", async () => new Response(null, { status: 503 }));
   const cases = [
-    { name: "timeout", script: "setInterval(() => {}, 1000)", timeout: "100", code: "HOOK_BACKEND_START_TIMEOUT", exit: 124 },
+    { name: "timeout", script: "setTimeout(() => process.exit(99), 10_000)", timeout: "100", code: "HOOK_BACKEND_START_TIMEOUT", exit: 124 },
     { name: "spawn", script: "", code: "HOOK_BACKEND_START_SPAWN_FAILED", exit: 127, systemCode: "ENOENT" },
     ...(process.platform === "win32" ? [] : [{ name: "signal", script: "process.kill(process.pid, 'SIGTERM')", code: "HOOK_BACKEND_START_INTERRUPTED", exit: 0, signal: "SIGTERM" }]),
   ];

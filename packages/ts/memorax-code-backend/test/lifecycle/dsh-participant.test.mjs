@@ -17,6 +17,29 @@ import { freePort } from "../support/helpers.mjs";
 
 const cliPath = fileURLToPath(new URL("../../dist/memorax-code.js", import.meta.url));
 
+test("an explicit unavailable Desktop launcher fails before native Profile mutation", async () => {
+  const fixture = await createFixture();
+  const desktopProfilePath = join(fixture.dshHome, "profiles", "desktop", "package.json");
+  mkdirSync(dirname(desktopProfilePath), { recursive: true });
+  writeJson(desktopProfilePath, {
+    name: "dsh-profile-desktop", private: true, dependencies: {},
+    dsh: { profile: { bundles: ["@deepseek-ai/dsh-web"] } },
+  });
+  try {
+    const started = runCli(fixture, "start", [
+      "--clients", "dsh", "--dsh-desktop-command", join(fixture.root, "missing-desktop-launcher"),
+    ]);
+    assert.equal(started.status, 1, started.stderr);
+    assert.equal(JSON.parse(started.stdout).dshAdapter.reason, "dsh_desktop_command_unavailable");
+    assert.equal(existsSync(fixture.statePath), false);
+    assert.equal(profileHasAdapter(desktopProfilePath), false);
+    assert.equal(readFileIfExists(fixture.dshLog).includes("add-begin"), false);
+  } finally {
+    runCli(fixture, "stop", ["--clients", "none"]);
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("Backend lifecycle stages, activates, retains, package-retires, and restores the DSH participant", async () => {
   const fixture = await createFixture();
   try {
@@ -46,7 +69,7 @@ test("Backend lifecycle stages, activates, retains, package-retires, and restore
     assert.equal(upgradedReport.ok, true);
     assert.equal(upgradedReport.dshAdapter.enabled, true);
     assert.equal(upgradedReport.dshAdapter.version, "0.1.0-rc.7");
-    assert.equal(upgradedReport.dshAdapter.dshVersionTested, false);
+    assert.deepEqual(Object.keys(upgradedReport.dshAdapter).filter((key) => /tested/i.test(key)), []);
     assert.equal(readFileSync(fixture.statePath, "utf8"), stateBeforeUpgradeStatus);
 
     const reconciled = runCli(fixture, "start", ["--clients", "dsh"], {

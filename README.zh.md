@@ -39,7 +39,7 @@
 Coding Agent 擅长解决眼前的问题，但新会话不会自动继承此前积累的架构认知、踩坑经验、仓库规则
 和协作偏好。
 
-MemoraX Code 让 Codex、Claude Code、CodeBuddy CLI、WorkBuddy、DeepSeek Harness、OpenCode、Trae 和 Cursor
+MemoraX Code 让 Codex、Claude Code、CodeBuddy CLI、WorkBuddy、DeepSeek Harness、OpenCode、Trae、Cursor 和 Qoder
 共享一套能够持续积累的记忆。
 它会沉淀代码任务中的工程经验，持续整理仓库知识，并在后续任务中找回相关的工作流程和偏好。
 
@@ -49,11 +49,12 @@ MemoraX Code 让 Codex、Claude Code、CodeBuddy CLI、WorkBuddy、DeepSeek Harn
 ## 快速开始
 
 开始前，请确保已安装 Node.js 20 或更高版本（推荐 Node.js 24 LTS），以及 Codex、Claude Code、
-CodeBuddy CLI、WorkBuddy、DeepSeek Harness、OpenCode、Trae 或 Cursor 中的至少一个。
+CodeBuddy CLI、WorkBuddy、DeepSeek Harness、OpenCode、Trae、Cursor 或 Qoder 中的至少一个。
 
 当前 DeepSeek Harness（DSH）版本要求 Node.js `^22.19.0 || >=24.0.0`。运行 setup 前，
-请先安装或初始化 DSH，创建至少一个 Profile，并确保 `pnpm` 在 `PATH` 中可用。
-MemoraX Code 不会安装或更新 DSH。
+请先安装或初始化 DSH，创建至少一个 Profile；使用 npm CLI 时，确保 `pnpm` 在 `PATH` 中可用。
+使用 DSH 桌面版时，请先打开一次以初始化 Profile，再完全退出以安装插件；MemoraX Code
+会调用桌面版内置的启动器和包管理器。CLI 与桌面版可以同时启用。MemoraX Code 不会安装或更新 DSH。
 
 Linux 下，游客凭据管理需要 libsecret 提供的 `/usr/bin/secret-tool`，以及当前用户会话中可用的
 Secret Service。使用 Remote SSH、WSL 或 Dev Container 时，请将 MemoraX Code 安装在
@@ -138,6 +139,14 @@ memorax-code account --show-mark-id
 | OpenCode | 重启或刷新客户端，自动发现受管插件和 Skill。 |
 | Trae | 打开 **设置 → Hooks → 全局 → 已配置的 Hooks**，开启已注册的 Global Hooks。setup 会安装 Hooks 和 Skill，但这个开关需要手动开启一次。 |
 | Cursor | 重启或刷新 Cursor，再新建对话，加载原生用户 Hooks、共享 Skill 和受管后台子 Agent。 |
+| Qoder | 重启 Qoder 并新建任务，加载受管用户 Hooks、共享 Skill 和后台子 Agent。 |
+
+Qoder 使用 `~/.qoder/settings.json` 和 `~/.qoder/skills/memorax-code/`，
+可通过 `QODER_CONFIG_DIR` 指定配置根目录。当前实测目标为 Qoder Desktop 0.4.3
+及其内置 runtime 1.1.64。Search 和主动 Add 通过共享 CLI 执行，自动 Add 从原生
+transcript 中读取精确匹配的已完成轮次。Repo Memory 构建和整理使用 Qoder 原生后台子 Agent，
+遵循正常工具权限，无需单独安装或登录 Qoder CLI。详见
+[Qoder 配置](docs/configuration.md#qoder-integration-paths)。
 
 Cursor 独立安装到 `~/.cursor/hooks.json` 和 `~/.cursor/skills/memorax-code/`，不依赖
 Claude Code，setup 会保留 Cursor 的第三方集成开关。Search 和主动 Add 通过 Skill 调用 CLI；
@@ -179,7 +188,7 @@ npm 包安装完成后不会自动启动 setup，请运行上面适合您的安�
 
 ### 体验跨会话记忆
 
-克隆示例仓库，并在项目目录中打开 Codex、Claude Code、CodeBuddy CLI、WorkBuddy、DeepSeek Harness、OpenCode、Trae 或 Cursor：
+克隆示例仓库，并在项目目录中打开 Codex、Claude Code、CodeBuddy CLI、WorkBuddy、DeepSeek Harness、OpenCode、Trae、Cursor 或 Qoder：
 
 ```bash
 git clone https://github.com/SWE-agent/test-repo.git
@@ -187,7 +196,7 @@ cd test-repo
 ```
 
 在 Codex 中使用 `$memorax-code`，在 Claude Code 或 DeepSeek Harness 中使用 `/memorax-code`
-调用该 Skill。在 OpenCode、CodeBuddy CLI、WorkBuddy、Trae 或 Cursor 中，直接让 Agent 使用名为 `memorax-code` 的 Skill。
+调用该 Skill。在 OpenCode、CodeBuddy CLI、WorkBuddy、Trae、Cursor 或 Qoder 中，直接让 Agent 使用名为 `memorax-code` 的 Skill。
 下面的指令使用产品名称，所有客户端均可直接理解。
 
 在同一个会话中依次发送以下指令：
@@ -224,8 +233,9 @@ Personal Memory 和 Procedure Memory 在用户级目录
 `$MEMORAX_CODE_HOME/personal-memory/`（默认 `~/.memorax-code/personal-memory/`）下：User
 Profile 使用 `user-profile/preferences.md`，每个 Procedure 主题在
 `procedure-memory/` 中单独保存。适用条件可以提到仓库、工具或工作流，但仓库内没有个人记忆层。
-旧 `.repo_memory` 中的个人记忆会被忽略，不会迁移。持久化的 User Profile 偏好可以隐式保存；
-Procedure Memory 只有在用户明确要求时才保存。涉及已有内容时，MemoraX Code 会先比较含义：
+旧 `.repo_memory` 中的个人记忆会被忽略，不会迁移。Agent 按意图而不是措辞决定是否保存：
+你表达了希望在当前任务之后继续生效的做事规则或偏好时，不必说“记住”，Agent 也会保存并告诉你存了什么；
+做事方式的规则存入 Procedure Memory，沟通和结果呈现的偏好存入 User Profile。涉及已有内容时，MemoraX Code 会先比较含义：
 语义相同的请求不重复写入；长期有效的补充或冲突规则会更新匹配项，并彻底移除被替代的文字；
 适用环境失效时先修正范围，只有整条记忆完全过时时才删除。用户明确要求忘记时，只删除点名的偏好、
 流程主题、段落或步骤，其他记忆保持不变。一次性任务指令不会改写已保存的记忆；是否长期有效或目标不清楚时，Agent 会先询问。
@@ -234,13 +244,13 @@ Procedure Memory 只有在用户明确要求时才保存。涉及已有内容时
 
 | 能力 | 作用 |
 | --- | --- |
-| **后台写入记忆** | 任务完成后，在后台提取可复用知识并写入记忆；WorkBuddy 默认写入 Work Memory 的 dialogue，走 chat 抽取规则，其他客户端默认写入 Coding Memory。 |
+| **后台写入记忆** | 任务完成后，在后台提取并保存可复用知识。所有客户端优先使用显式配置的内容类型；未配置时默认为 `auto`，由 MemoraX 根据完整交互分类后提取记忆。 |
 | **用户偏好延续** | 在 User Profile 中记录用户偏好，并按设定周期将其带入后续任务。 |
 | **Procedure 自动复用** | 记录可复用的任务流程，并在后续任务中自动提醒 Agent 按流程执行。 |
-| **记忆作用反馈** | 在 Codex、Claude Code、CodeBuddy CLI、WorkBuddy、DeepSeek Harness、OpenCode、Trae 和 Cursor 中，当本轮主动 Search 的 Coding Memory 或 Work Memory，或本轮读取、注入的 Repo、Procedure、Profile Memory 确实指导了任务时，Agent 会在最终回复开头用自然语言简要说明。 |
-| **Repo Memory 后台整理** | 在支持后台任务的客户端中整理仓库结构、代码入口和历史证据，并按策略自动更新，避免反复搜索和总结。Trae 仍仅支持 Skill；Cursor 使用原生后台子 Agent 完成初建和维护。 |
+| **记忆作用反馈** | 在 Codex、Claude Code、CodeBuddy CLI、WorkBuddy、DeepSeek Harness、OpenCode、Trae、Cursor 和 Qoder 中，当本轮主动 Search 的 Coding Memory 或 Work Memory，或本轮读取、注入的 Repo、Procedure、Profile Memory 确实指导了任务时，Agent 会在最终回复开头用自然语言简要说明。 |
+| **Repo Memory 后台整理** | 基于本地已知的默认分支维护一份共享基线。任意 worktree 都能触发构建或按策略更新，各分支复用地图并核对当前源码，无需逐 worktree 构建。已有本地产物会保留。Trae 仍仅支持 Skill；Cursor 和 Qoder 使用各自的原生后台子 Agent。 |
 | **主动记忆控制** | 使用内置的 MemoraX Code Skill 或 CLI，主动查找和添加记忆。 |
-| **客户端集成** | 与 Codex、Claude Code、CodeBuddy CLI、WorkBuddy、DeepSeek Harness、OpenCode、Trae 和 Cursor 集成，支持 Skill 主动 Search、本地提醒和自动写回。目前 Codex、Claude Code、CodeBuddy CLI、WorkBuddy、OpenCode 和 Trae 支持自动额度提醒。 |
+| **客户端集成** | 与 Codex、Claude Code、CodeBuddy CLI、WorkBuddy、DeepSeek Harness、OpenCode、Trae、Cursor 和 Qoder 集成，支持 Skill 主动 Search、本地提醒和自动写回。目前 Codex、Claude Code、CodeBuddy CLI、WorkBuddy、OpenCode 和 Trae 支持自动额度提醒。 |
 | **本地可观测性** | 通过受内容控制的本地 trace 和 reconciliation 记录查看活动统计、召回与写入状态。 |
 
 ## 你的记忆，由你控制
@@ -266,7 +276,7 @@ Setup、主动 Search/Add、Backend 启动/停止/重启、客户端部署或包
 `memorax-code status` 会汇总近期故障；使用 `memorax-code logs --diagnostics` 或
 `memorax-code logs --id <diagnostic-id>` 查看详情，检查后即可用于问题反馈。
 
-Coding Memory 按仓库或工作区确定范围。Codex、WorkBuddy、OpenCode 和 Cursor 中符合识别规则的
+Coding Memory 按仓库或工作区确定范围。Codex、WorkBuddy、OpenCode、Cursor 和 Qoder 中符合识别规则的
 默认聊天目录或上下文，会在相同的 MemoraX 用户 ID 配置下共享 `General`。Cursor 未选择文件夹的对话使用
 这个共享的 `@General` 范围；打开仓库后则使用该仓库的正常范围。已有记忆不会自动迁移，目录规则详见
 [记忆范围](docs/configuration.md#memory-scope)。
@@ -294,7 +304,8 @@ memorax-code update
 ```
 
 完成 setup 后，托管 Backend 运行期间也会自动检查并更新。更新会短暂停止运行中的托管 Backend，
-再按保留的客户端选择恢复。发布通道、自定义状态目录、客户端选择、Backend 恢复规则和关闭后台检查
+再按保留的客户端选择恢复。重新安装后的 setup 和更新都会保留明确的客户端选择，即使旧配置缺少
+`codex` 或 `claude` 字段。发布通道、自定义状态目录、客户端选择、Backend 恢复规则和关闭后台检查
 的方法见[更新配置](docs/configuration.md#setup-automatic-update-and-package-transition-state)。
 如果更新修改了运行中客户端已加载的集成资产，请重启或刷新客户端。
 如果包替换失败，请按[更新恢复步骤](docs/troubleshooting.md#npm-package-transition-fails)

@@ -292,7 +292,9 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
             || (role === "assistant" && payload.phase === "final_answer");
           if (authoritativeMessage && message) {
             const responseTurnId = responseItemTurnId(payload);
-            if (responseTurnId && responseTurnId !== activeTurnId) {
+            // Assistant metadata may retain a provider turn ID. The local rollout
+            // boundary determines its Turn; user message IDs must still match.
+            if (role === "user" && responseTurnId && responseTurnId !== activeTurnId) {
               turnMetadataMismatch = true;
               continue;
             }

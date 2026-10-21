@@ -46,6 +46,22 @@ test("Cursor pre-compact accepts only native identity and absolute local paths",
 });
 
 const invalidFields = {
+  qoder: {
+    start: [
+      ["missing turn", { turnId: undefined }],
+      ["missing native path", { transcriptPath: undefined }],
+      ["relative native path", { transcriptPath: "native.jsonl" }],
+      ["missing workspace", { cwd: undefined }],
+      ["foreign prompt identity", { promptId: "foreign" }],
+    ],
+    writeback: [
+      ["missing turn", { turnId: undefined }],
+      ["missing completion", { status: undefined }],
+      ["unknown completion", { status: "success" }],
+      ["Hook text is not authority", { lastAssistantMessage: "fallback" }],
+      ["NUL path", { transcriptPath: "/native\0.jsonl" }],
+    ],
+  },
   cursor: {
     start: [
       ["missing database authority", { databasePath: undefined }],
@@ -155,6 +171,25 @@ for (const commands of memoryHookCommands()) {
     }
   });
 }
+
+test("Qoder projectless commands retain required native workspace and turn identity", () => {
+  const { start, writeback } = memoryHookCommands().find(({ start }) => start.client === "qoder");
+  const { prompt, ...identity } = start;
+  const reminder = { ...identity, content: "Use the memorax-code skill.", triggers: ["cadence"] };
+  for (const [parse, command] of [
+    [parseTurnStartCommand, start],
+    [parseWritebackCommand, writeback],
+    [parseSkillReminderCommand, reminder],
+  ]) {
+    const projectless = { ...command, workspaceKind: "projectless" };
+    assert.deepEqual(parse(projectless), { ok: true, command: projectless });
+    for (const fields of [
+      { workspaceKind: "general" }, { workspaceKind: "repository" }, { workspaceKind: {} },
+      { workspaceKind: null }, { workspaceKind: "" }, { cwd: undefined }, { cwd: "relative" },
+      { sessionId: undefined }, { turnId: undefined }, { transcriptPath: undefined },
+    ]) assert.deepEqual(parse({ ...projectless, ...fields }), INVALID);
+  }
+});
 
 test("Trae reminder commands preserve Hook correlation without foreign transcript authority", () => {
   const { start } = memoryHookCommands().find(({ start }) => start.client === "trae");

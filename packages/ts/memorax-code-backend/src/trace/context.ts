@@ -15,9 +15,10 @@ export type TraceContextOrigin =
   | "workbuddy-hook-body"
   | "trae-hook-body"
   | "cursor-hook-body"
+  | "qoder-hook-body"
   | "current-turn-file"
   | "manual";
-export type TraceClient = "codex" | "claude" | "dsh" | "opencode" | "codebuddy" | "workbuddy" | "trae" | "cursor";
+export type TraceClient = "codex" | "claude" | "dsh" | "opencode" | "codebuddy" | "workbuddy" | "trae" | "cursor" | "qoder";
 
 export type TraceRelatedTurn = Readonly<{
   turnId?: string;
@@ -158,6 +159,24 @@ export function traceContextFromTraeHookBody(
   });
 }
 
+export function traceContextFromQoderHookBody(
+  body: unknown,
+  capturedAt = new Date().toISOString(),
+): TraceContext | undefined {
+  if (!isRecord(body) || body.client !== "qoder") return undefined;
+  const sessionId = stringField(body, "sessionId");
+  const turnId = stringField(body, "turnId");
+  if (!sessionId || !turnId) return undefined;
+  const cwd = pathField(body, "cwd");
+  return pruneTraceContext({
+    schemaVersion: "1", client: "qoder", sessionId, turnId,
+    transcriptPath: pathField(body, "transcriptPath"),
+    cwd, memoryProject: resolveMemoryProject(cwd),
+    workspaceKind: stringField(body, "workspaceKind"),
+    contextOrigin: "qoder-hook-body", capturedAt,
+  });
+}
+
 export function traceContextFromDshTurnStart(
   body: unknown,
   capturedAt = new Date().toISOString(),
@@ -208,7 +227,7 @@ export function traceContextFromCurrentTurnRecord(
   if (!capturedAt || !Number.isFinite(Date.parse(capturedAt))) return undefined;
   const client = stringField(trace, "client");
   if (!isTraceClient(client)) return undefined;
-  const readPathField = client === "cursor" ? pathField : stringField;
+  const readPathField = (client === "cursor" || client === "qoder") ? pathField : stringField;
   const cwd = readPathField(trace, "cwd");
   return pruneTraceContext({
     schemaVersion: "1",
@@ -265,7 +284,8 @@ export function isTraceClient(value: unknown): value is TraceClient {
     || value === "codebuddy"
     || value === "workbuddy"
     || value === "trae"
-    || value === "cursor";
+    || value === "cursor"
+    || value === "qoder";
 }
 
 function traceContextFromDshBody(

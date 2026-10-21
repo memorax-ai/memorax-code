@@ -7,7 +7,7 @@ import { parseTraeTurnId, traePromptDigest } from "../clients/trae/turn-id.js";
 export const MEMORY_HOOK_COMMAND_VERSION = 1 as const;
 export const INVALID_MEMORY_HOOK_COMMAND = "invalid memory Hook command";
 
-export type MemoryHookClient = "codex" | "claude-code" | "opencode" | "dsh" | "codebuddy" | "workbuddy" | "trae" | "cursor";
+export type MemoryHookClient = "codex" | "claude-code" | "opencode" | "dsh" | "codebuddy" | "workbuddy" | "trae" | "cursor" | "qoder";
 
 const BASE_COMMAND_KEYS = [
   "version",
@@ -25,6 +25,7 @@ const TURN_START_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> =
   workbuddy: new Set([...BASE_COMMAND_KEYS, "turnId", "prompt", "transcriptPath"]),
   trae: new Set([...BASE_COMMAND_KEYS, "turnId", "prompt"]),
   cursor: new Set([...BASE_COMMAND_KEYS, "turnId", "prompt", "transcriptPath", "databasePath"]),
+  qoder: new Set([...BASE_COMMAND_KEYS, "turnId", "prompt", "transcriptPath"]),
 };
 const WRITEBACK_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = {
   codex: new Set([...BASE_COMMAND_KEYS, "turnId", "lastAssistantMessage", "transcriptPath"]),
@@ -55,6 +56,7 @@ const WRITEBACK_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = 
   workbuddy: new Set([...BASE_COMMAND_KEYS, "turnId", "transcriptPath"]),
   trae: new Set([...BASE_COMMAND_KEYS, "turnId", "prompt", "lastAssistantMessage", "assistantObservedAt"]),
   cursor: new Set([...BASE_COMMAND_KEYS, "turnId", "transcriptPath", "databasePath", "phase", "responseDigest", "status"]),
+  qoder: new Set([...BASE_COMMAND_KEYS, "turnId", "transcriptPath", "status"]),
 };
 const SKILL_REMINDER_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = {
   codex: new Set([...BASE_COMMAND_KEYS, "turnId", "transcriptPath", "content", "triggers"]),
@@ -65,6 +67,7 @@ const SKILL_REMINDER_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>
   workbuddy: new Set([...BASE_COMMAND_KEYS, "turnId", "transcriptPath", "content", "triggers"]),
   trae: new Set([...BASE_COMMAND_KEYS, "turnId", "content", "triggers"]),
   cursor: new Set([...BASE_COMMAND_KEYS, "turnId", "content", "triggers"]),
+  qoder: new Set([...BASE_COMMAND_KEYS, "turnId", "transcriptPath", "content", "triggers"]),
 };
 const PRE_COMPACT_KEYS = {
   cursor: new Set([...BASE_COMMAND_KEYS, "turnId", "databasePath", "transcriptPath"]),
@@ -134,6 +137,13 @@ export type CursorPreCompactCommand = Readonly<{
   transcriptPath?: string;
 }>;
 
+export type QoderTurnStartCommand = MemoryHookCommandBase<"qoder"> & Readonly<{
+  turnId: string;
+  cwd: string;
+  prompt: string;
+  transcriptPath: string;
+}>;
+
 export type TurnStartCommand =
   | CodexTurnStartCommand
   | ClaudeTurnStartCommand
@@ -142,7 +152,8 @@ export type TurnStartCommand =
   | CodeBuddyTurnStartCommand
   | WorkBuddyTurnStartCommand
   | TraeTurnStartCommand
-  | CursorTurnStartCommand;
+  | CursorTurnStartCommand
+  | QoderTurnStartCommand;
 
 export type MemoryHookTurnStartResult = Readonly<{
   ok: true;
@@ -209,7 +220,15 @@ export type WritebackCommand =
   | CodeBuddyWritebackCommand
   | WorkBuddyWritebackCommand
   | TraeWritebackCommand
-  | CursorWritebackCommand;
+  | CursorWritebackCommand
+  | QoderWritebackCommand;
+
+export type QoderWritebackCommand = MemoryHookCommandBase<"qoder"> & Readonly<{
+  turnId: string;
+  cwd: string;
+  transcriptPath: string;
+  status: "completed" | "aborted";
+}>;
 
 export type SkillReminderTrigger = "cadence" | "post_compaction" | "search_guidance";
 
@@ -270,7 +289,16 @@ export type SkillReminderCommand =
   | CodeBuddySkillReminderCommand
   | WorkBuddySkillReminderCommand
   | TraeSkillReminderCommand
-  | CursorSkillReminderCommand;
+  | CursorSkillReminderCommand
+  | QoderSkillReminderCommand;
+
+export type QoderSkillReminderCommand = MemoryHookCommandBase<"qoder"> & Readonly<{
+  turnId: string;
+  cwd: string;
+  transcriptPath: string;
+  content: string;
+  triggers: SkillReminderTrigger[];
+}>;
 
 export type MemoryHookCommandParseResult<Command> =
   | { ok: true; command: Command }
@@ -304,6 +332,12 @@ export function parseTurnStartCommand(
   if (!isRecord(value)) return invalidCommand();
   const base = parseCommandBase(value, TURN_START_KEYS);
   if (!base) return invalidCommand();
+  if (base.client === "qoder") {
+    const identity = qoderCommandIdentity(value, base);
+    const prompt = requiredContentField(value, "prompt");
+    if (!identity || !prompt) return invalidCommand();
+    return { ok: true, command: { ...base, client: "qoder", ...identity, prompt } };
+  }
   if (base.client === "cursor") {
     const databasePath = requiredContentField(value, "databasePath");
     if (!databasePath || !isAbsolute(databasePath) || databasePath.includes("\0")) return invalidCommand();
@@ -394,6 +428,11 @@ export function parseWritebackCommand(
   if (!isRecord(value)) return invalidCommand();
   const base = parseCommandBase(value, WRITEBACK_KEYS);
   if (!base) return invalidCommand();
+  if (base.client === "qoder") {
+    const identity = qoderCommandIdentity(value, base);
+    if (!identity || (value.status !== "completed" && value.status !== "aborted")) return invalidCommand();
+    return { ok: true, command: { ...base, client: "qoder", ...identity, status: value.status } };
+  }
   if (base.client === "cursor") {
     const databasePath = requiredContentField(value, "databasePath");
     if (!databasePath || !isAbsolute(databasePath) || databasePath.includes("\0")) return invalidCommand();
@@ -520,6 +559,11 @@ export function parseSkillReminderCommand(
   const content = requiredContentField(value, "content");
   const triggers = skillReminderTriggers(value.triggers);
   if (!content || !triggers) return invalidCommand();
+  if (base.client === "qoder") {
+    const identity = qoderCommandIdentity(value, base);
+    if (!identity) return invalidCommand();
+    return { ok: true, command: { ...base, client: "qoder", ...identity, content, triggers } };
+  }
   if (base.client === "cursor") {
     const turnId = requiredStringField(value, "turnId");
     if (!turnId || !validCursorIdentity(base.sessionId, turnId) || !validCursorWorkspace(base)) return invalidCommand();
@@ -613,13 +657,14 @@ function parseCommandBase(
     && client !== "workbuddy"
     && client !== "trae"
     && client !== "cursor"
+    && client !== "qoder"
   ) return undefined;
   const clientKeys = allowedKeys[client];
   if (!clientKeys || Object.keys(value).some((key) => !clientKeys.has(key))) return undefined;
   const sessionId = requiredStringField(value, "sessionId");
   if (!sessionId) return undefined;
-  // Filesystem paths retain meaningful whitespace supplied by native Cursor Hooks.
-  const cwd = client === "cursor"
+  // Filesystem paths retain meaningful whitespace supplied by native Hooks.
+  const cwd = client === "cursor" || client === "qoder"
     ? optionalContentField(value, "cwd") : optionalStringField(value, "cwd");
   const workspaceKind = optionalStringField(value, "workspaceKind");
   if (!cwd.ok || !workspaceKind.ok) return undefined;
@@ -630,6 +675,18 @@ function parseCommandBase(
     ...(cwd.value ? { cwd: cwd.value } : {}),
     ...(workspaceKind.value ? { workspaceKind: workspaceKind.value } : {}),
   };
+}
+
+function qoderCommandIdentity(value: Record<string, unknown>, base: MemoryHookCommandBase<MemoryHookClient>) {
+  const turnId = requiredStringField(value, "turnId");
+  const transcriptPath = requiredContentField(value, "transcriptPath");
+  const cwd = base.cwd;
+  const identity = /^[A-Za-z0-9._:-]{1,256}$/;
+  if (!turnId || !identity.test(turnId) || !identity.test(base.sessionId)
+    || (base.workspaceKind !== undefined && base.workspaceKind !== "projectless")
+    || !cwd || !isAbsolute(cwd) || cwd.includes("\0")
+    || !transcriptPath || !isAbsolute(transcriptPath) || transcriptPath.includes("\0")) return undefined;
+  return { turnId, transcriptPath, cwd };
 }
 
 function positiveSafeIntegerField(

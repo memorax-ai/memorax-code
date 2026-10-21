@@ -162,9 +162,9 @@ test("npm registry JSON preserves recognized causes without retaining response t
   })), {});
 });
 
-test("update diagnostics relay all eight client failures including Cursor within the input bound", async (t) => {
+test("update diagnostics relay all nine client failures including Qoder within the input bound", async (t) => {
   const { diagnostics, memoraxCodeHome } = await fixture(t);
-  const clients = ["codex", "claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor"];
+  const clients = ["codex", "claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor", "qoder"];
   const clientFailures = clients.map((client, index) => ({
     client,
     failure: { errorCode: "CLIENT_HOOKS_WRITE_FAILED", stage: "hooks-write", systemCode: "EACCES",
@@ -181,7 +181,7 @@ test("update diagnostics relay all eight client failures including Cursor within
   const output = [];
   diagnostics.reportUpdateFailure(failure, { home: memoraxCodeHome, write: line => output.push(line) });
   assert.equal(output.filter(line => line.startsWith("Diagnostic:")).length, clients.length);
-  assert.match(output.join("\n"), /CLIENT_HOOKS_WRITE_FAILED.*cursor\.hooks-write/);
+  assert.match(output.join("\n"), /CLIENT_HOOKS_WRITE_FAILED.*qoder\.hooks-write/);
   assert.doesNotMatch(output.join("\n"), /private-client-failure-canary|UPDATE_RECONCILE_FAILED/);
 });
 

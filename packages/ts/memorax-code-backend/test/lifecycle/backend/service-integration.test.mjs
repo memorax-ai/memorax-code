@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { mkdtemp, readFile, realpath, rm, stat } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -174,7 +175,7 @@ test("Backend service rejects a healthy MemoraX Code Backend for another session
   }
 });
 
-test("Backend health probes bound response consumption to the total timeout budget", async () => {
+test("Backend status bounds response consumption to its timeout budget", async () => {
   const home = await mkdtemp(join(tmpdir(), "memorax-code-service-health-timeout-home-"));
   const timers = new Set();
   const slowBackend = createServer((_, response) => {
@@ -202,23 +203,51 @@ test("Backend health probes bound response consumption to the total timeout budg
     const status = await runBackendStatus(url, undefined, 100);
     const statusElapsedMs = Date.now() - statusStartedAt;
 
-    const startStartedAt = Date.now();
-    const started = await startBackendService({
-      home,
-      port: Number(new URL(url).port),
-      timeoutMs: 100,
-    });
-    const startElapsedMs = Date.now() - startStartedAt;
-
     assert.equal(status.ok, false);
     assert.ok(statusElapsedMs < 500, `status probe exceeded budget: ${statusElapsedMs}ms`);
-    assert.equal(started.ok, false);
-    assert.ok(startElapsedMs < 500, `service health check exceeded budget: ${startElapsedMs}ms`);
-    assert.equal(await pathExists(join(home, "runtime", "backend", "backend.pid.json")), false);
   } finally {
     for (const timer of timers) clearTimeout(timer);
     slowBackend.closeAllConnections?.();
     await new Promise((resolve) => slowBackend.close(resolve));
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("Backend startup aborts a pending health body and clears its process state", { timeout: 5000 }, async () => {
+  const home = await mkdtemp(join(tmpdir(), "memorax-code-service-health-body-home-"));
+  let alive = true;
+  let bodyAborted = false;
+  let terminated = false;
+  try {
+    const started = await startBackendService({ home, timeoutMs: 100 }, {
+      spawnProcess: () => {
+        const child = new EventEmitter();
+        child.pid = 4242;
+        child.unref = () => undefined;
+        process.nextTick(() => child.emit("spawn"));
+        return child;
+      },
+      isProcessAlive: () => alive,
+      terminateProcessTree: () => { terminated = true; alive = false; return true; },
+      fetch: async (_url, { signal }) => ({
+        ok: true,
+        status: 200,
+        json: () => new Promise((_, reject) => {
+          signal.addEventListener("abort", () => {
+            bodyAborted = true;
+            reject(signal.reason);
+          }, { once: true });
+        }),
+      }),
+    });
+    assert.equal(bodyAborted, true);
+    assert.equal(started.ok, false);
+    assert.equal(started.failureReason, "timeout");
+    assert.equal(started.httpStatus, 200);
+    assert.equal(terminated, true);
+    assert.equal(started.processState, "stopped");
+    assert.equal(await pathExists(join(home, "runtime", "backend", "backend.pid.json")), false);
+  } finally {
     await rm(home, { recursive: true, force: true });
   }
 });

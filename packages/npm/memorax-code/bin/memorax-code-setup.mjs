@@ -41,6 +41,10 @@ import {
   cursorInstallationDetected,
 } from "../lib/memorax-code-cursor-adapter/src/adapter-paths.mjs";
 import {
+  defaultQoderHome,
+  qoderInstallationDetected,
+} from "../lib/memorax-code-qoder-adapter/src/adapter-paths.mjs";
+import {
   failedLifecycleAdapters,
   reconcileSetup,
   startLifecycleReport,
@@ -65,8 +69,8 @@ const RED = "\x1b[31m";
 const BOLD = "\x1b[1m";
 const RESET = "\x1b[0m";
 const DSH_OPTIONAL_ENV = "MEMORAX_CODE_DSH_ADAPTER_OPTIONAL";
-const SETUP_CLIENTS = ["codex", "claude", "opencode", "codebuddy", "workbuddy", "trae", "cursor"];
-const LIFECYCLE_CLIENT_IDS = ["codex", "claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor"];
+const SETUP_CLIENTS = ["codex", "claude", "opencode", "codebuddy", "workbuddy", "trae", "cursor", "qoder"];
+const LIFECYCLE_CLIENT_IDS = ["codex", "claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor", "qoder"];
 
 const skipCodexPluginInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_CODEX_PLUGIN_INSTALL);
 const skipClaudeAdapterInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_CLAUDE_ADAPTER_INSTALL);
@@ -75,6 +79,7 @@ const skipCodeBuddyAdapterInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_CODE
 const skipWorkBuddyAdapterInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_WORKBUDDY_ADAPTER_INSTALL);
 const skipTraeAdapterInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_TRAE_ADAPTER_INSTALL);
 const skipCursorAdapterInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_CURSOR_ADAPTER_INSTALL);
+const skipQoderAdapterInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_QODER_ADAPTER_INSTALL);
 const updateMode = truthyEnv(process.env.MEMORAX_CODE_SETUP_UPDATE);
 const reuseRestoredBackend = updateMode && truthyEnv(process.env.MEMORAX_CODE_SETUP_REUSE_RESTORED_BACKEND);
 const automaticUpdateMode = truthyEnv(process.env.MEMORAX_CODE_SETUP_AUTOMATIC_UPDATE);
@@ -199,6 +204,11 @@ const cursorPreflight = requestedClients.includes("cursor") && !skipCursorAdapte
       integrationSelected: !existingSetup || previousClients.includes("cursor"),
     })
   : { ok: true };
+const qoderPreflight = requestedClients.includes("qoder") && !skipQoderAdapterInstall
+  ? runQoderPreflight({
+      integrationSelected: !existingSetup || previousClients.includes("qoder"),
+    })
+  : { ok: true };
 const failedBuddyClients = [
   ["codebuddy", codebuddyPreflight],
   ["workbuddy", workbuddyPreflight],
@@ -216,7 +226,8 @@ const detectedClients = requestedClients.filter((client) => {
   if (client === "codebuddy") return !skipCodeBuddyAdapterInstall && codebuddyPreflight.ok;
   if (client === "workbuddy") return !skipWorkBuddyAdapterInstall && workbuddyPreflight.ok;
   if (client === "trae") return !skipTraeAdapterInstall && traePreflight.ok;
-  return !skipCursorAdapterInstall && cursorPreflight.ok;
+  if (client === "cursor") return !skipCursorAdapterInstall && cursorPreflight.ok;
+  return !skipQoderAdapterInstall && qoderPreflight.ok;
 });
 const newlyDetectedClients = existingSetup
   ? detectedClients.filter((client) => !explicitClientChoices.includes(client))
@@ -266,6 +277,9 @@ if (requestedClients.includes("trae") && !skipTraeAdapterInstall && !traePreflig
 if (requestedClients.includes("cursor") && !skipCursorAdapterInstall && !cursorPreflight.ok) {
   log("Cursor runtime or data directory was not detected; skipping its adapter setup.");
 }
+if (requestedClients.includes("qoder") && !skipQoderAdapterInstall && !qoderPreflight.ok) {
+  log("Qoder runtime or data directory was not detected; skipping its adapter setup.");
+}
 if (writeClientSelectionConfig(selectedClients, clientsWithPersistedIntent) === "failed") {
   printPostinstallSummary("not-verified");
   process.exit(1);
@@ -307,6 +321,7 @@ const codebuddyClientEnabled = installClients.includes("codebuddy");
 const workbuddyClientEnabled = installClients.includes("workbuddy");
 const traeClientEnabled = installClients.includes("trae");
 const cursorClientEnabled = installClients.includes("cursor");
+const qoderClientEnabled = installClients.includes("qoder");
 const codexClientNewlyEnabled = codexClientEnabled
   && existingSetup
   && !previousClients.includes("codex");
@@ -386,6 +401,11 @@ const cursorSkipReason = setupClientSkipReason({
   selected: selectedClients.includes("cursor"),
   enabled: cursorClientEnabled,
 });
+const qoderSkipReason = setupClientSkipReason({
+  explicitlySkipped: skipQoderAdapterInstall,
+  selected: selectedClients.includes("qoder"),
+  enabled: qoderClientEnabled,
+});
 
 const restoredLifecycleClients = reuseRestoredBackend && existingSetup
   ? await readRestoredLifecycleClients()
@@ -416,10 +436,13 @@ const backendAndAdapters = await startBackendAndCheck({
   workbuddySkipReason,
   skipTraeAdapter: !traeClientEnabled,
   skipCursorAdapter: !cursorClientEnabled,
+  skipQoderAdapter: !qoderClientEnabled,
   traeAdapterRequired: traeClientEnabled,
   cursorAdapterRequired: cursorClientEnabled,
+  qoderAdapterRequired: qoderClientEnabled,
   traeSkipReason,
   cursorSkipReason,
+  qoderSkipReason,
   reuseRestoredBackend: canReuseRestoredBackend,
 });
 const backendAndAdaptersStatus = backendAndAdapters.status;
@@ -436,6 +459,7 @@ if (backendAndAdaptersStatus === "enabled") {
     workbuddyAdapterEnabled: workbuddyClientEnabled,
     traeAdapterEnabled: traeClientEnabled,
     cursorAdapterEnabled: cursorClientEnabled,
+    qoderAdapterEnabled: qoderClientEnabled,
     traeGlobalHooksActivationRequired: backendAndAdapters.traeGlobalHooksActivationRequired,
   });
   printCommonCommands({
@@ -446,6 +470,7 @@ if (backendAndAdaptersStatus === "enabled") {
     workbuddyAdapterEnabled: workbuddyClientEnabled,
     traeAdapterEnabled: traeClientEnabled,
     cursorAdapterEnabled: cursorClientEnabled,
+    qoderAdapterEnabled: qoderClientEnabled,
   });
 }
 printPostinstallSummary(
@@ -950,10 +975,17 @@ async function readPersistedClientSelection() {
   let clients;
   try {
     clients = parse(readFileSync(path, "utf8"))?.clients;
-    if (!clients || typeof clients !== "object" || typeof clients.codex !== "boolean" || typeof clients.claude !== "boolean") return undefined;
   } catch {
     return undefined;
   }
+  if (clients === undefined) return undefined;
+  const prototype = clients && typeof clients === "object" ? Object.getPrototypeOf(clients) : undefined;
+  if ((prototype !== Object.prototype && prototype !== null)
+    || LIFECYCLE_CLIENT_IDS.some((client) => Object.hasOwn(clients, client) && typeof clients[client] !== "boolean")) {
+    setupFailure("config", { details: { configState: "preserved" } });
+    process.exit(1);
+  }
+  if (!LIFECYCLE_CLIENT_IDS.some((client) => typeof clients[client] === "boolean")) return undefined;
   clients = await resolveCodeBuddyClientSelection(clients, { memoraxCodeHome: memoraxCodeHome() });
   return {
     selected: SETUP_CLIENTS.filter((client) => clients[client] === true),
@@ -1029,7 +1061,7 @@ function restoredLifecycleClientsMatch(restoredClients, lifecycleClients, includ
 
 function setManagedClientSelection(text, clients, configuredClients = SETUP_CLIENTS) {
   let updated = text;
-  for (const client of ["opencode", "claude", "codebuddy", "workbuddy", "trae", "cursor", "codex"]) {
+  for (const client of ["opencode", "claude", "codebuddy", "workbuddy", "trae", "cursor", "qoder", "codex"]) {
     if (!configuredClients.includes(client)) continue;
     updated = setTomlField(updated, "clients", client, String(clients.includes(client)));
   }
@@ -1091,6 +1123,7 @@ function defaultMemoraxCodeConfig() {
     "workbuddy = true # Manage the WorkBuddy adapter.",
     "trae = true # Manage the Trae adapter.",
     "cursor = true # Manage the Cursor adapter.",
+    "qoder = true # Manage the Qoder adapter.",
     "",
     "# MemoraX remote-memory connection.",
     "[memorax]",
@@ -1113,9 +1146,9 @@ function defaultMemoraxCodeConfig() {
     "",
     "# Relevant repo reads batch generated repo-memory updates by commit count or elapsed time.",
     "[memory.repo_update]",
-    'policy = "adaptive" # every-commit / commit-count / daily / pull-request / pull-request-or-daily / adaptive.',
+    'policy = "daily" # every-commit / commit-count / daily / pull-request / pull-request-or-daily / adaptive.',
     "commit_threshold = 5 # Pending local commits needed by commit-count and adaptive.",
-    "cooldown_hours = 24 # Pending-commit age used by daily, pull-request-or-daily, and adaptive.",
+    "cooldown_hours = 72 # Hours since the last successful update; used by daily, pull-request-or-daily, and adaptive.",
     "",
     "# Local traces may contain prompts, responses, recalled memories, and local paths.",
     "[trace.codex]",
@@ -1149,6 +1182,10 @@ function defaultMemoraxCodeConfig() {
     "[trace.cursor]",
     "enabled = true # Enable local Cursor session memory trace collection.",
     "capture_content = true # Store content in local Cursor trace events.",
+    "",
+    "[trace.qoder]",
+    "enabled = true # Enable local Qoder session memory trace collection.",
+    "capture_content = true # Store content in local Qoder trace events.",
     "",
   ].join("\n");
 }
@@ -1231,6 +1268,9 @@ function runCommonPreflight() {
   }
   if (skipCursorAdapterInstall) {
     log("Cursor adapter setup is disabled for this setup; other client setup can still continue.");
+  }
+  if (skipQoderAdapterInstall) {
+    log("Qoder adapter setup is disabled for this setup; other client setup can still continue.");
   }
   return {};
 }
@@ -1353,6 +1393,18 @@ function runCursorPreflight({ integrationSelected = true } = {}) {
   return { ok: true };
 }
 
+function runQoderPreflight({ integrationSelected = true } = {}) {
+  const home = defaultQoderHome();
+  const detected = qoderInstallationDetected();
+  log(`Qoder data directory: ${existsSync(home) ? `found (${home})` : "not detected"}`);
+  log(`Qoder application: ${detected ? "detected" : "not detected"}`);
+  if (!detected) return { ok: false };
+  log(integrationSelected
+    ? "Keeping Qoder provider settings unchanged and installing the shared memory Hooks and Skill."
+    : "Keeping Qoder provider settings unchanged while checking whether to enable its integration.");
+  return { ok: true };
+}
+
 function installedPluginCache() {
   for (const marketplaceName of [CLI_MARKETPLACE_NAME, PERSONAL_MARKETPLACE_NAME]) {
     const versions = installedPluginCacheVersions(marketplaceName);
@@ -1426,10 +1478,13 @@ async function startBackendAndCheck({
   workbuddySkipReason,
   skipTraeAdapter = false,
   skipCursorAdapter = false,
+  skipQoderAdapter = false,
   traeAdapterRequired = !skipTraeAdapter,
   cursorAdapterRequired = !skipCursorAdapter,
+  qoderAdapterRequired = !skipQoderAdapter,
   traeSkipReason,
   cursorSkipReason,
+  qoderSkipReason,
   reuseRestoredBackend = false,
 } = {}) {
   const adapterFlags = clientLifecycleFlags({ clientMode });
@@ -1449,6 +1504,7 @@ async function startBackendAndCheck({
         workbuddyAdapterRequired,
         traeAdapterRequired,
         cursorAdapterRequired,
+        qoderAdapterRequired,
       })) {
         await activatePackagedClientHookRuntime({
           packageRoot: dirname(scriptDir),
@@ -1490,6 +1546,7 @@ async function startBackendAndCheck({
       workbuddyAdapterRequired,
       traeAdapterRequired,
       cursorAdapterRequired,
+      qoderAdapterRequired,
     }),
     onEvent: (event) => {
       if (event.type === "start" && event.attempt === 1) {
@@ -1527,8 +1584,10 @@ async function startBackendAndCheck({
           workbuddySkipReason,
           skipTraeAdapter,
           skipCursorAdapter,
+          skipQoderAdapter,
           traeSkipReason,
           cursorSkipReason,
+          qoderSkipReason,
         });
       }
     },
@@ -1572,8 +1631,10 @@ function printReconcileFailure(result, {
   workbuddySkipReason,
   skipTraeAdapter,
   skipCursorAdapter,
+  skipQoderAdapter,
   traeSkipReason,
   cursorSkipReason,
+  qoderSkipReason,
 }) {
   if (result.reason === "adapter-setup-failed") {
     logRed("Automatic stop/start recovery was skipped because the Backend is running; setup remains incomplete.");
@@ -1602,6 +1663,7 @@ function printReconcileFailure(result, {
       workbuddySkipReason,
       traeSkipReason,
       cursorSkipReason,
+      qoderSkipReason,
     });
   }
 }
@@ -1643,10 +1705,10 @@ function clientLifecycleFlags({ clientMode = "all" } = {}) {
 }
 
 function clientModeFor(clients, { includeDsh = false } = {}) {
-  const selected = ["codex", "claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor"].filter((client) => (
+  const selected = ["codex", "claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor", "qoder"].filter((client) => (
     client === "dsh" ? includeDsh : clients.includes(client)
   ));
-  if (selected.length === 8) return "all";
+  if (selected.length === LIFECYCLE_CLIENT_IDS.length) return "all";
   return selected.length > 0 ? selected.join(",") : "none";
 }
 
@@ -1667,6 +1729,7 @@ function clientSelectionMessage(clients, { dshSelected = false } = {}) {
       clients.includes("workbuddy") ? "WorkBuddy" : undefined,
       clients.includes("trae") ? "Trae" : undefined,
       clients.includes("cursor") ? "Cursor" : undefined,
+      clients.includes("qoder") ? "Qoder" : undefined,
     ].filter(Boolean);
     return `Configuring MemoraX Code for ${joinedLabels(labels)}.`;
   }
@@ -1677,6 +1740,7 @@ function clientSelectionMessage(clients, { dshSelected = false } = {}) {
   const hasWorkBuddy = clients.includes("workbuddy");
   const hasTrae = clients.includes("trae");
   const hasCursor = clients.includes("cursor");
+  const hasQoder = clients.includes("qoder");
   const labels = [
     hasCodex ? "Codex" : undefined,
     hasClaude ? "Claude Code" : undefined,
@@ -1685,6 +1749,7 @@ function clientSelectionMessage(clients, { dshSelected = false } = {}) {
     hasWorkBuddy ? "WorkBuddy" : undefined,
     hasTrae ? "Trae" : undefined,
     hasCursor ? "Cursor" : undefined,
+    hasQoder ? "Qoder" : undefined,
   ].filter(Boolean);
   if (labels.length > 0) return `Configuring MemoraX Code for ${joinedLabels(labels)}.`;
   return "Skipping client adapter setup for this setup.";
@@ -1698,7 +1763,8 @@ function clientLabel(client) {
   if (client === "codebuddy") return "CodeBuddy CLI";
   if (client === "workbuddy") return "WorkBuddy";
   if (client === "trae") return "Trae";
-  return "Cursor";
+  if (client === "cursor") return "Cursor";
+  return "Qoder";
 }
 
 function detectedClientMessage(clients, dshProfiles = []) {
@@ -1904,6 +1970,7 @@ function printNextSteps({
   workbuddyAdapterEnabled = true,
   traeAdapterEnabled = true,
   cursorAdapterEnabled = true,
+  qoderAdapterEnabled = true,
   traeGlobalHooksActivationRequired = false,
 } = {}) {
   const clientText = enabledClientText({
@@ -1914,6 +1981,7 @@ function printNextSteps({
     workbuddyAdapterEnabled,
     traeAdapterEnabled,
     cursorAdapterEnabled,
+    qoderAdapterEnabled: qoderAdapterEnabled && !existingSetup,
   });
   if (clientText && existingSetup) {
     logGreen(`${bold("The new Hook runtime is active")}; existing sessions with the stable shell select it on their next user prompt.`);
@@ -1923,7 +1991,7 @@ function printNextSteps({
   }
   if (dshAdapterEnabled) {
     logGreen(`${bold("Restart or refresh DeepSeek Harness")} so its Profiles load the installed MemoraX Code plugin.`);
-  } else if (!clientText) {
+  } else if (!clientText && !qoderAdapterEnabled) {
     logGreen(`${bold("MemoraX Code backend is running")}; client adapters were skipped for this install.`);
   }
   if (codexAdapterEnabled && !existingSetup) {
@@ -1931,6 +1999,9 @@ function printNextSteps({
   }
   if (traeAdapterEnabled && traeGlobalHooksActivationRequired) {
     logGreen(`${bold("Open Trae Settings and enable Global Hooks once")}, then start a new Trae session.`);
+  }
+  if (qoderAdapterEnabled && existingSetup) {
+    logGreen(`${bold("Restart Qoder and open a new task")} to load the updated MemoraX Code Hooks and Skill.`);
   }
   const statusCommands = statusCommandText({
     codexAdapterEnabled,
@@ -1940,8 +2011,9 @@ function printNextSteps({
     workbuddyAdapterEnabled,
     traeAdapterEnabled,
     cursorAdapterEnabled,
+    qoderAdapterEnabled,
   });
-  if (clientText || !dshAdapterEnabled) {
+  if (clientText || qoderAdapterEnabled || !dshAdapterEnabled) {
     log(`If MemoraX Code is not active ${existingSetup ? "on the next prompt" : "in new sessions"}, run ${statusCommands}.`);
   }
   if (dshAdapterEnabled) {
@@ -1957,6 +2029,7 @@ function enabledClientText({
   workbuddyAdapterEnabled = true,
   traeAdapterEnabled = true,
   cursorAdapterEnabled = true,
+  qoderAdapterEnabled = true,
 } = {}) {
   const labels = [
     codexAdapterEnabled ? "Codex" : undefined,
@@ -1966,6 +2039,7 @@ function enabledClientText({
     workbuddyAdapterEnabled ? "WorkBuddy" : undefined,
     traeAdapterEnabled ? "Trae" : undefined,
     cursorAdapterEnabled ? "Cursor" : undefined,
+    qoderAdapterEnabled ? "Qoder" : undefined,
   ].filter(Boolean);
   if (labels.length < 2) return labels[0] ?? "";
   if (labels.length === 2) return `${labels[0]} or ${labels[1]}`;
@@ -1980,6 +2054,7 @@ function statusCommandText({
   workbuddyAdapterEnabled = true,
   traeAdapterEnabled = true,
   cursorAdapterEnabled = true,
+  qoderAdapterEnabled = true,
 } = {}) {
   const commands = ["`memorax-code status`"];
   if (codexAdapterEnabled) commands.push("`memorax-code-codex status`");
@@ -1989,6 +2064,7 @@ function statusCommandText({
   if (workbuddyAdapterEnabled) commands.push("`memorax-code status --clients workbuddy`");
   if (traeAdapterEnabled) commands.push("`memorax-code-trae status`");
   if (cursorAdapterEnabled) commands.push("`memorax-code-cursor status`");
+  if (qoderAdapterEnabled) commands.push("`memorax-code-qoder status`");
   if (commands.length === 1) return commands[0];
   if (commands.length === 2) return `${commands[0]} and ${commands[1]}`;
   return `${commands.slice(0, -1).join(", ")}, and ${commands.at(-1)}`;
@@ -2073,10 +2149,10 @@ function readMemoraxInstallStatus({ diagnose = false } = {}) {
   }
 }
 
-function printUnavailableDiagnostics({ codexSkipReason, claudeSkipReason, opencodeSkipReason, codebuddySkipReason, workbuddySkipReason, traeSkipReason, cursorSkipReason } = {}) {
+function printUnavailableDiagnostics({ codexSkipReason, claudeSkipReason, opencodeSkipReason, codebuddySkipReason, workbuddySkipReason, traeSkipReason, cursorSkipReason, qoderSkipReason } = {}) {
   logRed("MemoraX Code is not enabled for new client sessions.");
   logRed("Check `memorax-code status` and the selected adapter status commands for Backend and integration details.");
-  logRed("If Codex, Claude Code, OpenCode, CodeBuddy CLI, WorkBuddy, Trae, Cursor, or DeepSeek Harness is open, restart or refresh it after fixing the reported status.");
+  logRed("If Codex, Claude Code, OpenCode, CodeBuddy CLI, WorkBuddy, Trae, Cursor, Qoder, or DeepSeek Harness is open, restart or refresh it after fixing the reported status.");
   if (codexSkipReason) printCodexSkippedDiagnostics(codexSkipReason);
   if (claudeSkipReason) printClaudeSkippedDiagnostics(claudeSkipReason);
   if (opencodeSkipReason) printOpenCodeSkippedDiagnostics(opencodeSkipReason);
@@ -2084,6 +2160,7 @@ function printUnavailableDiagnostics({ codexSkipReason, claudeSkipReason, openco
   if (workbuddySkipReason) printCodeBuddySkippedDiagnostics("workbuddy");
   if (traeSkipReason) printTraeSkippedDiagnostics(traeSkipReason);
   if (cursorSkipReason) printCursorSkippedDiagnostics(cursorSkipReason);
+  if (qoderSkipReason) printQoderSkippedDiagnostics(qoderSkipReason);
   printCommonCommands({
     codexAdapterEnabled: !codexSkipReason,
     claudeAdapterEnabled: !claudeSkipReason,
@@ -2092,6 +2169,7 @@ function printUnavailableDiagnostics({ codexSkipReason, claudeSkipReason, openco
     workbuddyAdapterEnabled: !workbuddySkipReason,
     traeAdapterEnabled: !traeSkipReason,
     cursorAdapterEnabled: !cursorSkipReason,
+    qoderAdapterEnabled: !qoderSkipReason,
   });
 }
 
@@ -2128,6 +2206,11 @@ function printCursorSkippedDiagnostics() {
   log("Run `memorax-code start --clients cursor` after installing Cursor, then restart or refresh Cursor and start a new session.");
 }
 
+function printQoderSkippedDiagnostics() {
+  logRed("Qoder adapter setup was skipped for this setup, so MemoraX Code left Qoder unchanged.");
+  log("Run `memorax-code start --clients qoder` after installing Qoder, then restart or refresh Qoder and start a new session.");
+}
+
 function printFailureSuggestions() {
   logRed("Suggested recovery: run `memorax-code stop`, then `memorax-code start`, then `memorax-code status`.");
   logRed("If the Backend port is busy, stop the process using 127.0.0.1:8787 and retry `memorax-code start`.");
@@ -2161,6 +2244,7 @@ function printCommonCommands({
   workbuddyAdapterEnabled = true,
   traeAdapterEnabled = true,
   cursorAdapterEnabled = true,
+  qoderAdapterEnabled = true,
 } = {}) {
   log("Common commands:");
   log("- `memorax-code status`: check the local backend and adapter state.");
@@ -2174,6 +2258,7 @@ function printCommonCommands({
   if (workbuddyAdapterEnabled) log("- `memorax-code status --clients workbuddy`: verify the managed WorkBuddy plugin and Hook integration.");
   if (traeAdapterEnabled) log("- `memorax-code-trae status`: verify the managed Trae Global Hooks and Skill integration.");
   if (cursorAdapterEnabled) log("- `memorax-code-cursor status`: verify the managed Cursor Hooks and Skill integration.");
+  if (qoderAdapterEnabled) log("- `memorax-code-qoder status`: verify the managed Qoder Hooks and Skill integration.");
 }
 
 function memoraxCodeEnabled(statusResult, {
@@ -2184,6 +2269,7 @@ function memoraxCodeEnabled(statusResult, {
   workbuddyAdapterRequired = true,
   traeAdapterRequired = true,
   cursorAdapterRequired = true,
+  qoderAdapterRequired = true,
 } = {}) {
   const output = `${statusResult.stdout ?? ""}\n${statusResult.stderr ?? ""}`;
   const normalized = stripAnsi(output);
@@ -2199,6 +2285,7 @@ function memoraxCodeEnabled(statusResult, {
   const workbuddyAdapterOk = /WorkBuddy adapter:\s*ok\b/im.test(normalized);
   const traeAdapterOk = /Trae adapter:\s*ok\b/im.test(normalized);
   const cursorAdapterOk = /Cursor adapter:\s*ok\b/im.test(normalized);
+  const qoderAdapterOk = /Qoder adapter:\s*ok\b/im.test(normalized);
   return backendOk
     && serviceOk
     && (!codexAdapterRequired || codexAdapterOk)
@@ -2207,7 +2294,8 @@ function memoraxCodeEnabled(statusResult, {
     && (!codebuddyAdapterRequired || codebuddyAdapterOk)
     && (!workbuddyAdapterRequired || workbuddyAdapterOk)
     && (!traeAdapterRequired || traeAdapterOk)
-    && (!cursorAdapterRequired || cursorAdapterOk);
+    && (!cursorAdapterRequired || cursorAdapterOk)
+    && (!qoderAdapterRequired || qoderAdapterOk);
 }
 
 function log(message) {

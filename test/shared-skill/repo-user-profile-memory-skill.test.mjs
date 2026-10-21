@@ -56,8 +56,8 @@ test("personal memory skills route user-profile reads and writes", () => {
   const readReference = readSkillFile("references/personal-read.md").replace(/\s+/g, " ");
 
   assert.match(reference, /personal-memory\/user-profile\/preferences\.md/);
-  assert.match(reference, /Require the user to explicitly ask/);
-  assert.match(reference, /may be saved implicitly/);
+  assert.match(reference, /Judge the user's intent, not trigger words/);
+  assert.match(reference, /how the user wants the agent to communicate and present results/);
   assert.match(reference, /Do not modify or delete existing preferences because of a one-time instruction/);
   assert.match(reference, /Do not scan or clean up unrelated preferences/);
   assert.match(reference, /multiple preferences may match, or it is unclear whether the change is durable, ask the user/);

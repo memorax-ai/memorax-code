@@ -61,8 +61,12 @@ export async function ensureBackendAvailable(options, input = {}) {
         return;
       }
       const recoveryArguments = localBackendRecoveryArguments(connection);
+      if (recoveryArguments === undefined || deadline <= Date.now() || !memoraxCodeCommandAvailable(command.value)) return;
+      // Client authority may have been revoked while health checks or this lock
+      // were pending. A skipped recovery is not a successful process start.
+      if (options.shouldRecover && await options.shouldRecover() !== true) return;
       const remainingStartMs = deadline - Date.now();
-      if (recoveryArguments === undefined || remainingStartMs <= 0 || !memoraxCodeCommandAvailable(command.value)) return;
+      if (remainingStartMs <= 0) return;
       const result = await runMemoraxCode(
         command.value,
         [...options.buildStartArgs(homes, recoveryArguments), "--preserve-clients", "--json"],
@@ -224,7 +228,7 @@ function savedStartDiagnostic(stdout) {
     if (report?.action !== "start" || report.ok !== false || typeof report.backend?.ok !== "boolean") return false;
     const reportKeys = {
       codex: "codexAdapter", claude: "claudeAdapter", dsh: "dshAdapter", opencode: "opencodeAdapter",
-      codebuddy: "codebuddyAdapter", workbuddy: "workbuddyAdapter", trae: "traeAdapter", cursor: "cursorAdapter",
+      codebuddy: "codebuddyAdapter", workbuddy: "workbuddyAdapter", trae: "traeAdapter", cursor: "cursorAdapter", qoder: "qoderAdapter",
     };
     if (Object.hasOwn(report, "clientFailures") && !Array.isArray(report.clientFailures)) return false;
     const clientFailures = report.clientFailures ?? [];

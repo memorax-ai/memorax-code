@@ -34,6 +34,8 @@ class MemoraxRequestError extends Error {
 }
 
 const SYSTEM_CODE_MESSAGES: Record<string, string> = {
+  EACCES: "MemoraX connection permission denied",
+  EPERM: "MemoraX connection not permitted",
   ENOTFOUND: "MemoraX hostname could not be resolved",
   EAI_AGAIN: "MemoraX hostname resolution temporarily failed",
   ECONNREFUSED: "MemoraX connection was refused",

@@ -3,7 +3,106 @@ import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, win32 } from "node:path";
 import test from "node:test";
-import { isOpenCodeDefaultWorkspace, resolveWorkBuddyWorkspaceKind } from "../src/default-workspace.mjs";
+import { isOpenCodeDefaultWorkspace, isQoderManagedTaskWorkspace, resolveWorkBuddyWorkspaceKind } from "../src/default-workspace.mjs";
+
+test("Qoder recognizes only a valid date and generated task directory under its native Documents root", () => {
+  for (const platform of ["darwin", "linux"]) {
+    const options = {
+      platform,
+      env: { HOME: "/home/test", USERPROFILE: "/different-home", QODER_HOME: "/custom-qoder", XDG_DOCUMENTS_DIR: "/custom-documents" },
+      realpath: (path) => path,
+    };
+    for (const task of ["62e7b36b", "A", "task._-1"])
+      assert.equal(isQoderManagedTaskWorkspace(`/home/test/Documents/Qoder/2024-02-29/${task}`, options), true);
+    for (const cwd of [
+      undefined, "", "Documents/Qoder/2026-10-06/62e7b36b",
+      "/home/test/Documents/Qoder", "/home/test/Documents/Qoder/2026-10-06",
+      "/home/test/Documents/Qoder/2026-10-06/62e7b36b/nested",
+      "/home/test/Documents/Qoder/2026-02-29/62e7b36b",
+      "/home/test/Documents/Qoder/2026-13-01/62e7b36b",
+      "/home/test/Documents/Qoder/2026-01-32/62e7b36b",
+      "/home/test/Documents/Qoder/2026-1-06/62e7b36b",
+      "/home/test/Documents/Qoder/2026-10-06/123456789",
+      "/home/test/Documents/Qoder/2026-10-06/.hidden",
+      "/home/test/Documents/Qoder/2026-10-06/-task",
+      "/home/test/Documents/Qoder/2026-10-06/task name",
+      "/home/test/Documents/Qoder/2026-10-06/task:one",
+      "/home/test/Documents/Qoder/2026-10-06/你好",
+      "/home/test/Documents/Qoder/2026-10-06/62e7b36b ",
+      " /home/test/Documents/Qoder/2026-10-06/62e7b36b",
+      "/home/test/Documents/qoder/2026-10-06/62e7b36b",
+      "/home/test/.qoderwork/2026-10-06/62e7b36b",
+      "/different-home/Documents/Qoder/2026-10-06/62e7b36b",
+      "/custom-qoder/2026-10-06/62e7b36b",
+      "/custom-documents/Qoder/2026-10-06/62e7b36b",
+    ]) assert.equal(isQoderManagedTaskWorkspace(cwd, options), false, `${platform}: ${cwd}`);
+  }
+});
+
+test("Qoder Windows uses USERPROFILE without guessing alternate Documents roots", () => {
+  const options = {
+    platform: "win32",
+    env: { USERPROFILE: "C:\\Users\\Test", HOME: "D:\\Other", OneDrive: "E:\\Cloud" },
+    realpath: win32.normalize,
+  };
+  assert.equal(isQoderManagedTaskWorkspace("c:/users/test/Documents/Qoder/2026-10-06/62e7b36b", options), true);
+  for (const cwd of [
+    "C:\\Users\\Test\\Documents\\Qoder",
+    "C:\\Users\\Test\\Documents\\Qoder\\2026-10-06\\62e7b36b\\nested",
+    "D:\\Other\\Documents\\Qoder\\2026-10-06\\62e7b36b",
+    "E:\\Cloud\\Documents\\Qoder\\2026-10-06\\62e7b36b",
+    "C:Documents\\Qoder\\2026-10-06\\62e7b36b",
+  ]) assert.equal(isQoderManagedTaskWorkspace(cwd, options), false, cwd);
+});
+
+test("Qoder preserves cwd bytes and fails closed when either canonical path is unavailable", () => {
+  const cwd = "/home/test/Documents/Qoder/2026-10-06/62e7b36b ";
+  const calls = [];
+  const options = {
+    platform: "darwin", env: { HOME: "/home/test" },
+    realpath: (path) => { calls.push(path); return path; },
+  };
+  assert.equal(isQoderManagedTaskWorkspace(cwd, options), false);
+  assert.equal(calls[0], cwd);
+  const task = cwd.trimEnd();
+  for (const unavailable of [task, "/home/test/Documents/Qoder"]) {
+    assert.equal(isQoderManagedTaskWorkspace(task, {
+      ...options,
+      realpath: (path) => {
+        if (path === unavailable) throw Object.assign(new Error("unreadable"), { code: "EACCES" });
+        return path;
+      },
+    }), false);
+  }
+});
+
+test("Qoder follows a redirected Documents root but rejects task and date symlinks escaping its managed root", async () => {
+  const home = await mkdtemp(join(tmpdir(), "memorax-qoder-workspace-"));
+  try {
+    const documents = join(home, "redirected-documents");
+    const root = join(documents, "Qoder");
+    const task = join(root, "2026-10-06", "62e7b36b");
+    const outside = join(home, "ordinary-project");
+    await mkdir(join(task, "nested"), { recursive: true });
+    await mkdir(outside);
+    const linkType = process.platform === "win32" ? "junction" : "dir";
+    await symlink(documents, join(home, "Documents"), linkType);
+    const options = { env: { HOME: home, USERPROFILE: home } };
+    assert.equal(isQoderManagedTaskWorkspace(join(home, "Documents", "Qoder", "2026-10-06", "62e7b36b"), options), true);
+    assert.equal(isQoderManagedTaskWorkspace(task, options), true);
+    for (const cwd of [root, join(task, "nested"), join(root, "2026-10-06", "missing")])
+      assert.equal(isQoderManagedTaskWorkspace(cwd, options), false, cwd);
+    const escapedTask = join(root, "2026-10-06", "a1234567");
+    await symlink(outside, escapedTask, linkType);
+    assert.equal(isQoderManagedTaskWorkspace(escapedTask, options), false);
+    const escapedDate = join(root, "2026-10-07");
+    await mkdir(join(outside, "b1234567"));
+    await symlink(outside, escapedDate, linkType);
+    assert.equal(isQoderManagedTaskWorkspace(join(escapedDate, "b1234567"), options), false);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+});
 
 test("WorkBuddy recognizes only an immediate valid task under the configured native root", async () => {
   const home = await mkdtemp(join(tmpdir(), "memorax-workbuddy-workspace-"));

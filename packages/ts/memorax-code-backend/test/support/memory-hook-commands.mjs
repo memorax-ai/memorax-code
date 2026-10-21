@@ -51,5 +51,11 @@ export function memoryHookCommands() {
         turnId: "22222222-2222-4222-8222-222222222222", databasePath: resolve("cursor-fixture", "state.vscdb"), cwd, transcriptPath,
         phase: "stop", status: "completed" },
     },
+    {
+      start: { ...base("qoder"), turnId: "qoder-turn", cwd: resolve("qoder-workspace"), prompt,
+        transcriptPath: resolve("qoder-native.jsonl") },
+      writeback: { ...base("qoder"), turnId: "qoder-turn", cwd: resolve("qoder-workspace"),
+        transcriptPath: resolve("qoder-native.jsonl"), status: "completed" },
+    },
   ];
 }

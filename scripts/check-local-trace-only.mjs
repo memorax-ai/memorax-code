@@ -55,9 +55,11 @@ const reviewedNetworkSources = new Set([
   "packages/ts/memorax-code-backend/src/clients/codebuddy/memory-hook-runtime.ts",
   "packages/ts/memorax-code-backend/src/clients/trae/memory-hook-runtime.ts",
   "packages/ts/memorax-code-backend/src/clients/cursor/memory-hook-runtime.ts",
+  "packages/ts/memorax-code-backend/src/clients/qoder/memory-hook-runtime.ts",
   "packages/ts/memorax-code-codebuddy-adapter/hooks/runtime-hook.mjs",
   "packages/ts/memorax-code-trae-adapter/hooks/runtime-hook.mjs",
   "packages/ts/memorax-code-cursor-adapter/hooks/runtime-hook.mjs",
+  "packages/ts/memorax-code-qoder-adapter/hooks/runtime-hook.mjs",
 ]);
 
 const localTraceCoreSources = new Set([

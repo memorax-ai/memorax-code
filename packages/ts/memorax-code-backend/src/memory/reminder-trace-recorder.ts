@@ -11,6 +11,7 @@ import {
   traceContextFromCodeBuddyHookBody,
   traceContextFromTraeHookBody,
   traceContextFromCursorHookBody,
+  traceContextFromQoderHookBody,
   type TraceContext,
 } from "../trace/context.js";
 import { recordTraceEvent } from "../trace/store.js";
@@ -75,6 +76,7 @@ function traceContextForReminder(command: SkillReminderCommand): TraceContext | 
   if (command.client === "codebuddy" || command.client === "workbuddy") return traceContextFromCodeBuddyHookBody(command);
   if (command.client === "trae") return traceContextFromTraeHookBody(command);
   if (command.client === "cursor") return traceContextFromCursorHookBody(command);
+  if (command.client === "qoder") return traceContextFromQoderHookBody(command);
   return traceContextFromOpenCodeHookBody(command);
 }
 
@@ -85,6 +87,7 @@ function reminderSource(command: SkillReminderCommand): string {
   if (command.client === "codebuddy" || command.client === "workbuddy") return `${command.client}-hook`;
   if (command.client === "trae") return "trae-hook";
   if (command.client === "cursor") return "cursor-hook";
+  if (command.client === "qoder") return "qoder-hook";
   return "opencode-plugin";
 }
 
