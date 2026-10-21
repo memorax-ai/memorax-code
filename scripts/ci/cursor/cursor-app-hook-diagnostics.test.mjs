@@ -4,7 +4,8 @@ import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { collectCursorAppHookDiagnostics, projectCursorAppHookDiagnostics, collectCursorAppHookTiming, projectCursorAppHookTiming } from "./cursor-app-hook-diagnostics.mjs";
+import { collectCursorAppHookDiagnostics, projectCursorAppHookDiagnostics, collectCursorAppHookTiming, projectCursorAppHookTiming,
+  collectCursorAppSessionHookDiagnostics, projectCursorAppSessionHookDiagnostics, projectCursorAppHookReadinessFailure } from "./cursor-app-hook-diagnostics.mjs";
 
 const secret = "PRIVATE_PROMPT_PATH_EMAIL_TOKEN_CANARY";
 const rule = "\u2550".repeat(87), command = `node /${secret}/runtime-hook.mjs --memorax-code-cursor-hook-v1`;
@@ -277,4 +278,96 @@ test("timing refuses multiple current log windows, unsafe data and unknown/unbou
   assert.equal(projected.runIndex, null);
   assert.equal(projected.requiredUserHooksLoaded, false);
   assert.deepEqual(projected.observedMs, { sessionStartReady: 0, submit: 4, modelRequest: null, turnStart: null });
+});
+
+
+const currentLaunch = "[2026-10-09T12:00:00.000Z] Initializing Cursor Hooks Service...\n"
+  + "[2026-10-09T12:00:00.001Z] Reloading hooks configuration...\n"
+  + "[2026-10-09T12:00:00.002Z] Loaded 5 user hook(s) for steps: sessionStart, beforeSubmitPrompt, preCompact, afterAgentResponse, stop\n";
+const sessionRequested = "[2026-10-09T12:00:00.003Z] Hook step requested: sessionStart\n";
+
+test("session diagnostics distinguish missing request, missing execution, exit failure and response rejection before any turn", async (t) => {
+  const f = await fixture(t);
+  const request = { ...f.request, hook_event_name: "sessionStart", generation_id: undefined };
+  const context = "MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT=cursor and MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID=" + f.sessionId;
+  for (const [name, body, expected] of [
+    ["no-request", "", { requests: 0, blocks: 0, ready: false }],
+    ["request-only", sessionRequested, { requests: 1, blocks: 0, ready: false }],
+    ["exit-failed", sessionRequested + execution(request, { exit: 1 }), { requests: 1, blocks: 1, exit: 1, trace: false, ready: false }],
+    ["context-missing", sessionRequested + execution(request, { output: { continue: true, additional_context: secret } }),
+      { requests: 1, blocks: 1, exit: 0, trace: false, ready: false }],
+    ["denied", sessionRequested + execution(request, { output: { continue: false, additional_context: context } }),
+      { requests: 1, blocks: 1, exit: 0, trace: true, ready: false }],
+    ["valid", sessionRequested + execution(request, { output: { additional_context: context } }),
+      { requests: 1, blocks: 1, exit: 0, trace: true, ready: true }],
+  ]) {
+    await writeFile(f.log, currentLaunch + body);
+    const value = await collectCursorAppSessionHookDiagnostics({ home: f.home, startedAt, sessionId: f.sessionId });
+    const timing = await collectCursorAppHookTiming({ home: f.home, startedAt, sessionId: f.sessionId });
+    assert.equal(value.readStatus, "present", name);
+    assert.equal(value.currentLogFiles, 1, name);
+    assert.equal(value.unscopedRequests, expected.requests, name);
+    assert.equal(value.ownedExecutionBlocks, expected.blocks, name);
+    assert.equal(value.executions[0]?.exitCode, expected.exit, name);
+    assert.equal(value.executions[0]?.traceContextMatched, expected.trace, name);
+    assert.equal(timing.requiredUserHooksLoaded, true, name);
+    assert.equal(timing.sessionStartReady, expected.ready, name);
+    assert.deepEqual(projectCursorAppSessionHookDiagnostics(value), value);
+    for (const privateValue of [secret, f.home, f.sessionId, f.turnId]) assert.equal(JSON.stringify(value).includes(privateValue), false);
+  }
+});
+
+test("session diagnostics require the explicit session and preserve generation, parse and native response failures", async (t) => {
+  const f = await fixture(t);
+  const request = { ...f.request, hook_event_name: "sessionStart", generation_id: undefined };
+  const output = { additional_context: "MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT=cursor and MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID=" + f.sessionId };
+  await writeFile(f.log, currentLaunch
+    + execution(request, { input: "{" + secret })
+    + execution({ ...request, conversation_id: randomUUID() })
+    + execution({ ...request, generation_id: f.turnId })
+    + execution({ ...request, generation_id: "malformed" }, { output })
+    + execution({ ...request, generation_id: "" }, { output })
+    + execution({ ...request, session_id: randomUUID() }, { output })
+    + execution(request, { output: null, exit: "N/A" }));
+  const value = await collectCursorAppSessionHookDiagnostics({ home: f.home, startedAt, sessionId: f.sessionId });
+  assert.deepEqual(value.filteredExecutionBlocks, { parse: 1, event: 0, session: 1, generation: 1 });
+  assert.deepEqual(value.executions.map((item) => [item.generation, item.generationAllowed, item.sessionAliasMatched]),
+    [["invalid", false, true], ["invalid", true, true], ["absent", true, false], ["absent", true, true]]);
+  assert.equal(value.executions.at(-1).responseKind, "empty");
+  assert.equal(value.executions.at(-1).exitCode, null);
+  assert.deepEqual(projectCursorAppSessionHookDiagnostics(value), value);
+  for (const privateValue of [secret, f.home, f.sessionId, f.turnId]) assert.equal(JSON.stringify(value).includes(privateValue), false);
+  assert.equal((await collectCursorAppSessionHookDiagnostics({ home: f.home, startedAt, sessionId: secret })).readStatus, "invalid");
+});
+
+test("session collection reports partial frames and excludes executions outside the current launch", async (t) => {
+  const f = await fixture(t), request = { ...f.request, hook_event_name: "sessionStart", generation_id: undefined };
+  await writeFile(f.log, currentLaunch + execution(request).slice(0, -40));
+  const partial = await collectCursorAppSessionHookDiagnostics({ home: f.home, startedAt, sessionId: f.sessionId });
+  assert.equal(partial.readStatus, "invalid");
+  assert.equal(partial.executions.length, 0);
+  await writeFile(f.log, currentLaunch + execution(request));
+  const earlier = await collectCursorAppSessionHookDiagnostics({ home: f.home, startedAt: startedAt + 1, sessionId: f.sessionId });
+  assert.equal(earlier.currentLogFiles, 0);
+  assert.equal(earlier.ownedExecutionBlocks, 0);
+});
+
+test("readiness failure projection is bounded, idempotent and excludes identity and private text", () => {
+  const value = projectCursorAppHookReadinessFailure({ phase: "session", appLaunch: 1,
+    code: "CURSOR_APP_SESSION_START_READY_TIMEOUT", timeoutKind: "predicate", waitElapsedMs: 5000,
+    lastObservationElapsedMs: 100, observationPending: true,
+    lastObservation: { phase: "session", requiredUserHooksLoaded: true, sessionStartReady: false, sessionId: secret },
+    sessionDiagnosticsStatus: "completed", sessionStart: { readStatus: "present", filesRead: 1, currentLogFiles: 1,
+      unscopedRequests: 1, ownedExecutionBlocks: 1, filteredExecutionBlocks: { parse: 1, raw: secret }, executions: [], raw: secret },
+    sessionId: secret, home: secret, error: secret });
+  assert.deepEqual(projectCursorAppHookReadinessFailure(value), value);
+  assert.equal(value.sessionStart.unscopedRequests, 1);
+  assert.equal(value.sessionStart.filteredExecutionBlocks.parse, 1);
+  assert.equal(JSON.stringify(value).includes(secret), false);
+  const invalid = projectCursorAppHookReadinessFailure({ phase: secret, appLaunch: 17, code: secret, timeoutKind: secret,
+    waitElapsedMs: Infinity, lastObservationElapsedMs: -1, lastObservation: secret, sessionStart: { executions: [secret] } });
+  assert.equal(invalid.waitElapsedMs, null);
+  assert.equal(invalid.lastObservationElapsedMs, null);
+  assert.equal(invalid.lastObservation, null);
+  assert.equal(JSON.stringify(invalid).includes(secret), false);
 });

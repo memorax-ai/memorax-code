@@ -20,14 +20,14 @@ function step(id, predicate) {
 
 test("the evidence change keeps every acceptance trigger, matrix and job timeout", () => {
   assert.match(source, /^on:\n  workflow_dispatch:\n    inputs:\n      check_deepseek:[\s\S]*?\n      diagnose_opencode_initialization:[\s\S]*?\n  pull_request:\n    branches: \[main\]\n  push:\n    branches: \[main\]\n/m);
-  for (const [id, client] of [["install", "codex"], ["opencode", "opencode"]]) {
+  for (const [id, client] of [["install", "codex"], ["opencode", "opencode"], ["claude", "claude"]]) {
     assert.match(job(id), new RegExp(`^      matrix: \\$\\{\\{ fromJSON\\(needs\\.package\\.outputs\\.${client}-matrix\\) \\}\\}$`, "m"));
     assert.match(job(id), /^    timeout-minutes: 30$/m);
     assert.match(job(id), /^      fail-fast: false$/m);
   }
 });
 
-for (const [id, client, version] of [["install", "codex", "codex"], ["opencode", "opencode", "opencode"]]) {
+for (const [id, client, version] of [["install", "codex", "codex"], ["opencode", "opencode", "opencode"], ["claude", "claude", "claude"]]) {
   test(`${client} jobs record inputs, keep evidence outside the runtime and export it without changing the outcome`, () => {
     const list = steps(id);
     const download = step(id, (item) => item.startsWith("uses: actions/download-artifact@v4"));
@@ -41,7 +41,8 @@ for (const [id, client, version] of [["install", "codex", "codex"], ["opencode",
     const tests = list.filter((item) => /^\s+id: native-(posix|windows)$/m.test(item));
     assert.equal(tests.length, 2);
     for (const item of tests) {
-      assert.match(item, /^        timeout-minutes: 20$/m);
+      if (client === "claude") assert.doesNotMatch(item, /timeout-minutes:/);
+      else assert.match(item, /^        timeout-minutes: 20$/m);
       assert.match(item, /^          MEMORAX_CI_EVIDENCE_DIR: \$\{\{ runner\.temp \}\}\/native-evidence\/suites$/m);
       assert.doesNotMatch(item, /continue-on-error/);
     }
@@ -68,21 +69,25 @@ for (const [id, client, version] of [["install", "codex", "codex"], ["opencode",
     assert.match(report, /ci-evidence\.mjs export-status --outcome "\$UPLOAD_OUTCOME" --artifact-id "\$ARTIFACT_ID" /);
     // The real-PowerShell wrapper test gates the job but cannot skip the native suites or delay their evidence.
     // Its TAP counts decide its result, so a skipped test fails it, and it reports on its own summary line.
-    const wrappers = step(id, (item) => item.startsWith("name: Verify evidence helpers keep the wrapper result (Windows)\n"));
-    assert.match(wrappers, /^        if: always\(\) && !cancelled\(\) && runner\.os == 'Windows'$/m);
-    assert.match(wrappers, /^        timeout-minutes: 10$/m);
-    assert.match(wrappers, /^          node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=tap "--test-reporter-destination=\$tap" scripts\/ci\/shared\/native-evidence-wrappers\.test\.mjs$/m);
-    assert.match(wrappers, /^          node scripts\/ci\/shared\/ci-evidence\.mjs self-test-status --tap \$tap --exit-code \$LASTEXITCODE --github-summary \$env:GITHUB_STEP_SUMMARY$/m);
-    assert.doesNotMatch(wrappers, /continue-on-error/);
-    const order = [inputs, ...tests, summary, upload, report, wrappers].map((item) => list.indexOf(item));
+    const ordered = [inputs, ...tests, summary, upload, report];
+    if (client !== "claude") {
+      const wrappers = step(id, (item) => item.startsWith("name: Verify evidence helpers keep the wrapper result (Windows)\n"));
+      assert.match(wrappers, /^        if: always\(\) && !cancelled\(\) && runner\.os == 'Windows'$/m);
+      assert.match(wrappers, /^        timeout-minutes: 10$/m);
+      assert.match(wrappers, /^          node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=tap "--test-reporter-destination=\$tap" scripts\/ci\/shared\/native-evidence-wrappers\.test\.mjs$/m);
+      assert.match(wrappers, /^          node scripts\/ci\/shared\/ci-evidence\.mjs self-test-status --tap \$tap --exit-code \$LASTEXITCODE --github-summary \$env:GITHUB_STEP_SUMMARY$/m);
+      assert.doesNotMatch(wrappers, /continue-on-error/);
+      ordered.push(wrappers);
+    }
+    const order = ordered.map((item) => list.indexOf(item));
     assert.deepEqual(order, [...order].sort((left, right) => left - right));
   });
 }
 
 test("every uploaded artifact is attempt-qualified and every package reader uses the package job outputs", () => {
   const uploads = source.split("uses: actions/upload-artifact@v4\n").slice(1).map((item) => item.split("\n      - ")[0]);
-  // Package, Cursor releases and input manifest; Codex and OpenCode evidence; two Cursor reports.
-  assert.equal(uploads.length, 7);
+  // Package, Cursor releases and input manifest; three clients' evidence; two Cursor reports.
+  assert.equal(uploads.length, 8);
   for (const upload of uploads) assert.match(upload, /^          name: .*\$\{\{ github\.run_attempt \}\}$/m);
   assert.doesNotMatch(source, /overwrite:/);
   const downloads = source.split("uses: actions/download-artifact@v4\n").slice(1).map((item) => item.split("\n      - ")[0]);
@@ -120,6 +125,7 @@ test("the package job publishes the candidate package and frozen client versions
 
 test("wrappers capture the evidence location before isolation and pass it only to test runners", async () => {
   for (const [path, planned] of [
+    ["../claude/claude-install-check.sh", "claude-install-smoke,claude-install-interruption-check,claude-native-check,claude-permissions-check"],
     ["../codex/codex-install-check.sh", "codex-install-smoke,codex-native-check,codex-permissions-check,codex-install-interruption-check"],
     ["../opencode/opencode-install-check.sh", "opencode-install-smoke,opencode-native-check,opencode-permissions-check,opencode-server-check,opencode-install-interruption-check"],
   ]) {
@@ -138,6 +144,7 @@ test("wrappers capture the evidence location before isolation and pass it only t
     assert.match(script, /^ledger phase cleanup\nrm -rf "\$test_root"$/m);
   }
   for (const [path, planned] of [
+    ["../claude/claude-install-check.ps1", "claude-install-smoke,claude-install-interruption-check,claude-native-check,claude-permissions-check"],
     ["../codex/codex-install-check.ps1", "codex-install-smoke,codex-native-check,codex-permissions-check,codex-install-interruption-check"],
     ["../opencode/opencode-install-check.ps1", "opencode-install-smoke,opencode-native-check,opencode-permissions-check,opencode-server-check,opencode-install-interruption-check"],
   ]) {

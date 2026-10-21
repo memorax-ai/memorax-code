@@ -9,9 +9,10 @@ import { tmpdir, userInfo } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
-import { assertBackendReplacement, assertCredentialNotEchoed, assertSetupInputRejection,
+import { verifyBackendReplacementState, assertCredentialNotEchoed, assertSetupInputRejection,
   snapshotProtectedConfiguration, assertProtectedConfiguration } from "./codex-lifecycle-assertions.mjs";
 import { createEvidenceRecorder } from "../shared/ci-evidence.mjs";
+import { projectTerminalDisposal } from "./codex-setup-pty-evidence.mjs";
 import { projectError, projectPathAlias, projectProductDiagnostics, signal as knownSignal } from "../shared/ci-evidence-projections.mjs";
 
 const execFileAsync = promisify(execFile);
@@ -446,6 +447,7 @@ try {
   if (error.terminalError) report.terminalError = error.terminalError;
   if (error.terminalDiagnostics) report.terminalDiagnostics = error.terminalDiagnostics;
   if (error.terminalNativeError) report.terminalNativeError = error.terminalNativeError;
+  if (error.terminalDisposal) report.terminalDisposal = error.terminalDisposal;
   // A command timeout is reported by execFile as a killed child with a signal and no exit code.
   if (knownSignal(error.signal)) report.commandSignal = error.signal;
   if (error.killed === true) report.commandKilled = true;
@@ -464,7 +466,7 @@ try {
     }
     if (root) {
       cleanupStage = "directory_removal";
-      await rm(root, { recursive: true, force: true });
+      await removeIsolatedDirectory();
     }
     report.cleanup = "PASS";
   } catch (error) {
@@ -533,8 +535,9 @@ function failureEvidence(functionalOutcome) {
     error: functionalFailed ? message : undefined,
     exitCode: report.exitCode, commandSignal: report.commandSignal, commandKilled: report.commandKilled,
     nativeErrorCode: report.nativeErrorCode, diagnosticCode: report.diagnosticCode, terminalError: report.terminalError,
-    errorDetails: report.errorDetails,
+    errorDetails: report.errorDetails, terminalDisposal: report.terminalDisposal,
     cleanupStage: cleanup?.stage, cleanupCode, cleanupPath: cleanup?.path,
+    directoryRemoval: report.directoryRemoval,
     backendStarted: setupStarted,
     shutdownConfirmed: cleanup ? setupStarted && cleanup.stage === "directory_removal" : undefined,
     checksPassed: report.checks.length,
@@ -622,18 +625,16 @@ async function rememberPid() {
 }
 async function verifyBackendReplacement(before, label) {
   stage = `${label} Backend replacement`;
-  const after = await readJson(pidPath());
-  let oldProcessAlive = true;
-  try { process.kill(before.pid, 0); }
-  catch (error) { if (error.code === "ESRCH") oldProcessAlive = false; else throw error; }
-  try { process.kill(after.pid, 0); }
-  catch { check(false, "Updated Backend PID does not identify a live process"); }
-  check(after.url === `http://127.0.0.1:${backendPort}`, "Updated Backend has an unexpected endpoint");
-  const response = await fetch(new URL("/health", after.url), { signal: AbortSignal.timeout(5_000) });
-  check(response.ok, "Updated Backend did not answer its health endpoint successfully");
-  assertBackendReplacement(before, after, await response.json(), oldProcessAlive);
+  const after = await verifyBackendReplacementState(before, {
+    readAfter: () => readJson(pidPath()), expectedUrl: `http://127.0.0.1:${backendPort}`,
+    observe(diagnostic) {
+      report.backendReplacement = diagnostic;
+      evidence.observe("backendReplacement", diagnostic);
+    },
+  });
   backendPids.delete(before.pid);
-  report.checks.push(`${label}: old Backend exited; new PID, instance and live health identity agree`);
+  backendPids.add(after.pid);
+  report.checks.push(`${label}: Backend instance changed; current process and health identity agree`);
 }
 async function stopAndVerify() {
   cleanupStage = "pid_record_read";
@@ -685,8 +686,10 @@ async function terminalSetup(mode) {
   // this initial input; every reuse, update and request reads persisted state.
   if (mode === "complete" || mode === "cancel") env.MEMORAX_CODE_MEMORAX_ENDPOINT = savedEndpoint;
   try {
-    return JSON.parse((await run(process.execPath, [ptyScript, ptyPackage, entrypoint, mode],
+    const result = JSON.parse((await run(process.execPath, [ptyScript, ptyPackage, entrypoint, mode],
       JSON.stringify({ username: fixtureUser, apiKey: fixtureKey }))).stdout);
+    recordTerminalDisposal(mode, result.terminalDisposal);
+    return result;
   } catch (error) {
     // The helper emits only a bounded safe JSON report; raw terminal output
     // stays private even when a test assertion or native terminal launch fails.
@@ -697,12 +700,43 @@ async function terminalSetup(mode) {
         "usernamePromptSeen", "keyPromptSeen", "languagePromptSeen", "accountInputSent", "outputBytes", "cursorPositionReplies", "exitCode", "signal",
       ].filter((key) => typeof safe[key] === "boolean" || Number.isFinite(safe[key])).map((key) => [key, safe[key]]));
       if (/^[A-Z][A-Z0-9_]{1,79}$/.test(safe.nativeErrorCode)) error.terminalNativeError = safe.nativeErrorCode;
+      const disposal = recordTerminalDisposal(mode, safe.terminalDisposal);
+      if (disposal) error.terminalDisposal = disposal;
     } catch {}
     throw error;
   } finally {
     delete env.MEMORAX_CODE_MEMORAX_ENDPOINT;
   }
 }
+function recordTerminalDisposal(mode, value) {
+  const disposal = projectTerminalDisposal(value);
+  if (disposal) {
+    try { evidence.observe("terminalDisposal", {
+      mode: ["complete", "cancel", "reuse", "update", "force-update"].includes(mode) ? mode : "unknown", ...disposal,
+    }); } catch { /* Optional evidence must not replace the terminal outcome. */ }
+  }
+  return disposal;
+}
+
+async function removeIsolatedDirectory() {
+  const started = performance.now();
+  // Preserve the existing single removal attempt and publish only its outcome.
+  try { evidence.observe("directoryRemoval", { status: "started", attempt: 1 }); } catch {}
+  let failure;
+  try { await rm(root, { recursive: true, force: true }); }
+  catch (error) { failure = error; throw error; }
+  finally {
+    report.directoryRemoval = { status: failure ? "failed" : "returned", attempt: 1,
+      elapsedMs: Math.max(0, Math.min(600_000, Math.floor(performance.now() - started))) };
+    if (failure) {
+      report.directoryRemoval.error = projectError(failure);
+      const path = projectPathAlias(failure.path, { root });
+      if (path) report.directoryRemoval.path = path;
+    }
+    try { evidence.observe("directoryRemoval", report.directoryRemoval); } catch {}
+  }
+}
+
 async function verifySavedAccountSearch(label) {
   stage = `${label} saved-account Search`;
   check(requests === 0, "A lifecycle operation contacted the model or MemoraX fixture before explicit Search");

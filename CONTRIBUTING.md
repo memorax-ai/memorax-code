@@ -428,8 +428,8 @@ Cursor App image assets remain in `scripts/fixtures/cursor-app/`.
 
 ### Native CI First-Failure Evidence
 
-The Codex and OpenCode functional jobs record first-failure evidence by default;
-the other clients keep their existing reports. The wrappers read
+The Codex, OpenCode and Claude functional jobs record first-failure evidence by
+default; the other clients keep their existing reports. The wrappers read
 `MEMORAX_CI_EVIDENCE_DIR` before clearing the environment, require an empty real
 directory outside the test runtime, and pass it only to the test runners; an
 unusable directory disables evidence without changing the result. They keep a
@@ -437,18 +437,29 @@ ledger of the wrapper phase (`setup`, `suites`, `cleanup`) and of each planned
 suite (`PASS`, `FAIL`, `NOT_RUN`, `INCOMPLETE`, `SKIPPED_BY_DESIGN`); suite
 order, fail-fast behavior and assertions are unchanged. A GitHub `pwsh` step
 exits with `$LASTEXITCODE`, so the PowerShell evidence helpers restore it after
-every call. After their native suites and the evidence export, the Windows jobs
-run a CI tool self-test: both wrappers under real PowerShell with stub suites,
+every call. After their native suites and evidence export, the Codex and
+OpenCode Windows jobs run a CI tool self-test: all three wrappers under real
+PowerShell with stub suites,
 failing ledger calls and an unusable evidence directory. It fails the job when
 any expected test fails or is skipped, and reports on its own summary line
 instead of in `testOutcome`.
 
-The Codex installation smoke and the OpenCode background Repo Memory case
-append a journal when their progress or key observations change, so records
+The Codex installation and setup-interruption suites, Claude installation
+smoke, and OpenCode background Repo Memory case append a journal when their
+progress or key observations change, so records
 written before a runner is killed stay readable; an interrupted last record is
 reported as a truncated tail. Before cleanup removes the runtime, a failure
 collects the product's `logs --diagnostics` records, Repo Memory job state,
 owned process state and trace event types, each under its own time budget.
+Codex setup retries preserve the observed terminal exit and fixed product
+stages before terminal disposal. Claude replacement checks record separate
+artifact-pack, expected update rejection, recovery and readiness phases.
+Primary functional failures and later cleanup failures remain separate;
+missing observations stay unknown. Awaited collection keeps its deadline active
+until the collector settles or times out. Collection and export failures do not
+change the functional result. The shared setup terminal helper reports disposal
+failures separately from the original setup failure; it does not signal an
+exited Unix PID again.
 
 Evidence holds typed allowlisted fields only: stages, error, system and exit
 codes, signals, counts, booleans, relative times, versions, checksums and
@@ -1431,7 +1442,10 @@ audits share a 60-second budget, with at most 30 seconds per query and one retry
 for a query timeout. Every successful snapshot still checks all returned
 processes; only a complete snapshot without owned processes passes. Other query
 errors and exhausted budgets fail. Unconfirmed cleanup fails and retains
-isolated state for runner teardown.
+isolated state for runner teardown. App restart checks distinguish the closed
+former child from the new live child without requiring different PIDs. macOS
+descendant audits correlate observed PIDs with process start times and retire
+observations after a clear audit; indistinguishable start times remain fail-closed.
 
 #### Reproduction and Reports
 
@@ -1458,6 +1472,33 @@ App/installer logs, command output, transcripts, database files, Hook traces,
 credentials, PIDs and private paths are excluded. Diagnostics never replace the
 original failure or relax acceptance.
 
+The native runner saves atomic, redacted progress snapshots during execution.
+Wrappers recover the last snapshot when the final report is missing or invalid,
+preserve the first native failure, and report timeout, abort and process-exit
+outcomes separately. Linux exports available reports before container cleanup.
+Progress snapshots cannot establish acceptance: a successful native exit and a
+complete final report with every existing assertion are still required.
+
+The `appDriver` startup observation records CDP connection, page and workbench
+counts, first and last driver probes, fixed evaluation outcomes, and relative
+times. It distinguishes an individual probe timeout from the overall readiness
+window. Page selection and readiness limits stay unchanged; URLs, page titles
+and evaluation error text are excluded.
+
+Windows process-query diagnostics retain the first failed query and the last
+query, live bounded output counts, observed process lifecycle events, termination
+requests, and fixed PowerShell/CIM/JSON phase markers with relative times.
+Unavailable counts and times remain null instead of appearing as observed zeroes.
+No raw process rows or command output are included. Query deadlines, retry limits
+and complete-snapshot ownership checks remain unchanged.
+
+Windows installer reports retain the observed artifact hash and size, fixed
+PowerShell invocation and process-tree-wait markers, bounded output counts,
+and classified observations from the private installer log. The installer still
+uses the same 300-second deadline and waits for its process tree. A missing
+wait-completion marker leaves root and descendant exit unconfirmed; it does
+not establish which process stalled. Raw installer logs stay on the runner.
+
 Skill Hook checks read initial, fresh, dynamic, user-message and completed Exec
 contexts from the current native run and its referenced, completed same-session
 history. Failure reports project only presence and session-marker match booleans
@@ -1482,6 +1523,13 @@ relative Hook timing, including the first Repo Memory submission attempt, and
 Windows process-audit summaries on success and failure, so passing cells can
 serve as controls. Native requests and Backend registration
 remain independently observed; the fixture never supplies a missing Turn start.
+
+On failure, `hookReadinessFailure` distinguishes a single log-read timeout from
+the overall Hook readiness window and preserves the last completed observation.
+Before cleanup, a bounded read records SessionStart requests, owned executions,
+filter counts and fixed response fields for the explicit session, including
+failures before any model request. Session IDs and raw Hook content are excluded;
+failed or late diagnostic reads do not replace the first native failure.
 
 Real login, hosted models, OS credential-store isolation, native Continue/Retry/
 Edit, Backend restart, preauthorized tools, running-tool interruption,

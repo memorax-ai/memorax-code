@@ -15,6 +15,10 @@ const owners = { appBundle, packageRoot, stateHome, marker, selfPid: 42 };
 const port = 43123;
 const endpoint = `ws://127.0.0.1:${port}/devtools/browser/12345678-1234-1234-1234-123456789abc`;
 const diagnostic = (value) => `DevTools listening on ${value}\n`;
+const startedAt = "Tue Oct 20 21:44:50 2026";
+const restartedAt = "Tue Oct 20 21:44:51 2026";
+const processLine = (pid, command, start = startedAt) => `${pid} ${start} ${command}`;
+const descendantLine = (pid, ppid, start = startedAt) => `${pid} ${ppid} ${start}`;
 
 test("macOS paths use the App bundle and an explicit isolated Shell environment", () => {
   const paths = macosRuntimePaths({ root, appPath, packageRoot, nodePath });
@@ -40,41 +44,47 @@ test("runtime paths reject relative, broad, malformed App and ambiguous PATH inp
 
 test("read-only process ownership recognizes only exact run paths and excludes the observer", () => {
   const cases = [
-    [`50 ${appPath}`, true],
-    [`50 ${appBundle}/Contents/Frameworks/Cursor Helper.app/Contents/MacOS/Cursor Helper`, true],
-    [`50 /opt/node ${packageRoot}/lib/backend/server.mjs`, true],
-    [`50 /opt/node --home=${stateHome}`, true],
-    [`50 /opt/node '${marker}'`, true],
-    [`50 /bin/zsh -c '/opt/node -e synthetic "${marker}"'`, true],
-    [`42 ${appPath} ${packageRoot} ${stateHome}`, false],
-    [`50 /other${appPath}`, false],
-    [`50 ${appBundle}-other/Contents/MacOS/Cursor`, false],
-    [`50 /opt/node ${stateHome}-other/config`, false],
-    [`50 /opt/node ${marker}-other`, false],
-    [`50 /opt/node /unrelated/workspace/cancelled-shell-marker`, false],
-    ["0 kernel_task\n  51 /usr/bin/true", false],
+    [appPath, true],
+    [appBundle + "/Contents/Frameworks/Cursor Helper.app/Contents/MacOS/Cursor Helper", true],
+    ["/opt/node " + packageRoot + "/lib/backend/server.mjs", true],
+    ["/opt/node --home=" + stateHome, true],
+    ["/opt/node '" + marker + "'", true],
+    ["/bin/zsh -c '/opt/node -e synthetic \"" + marker + "\"'", true],
+    ["/other" + appPath, false],
+    [appBundle + "-other/Contents/MacOS/Cursor", false],
+    ["/opt/node " + stateHome + "-other/config", false],
+    ["/opt/node " + marker + "-other", false],
+    ["/opt/node /unrelated/workspace/cancelled-shell-marker", false],
   ];
-  for (const [output, expected] of cases) assert.equal(hasOwnedMacosProcesses(output, owners), expected, output);
-  assert.equal(hasOwnedMacosProcesses(`50 /opt/node ${packageRoot}/lib/backend/server.mjs`, { ...owners, includeBackend: false }), false);
-  assert.equal(hasOwnedMacosProcesses(`50 ${appPath}`, { ...owners, includeBackend: false }), true);
-  assert.equal(hasOwnedMacosProcesses(`50 /opt/node ${marker}`, { ...owners, includeBackend: false }), true);
+  for (const [command, expected] of cases) assert.equal(hasOwnedMacosProcesses(processLine(50, command), owners), expected, command);
+  assert.equal(hasOwnedMacosProcesses(processLine(42, appPath + " " + packageRoot + " " + stateHome), owners), false);
+  assert.equal(hasOwnedMacosProcesses(processLine(0, "kernel_task") + "\n  " + processLine(51, "/usr/bin/true"), owners), false);
+  assert.equal(hasOwnedMacosProcesses(processLine(50, "/opt/node " + packageRoot + "/lib/backend/server.mjs"), { ...owners, includeBackend: false }), false);
+  assert.equal(hasOwnedMacosProcesses(processLine(50, appPath), { ...owners, includeBackend: false }), true);
+  assert.equal(hasOwnedMacosProcesses(processLine(50, "/opt/node " + marker), { ...owners, includeBackend: false }), true);
 });
 
-test("process audit rejects incomplete ps output instead of claiming cleanup succeeded", () => {
-  for (const output of ["", "   ", "private-unparseable-output", "50 /usr/bin/true\ntruncated", "9".repeat(30) + " /bin/true"]) {
+test("process audit rejects incomplete, invalid or duplicate ps rows instead of claiming cleanup succeeded", () => {
+  for (const output of ["", "   ", "private-unparseable-output", "50 /usr/bin/true", processLine(50, "/usr/bin/true") + "\ntruncated",
+    processLine("9".repeat(30), "/bin/true"), processLine(50, "/bin/true") + "\n" + processLine(50, "/bin/true", restartedAt)]) {
     assert.throws(() => hasOwnedMacosProcesses(output, owners), { code: "CURSOR_APP_MACOS_PROCESS_AUDIT" });
+  }
+  for (const invalid of ["private-time-canary", "Tue Oct 32 21:44:50 2026", "Tue Oct 20 25:44:50 2026",
+    "Tue Oct 20 21:60:50 2026", "Tue Oct 20 21:44:60 2026", "Tue Foo 20 21:44:50 2026", "Tue Oct 20 21:44:50 26",
+    "Mon Oct 20 21:44:50 2026", "Tue Feb 31 21:44:50 2026"]) {
+    assert.throws(() => hasOwnedMacosProcesses(processLine(50, "/bin/true", invalid), owners), { code: "CURSOR_APP_MACOS_PROCESS_AUDIT" });
   }
 });
 
-test("macOS process inspection executes bounded ps with a clean environment and no signals", async () => {
+test("macOS process inspection executes bounded ps with start identity, a clean environment and no signals", async () => {
   let calls = 0;
   const remains = await auditMacosProcesses(owners, async (file, args, options) => {
     calls++;
     assert.equal(file, "/bin/ps");
-    assert.deepEqual(args, ["-axww", "-o", "pid=,command="]);
+    assert.deepEqual(args, ["-axww", "-o", "pid=,lstart=,command="]);
     assert.deepEqual(options, { encoding: "utf8", timeout: 5000, maxBuffer: 4 * 1024 * 1024,
       env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" } });
-    return { stdout: `42 ${appPath}\n50 /opt/node ${marker}\n` };
+    return { stdout: processLine(42, appPath) + "\n" + processLine(50, "/opt/node " + marker) + "\n" };
   });
   assert.equal(remains, true);
   assert.equal(calls, 1);
@@ -82,47 +92,71 @@ test("macOS process inspection executes bounded ps with a clean environment and 
     { message: "CURSOR_APP_MACOS_PROCESS_AUDIT", code: "CURSOR_APP_MACOS_PROCESS_AUDIT" });
 });
 
-test("descendant capture includes the live App root and transitive children from one bounded snapshot", async () => {
+test("descendant capture records the live App root and transitive child lifetimes from one bounded snapshot", async () => {
   const appPid = process.pid + 10, child = appPid + 1, grandchild = child + 1, unrelated = grandchild + 1;
   let calls = 0;
-  const pids = await captureMacosDescendants(appPid, async (file, args, options) => {
+  const observedProcesses = await captureMacosDescendants(appPid, async (file, args, options) => {
     calls++;
-    assert.equal(file, "/bin/ps"); assert.deepEqual(args, ["-ax", "-o", "pid=,ppid="]);
+    assert.equal(file, "/bin/ps"); assert.deepEqual(args, ["-ax", "-o", "pid=,ppid=,lstart="]);
     assert.deepEqual(options, { encoding: "utf8", timeout: 5000, maxBuffer: 4 * 1024 * 1024,
       env: { PATH: "/usr/bin:/bin", LANG: "C", LC_ALL: "C" } });
-    return { stdout: `${grandchild} ${child}\n${child} ${appPid}\n${appPid} 1\n${unrelated} 1\n` };
+    return { stdout: [descendantLine(grandchild, child, restartedAt), descendantLine(child, appPid, restartedAt),
+      descendantLine(appPid, 1), descendantLine(unrelated, 1)].join("\n") + "\n" };
   });
   assert.equal(calls, 1);
-  assert.deepEqual(pids, new Set([appPid, child, grandchild]));
+  assert.deepEqual(observedProcesses, new Map([[appPid, startedAt], [child, restartedAt], [grandchild, restartedAt]]));
 });
 
-test("renamed, reparented or reused observed PIDs remain a conservative cleanup failure", async () => {
+test("renamed or reparented observed lifetimes remain owned but an unrelated recycled PID is clear on the first audit", async () => {
   const appPid = process.pid + 10, child = appPid + 1;
-  const observedPids = await captureMacosDescendants(appPid, async () => ({ stdout: `${appPid} 1\n${child} ${appPid}\n` }));
-  for (const command of ["Cursor Helper: shared-process", "Cursor Helper: ptyHost", "/usr/bin/unrelated-reused-pid"]) {
-    assert.equal(hasOwnedMacosProcesses(`${child} ${command}\n`, { ...owners, observedPids }), true);
-    assert.equal(hasOwnedMacosProcesses(`${child} ${command}\n`, { ...owners, observedPids, includeBackend: false }), true);
+  const observedProcesses = await captureMacosDescendants(appPid, async () => ({
+    stdout: descendantLine(appPid, 1) + "\n" + descendantLine(child, appPid) + "\n",
+  }));
+  for (const command of ["Cursor Helper: shared-process", "Cursor Helper: ptyHost", "/usr/bin/renamed-survivor"]) {
+    for (const includeBackend of [true, false]) {
+      assert.equal(hasOwnedMacosProcesses(processLine(child, command), { ...owners, observedProcesses, includeBackend }), true);
+    }
   }
-  assert.equal(await auditMacosProcesses({ ...owners, observedPids }, async () => ({ stdout: `${child} Cursor Helper: shared-process\n` })), true);
-  assert.equal(hasOwnedMacosProcesses(`${child + 1} /usr/bin/unrelated\n`, { ...owners, observedPids }), false);
+  assert.equal(await auditMacosProcesses({ ...owners, observedProcesses }, async () => ({
+    stdout: processLine(child, "/usr/bin/unrelated-reused-pid", restartedAt),
+  })), false);
+  assert.equal(hasOwnedMacosProcesses(processLine(child + 1, "/usr/bin/unrelated"), { ...owners, observedProcesses }), false);
+  // Path ownership must still catch a new owned lifetime even when its old PID was recorded.
+  assert.equal(hasOwnedMacosProcesses(processLine(child, appPath, restartedAt), { ...owners, observedProcesses }), true);
+  assert.equal(hasOwnedMacosProcesses(processLine(child, "/opt/node " + stateHome, restartedAt), { ...owners, observedProcesses }), true);
+});
+
+test("second-resolution start identity keeps indistinguishable PID reuse a conservative cleanup failure", async () => {
+  const appPid = process.pid + 10;
+  const observedProcesses = await captureMacosDescendants(appPid, async () => ({ stdout: descendantLine(appPid, 1) }));
+  assert.equal(hasOwnedMacosProcesses(processLine(appPid, "/usr/bin/possibly-reused-within-same-second"), { ...owners, observedProcesses }), true);
+});
+
+test("ps padding is normalized without changing a process lifetime", async () => {
+  const appPid = process.pid + 10;
+  const padded = "Thu Oct  1 01:02:03 2026", normalized = "Thu Oct 1 01:02:03 2026";
+  const observedProcesses = await captureMacosDescendants(appPid, async () => ({ stdout: "  " + descendantLine(appPid, 1, padded) + "  \n" }));
+  assert.deepEqual(observedProcesses, new Map([[appPid, normalized]]));
+  assert.equal(hasOwnedMacosProcesses("  " + processLine(appPid, "/usr/bin/renamed-survivor", padded), { ...owners, observedProcesses }), true);
 });
 
 test("descendant capture and final audit exclude the observer even when a synthetic table links it", async () => {
   const appPid = process.pid + 10, observerChild = appPid + 1;
-  const observedPids = await captureMacosDescendants(appPid, async () => ({
-    stdout: `${appPid} 1\n${process.pid} ${appPid}\n${observerChild} ${process.pid}\n`,
+  const observedProcesses = await captureMacosDescendants(appPid, async () => ({
+    stdout: [descendantLine(appPid, 1), descendantLine(process.pid, appPid), descendantLine(observerChild, process.pid)].join("\n"),
   }));
-  assert.deepEqual(observedPids, new Set([appPid]));
-  observedPids.add(process.pid);
-  assert.equal(hasOwnedMacosProcesses(`${process.pid} ${appPath}\n`, { ...owners, selfPid: process.pid, observedPids }), false);
+  assert.deepEqual(observedProcesses, new Map([[appPid, startedAt]]));
+  observedProcesses.set(process.pid, startedAt);
+  assert.equal(hasOwnedMacosProcesses(processLine(process.pid, appPath), { ...owners, selfPid: process.pid, observedProcesses }), false);
   await assert.rejects(captureMacosDescendants(process.pid, async () => assert.fail("must not inspect the observer")),
     { code: "CURSOR_APP_MACOS_RUNTIME_ARGUMENTS" });
 });
 
 test("descendant capture rejects missing roots, invalid or duplicate ps rows and command failures", async () => {
   const appPid = process.pid + 10;
-  for (const stdout of ["", "private-output-canary", `${appPid + 1} 1\n`, `${appPid} 1\ntruncated`,
-    `${appPid} 1\n${appPid} 2\n`, `${appPid} 1 extra`, `${appPid} 999999999999999999999999`]) {
+  for (const stdout of ["", "private-output-canary", descendantLine(appPid + 1, 1), descendantLine(appPid, 1) + "\ntruncated",
+    descendantLine(appPid, 1) + "\n" + descendantLine(appPid, 2), descendantLine(appPid, 1) + " extra",
+    descendantLine(appPid, "9".repeat(30)), descendantLine(appPid, 1, "Tue Feb 31 21:44:50 2026")]) {
     await assert.rejects(captureMacosDescendants(appPid, async () => ({ stdout })), {
       code: "CURSOR_APP_MACOS_PROCESS_AUDIT", message: "CURSOR_APP_MACOS_PROCESS_AUDIT",
     });
@@ -131,8 +165,10 @@ test("descendant capture rejects missing roots, invalid or duplicate ps rows and
     { code: "CURSOR_APP_MACOS_PROCESS_AUDIT", message: "CURSOR_APP_MACOS_PROCESS_AUDIT" });
   for (const value of [undefined, 0, -1, 1, "42", 1.5]) await assert.rejects(captureMacosDescendants(value,
     async () => assert.fail("must not inspect invalid PID")), { code: "CURSOR_APP_MACOS_RUNTIME_ARGUMENTS" });
-  for (const observedPids of [[], new Set(["42"]), new Set([0]), new Set([1.5])]) {
-    assert.throws(() => hasOwnedMacosProcesses("50 /bin/true", { ...owners, observedPids }),
+  for (const observedProcesses of [[], new Set([42]), new Map([["42", startedAt]]), new Map([[0, startedAt]]),
+    new Map([[1.5, startedAt]]), new Map([[42, undefined]]), new Map([[42, "private-time-canary"]]),
+    new Map([[42, "Tue Oct  20 21:44:50 2026"]])]) {
+    assert.throws(() => hasOwnedMacosProcesses(processLine(50, "/bin/true"), { ...owners, observedProcesses }),
       { code: "CURSOR_APP_MACOS_RUNTIME_ARGUMENTS" });
   }
 });

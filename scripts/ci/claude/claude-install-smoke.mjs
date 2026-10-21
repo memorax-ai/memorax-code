@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
+import { projectTerminalDisposal } from "../codex/codex-setup-pty-evidence.mjs";
 import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
@@ -7,9 +8,12 @@ import { createServer as createTcpServer } from "node:net";
 import { tmpdir, userInfo } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
-import { assertBackendReplacement, assertCredentialNotEchoed, assertSetupInputRejection,
+import { verifyBackendReplacementState, assertCredentialNotEchoed, assertSetupInputRejection,
   snapshotProtectedConfiguration, assertProtectedConfiguration } from "../codex/codex-lifecycle-assertions.mjs";
 import { startLifecycleCommand } from "./claude-lifecycle-process.mjs";
+import { createEvidenceRecorder } from "../shared/ci-evidence.mjs";
+import { classifyInstallCommand, collectInstallProductDiagnostics, createClaudeInstallEvidence,
+  observeInstallCleanup } from "./claude-install-evidence.mjs";
 import { selectLifecyclePlugin, assertLifecycleMarketplace, snapshotClaudeSettings, assertClaudeSettings,
   assertLifecycleHooks, assertLifecycleIntegrationAbsent, classifyLifecycleRequest } from "./claude-lifecycle-assertions.mjs";
 
@@ -49,6 +53,9 @@ let npmCommand, npmPrefix, candidateTarball, ptyPackage, ptyScript;
 let expectedPackageVersion, sourceRoot, parse;
 let originalProvider;
 const preservedMemory = new Map();
+const evidence = createEvidenceRecorder({ suite: "claude-install-smoke", client: "claude" });
+const installEvidence = createClaudeInstallEvidence(evidence);
+evidence.track(() => ({ stage, phase: installEvidence.phase, cleanupStage, checks: report.checks.length }));
 const signalHandlers = new Map(["SIGINT", "SIGTERM"].map((signal) => [signal, () => handleSignal(signal)]));
 for (const [signal, handler] of signalHandlers) process.on(signal, handler);
 
@@ -151,6 +158,7 @@ try {
     await writeFile(join(stateHome, "config.toml"), initialConfig, { mode: 0o600 });
     await writeFile(join(claudeHome, "settings.json"), initialClaudeConfig, { mode: 0o600 });
   };
+  installEvidence.setPhase("lifecycle");
   setupStarted = true;
   for (const [label, input] of [["empty stdin", ""], ["multiple stdin values", "invalid\nsecond\n"]]) {
     stage = `rejected setup: ${label}`;
@@ -366,6 +374,7 @@ try {
   await verifySavedAccountSearch("candidate force update");
 
   stage = "candidate package replacement lifecycle failure";
+  installEvidence.setPhase("replacement_artifact_prepare");
   const replacementBackend = await readJson(pidPath());
   const faultMarker = join(root, "npm-replacement-fault.json");
   const fault = await makeReplacementFaultArtifact(packageRoot, faultMarker, replacementBackend.pid);
@@ -375,16 +384,20 @@ try {
   const diagnosticsRoot = join(stateHome, "runtime", "diagnostics");
   const beforeFaultDiagnostics = new Set(await exists(diagnosticsRoot) ? await readdir(diagnosticsRoot) : []);
   env.npm_config_cache = join(root, "failed replacement npm cache");
+  installEvidence.setPhase("replacement_update_rejection");
   const failedReplacement = await rejectedProduct(["update", "--latest", "--force"]);
   check(failedReplacement.diagnosticCode === "UPDATE_INSTALL_FAILED",
     "Package replacement failed without the expected public update diagnostic");
   check(registryRequests.artifact > beforeFaultRequests.artifact,
     "The replacement failure did not download the fault-injected candidate");
+  installEvidence.setPhase("replacement_fault_evidence");
   const faultEvidence = await readJson(faultMarker);
   check(faultEvidence.stage === "postinstall" && faultEvidence.transitionState === "retired"
     && faultEvidence.oldBackendStopped === true && faultEvidence.candidateVersion === expectedPackageVersion,
   "Fault injection did not reach real package replacement after the old Backend retired");
+  installEvidence.setPhase("replacement_preserved_state");
   await verifyPreserved(upgradeConfig);
+  installEvidence.setPhase("replacement_diagnostics");
   const diagnostics = await Promise.all((await readdir(diagnosticsRoot))
     .filter((name) => /^mc-.*\.json$/.test(name) && !beforeFaultDiagnostics.has(name))
     .map((name) => readJson(join(diagnosticsRoot, name))));
@@ -396,8 +409,10 @@ try {
   if (replacementFailure.recoveryStatus === "failed") {
     check((await readJson(join(stateHome, "runtime", "install", "package-transition.json"))).state === "retired",
       "Failed recovery lost pending package transition authority");
+    installEvidence.setPhase("replacement_recovery");
     await product(["update", "--recover"]);
   }
+  installEvidence.setPhase("replacement_readiness");
   await verifyReady("failed replacement recovery");
   await verifyBackendReplacement(replacementBackend, "failed replacement recovery");
   check(!(await exists(join(stateHome, "runtime", "install", "package-transition.json"))),
@@ -409,6 +424,7 @@ try {
   report.checks.push("candidate npm replacement failed after old Backend retirement; the public error and recovery state remained identifiable and the saved account survived");
 
   stage = "retry candidate package replacement";
+  installEvidence.setPhase("replacement_retry");
   servedArtifact = artifact;
   servedManifest = manifest;
   env.npm_config_cache = join(root, "replacement retry npm cache");
@@ -425,6 +441,7 @@ try {
   await verifySavedAccountSearch("replacement retry");
   report.checks.push("retry installed the unmodified candidate and restored native readiness and saved-account Search");
   stage = "outbound isolation";
+  installEvidence.setPhase("outbound_isolation");
   check(requests === 0, "Installation unexpectedly contacted the model or MemoraX endpoint");
   check(endpointErrors.length === 0, "The explicit Search fixture received malformed requests");
   report.outbound = { installationRequests: requests, explicitSearchRequests: memoryRequests.length,
@@ -433,6 +450,7 @@ try {
   report.checks.push("configured loopback endpoint received only Claude connectivity probes and deliberate saved-account Search requests; no model or automatic memory calls");
   report.status = "PASS";
 } catch (error) {
+  report.primaryFailure ??= installEvidence.fail("primary", error);
   report.stage = stage;
   const assertionCode = typeof error.message === "string"
     ? error.message.match(/^(?:SETUP_INPUT_REJECTION|BACKEND_REPLACEMENT|TERMINAL_DISCLOSED|EMPTY_CREDENTIAL_CANARY|PROTECTED_)[A-Z_]*/)?.[0]
@@ -446,11 +464,13 @@ try {
   if (error.terminalError) report.terminalError = error.terminalError;
   if (error.terminalDiagnostics) report.terminalDiagnostics = error.terminalDiagnostics;
   if (error.terminalNativeError) report.terminalNativeError = error.terminalNativeError;
+  if (error.terminalDisposal) report.terminalDisposal = error.terminalDisposal;
 } finally {
   await cleanup();
   report.requestCounts = { connectivity: connectivityRequests, unexpected: requests,
     explicitSearch: memoryRequests.length, malformedSearch: endpointErrors.length };
   if (!receivedSignal) for (const [signal, handler] of signalHandlers) process.off(signal, handler);
+  finishEvidence();
 }
 console.log(JSON.stringify(report, null, 2));
 if (report.status !== "PASS") process.exitCode = 1;
@@ -460,6 +480,8 @@ function cleanup() {
 }
 
 async function cleanupResources() {
+  await collectProductDiagnostics("productDiagnostics");
+  installEvidence.setPhase("cleanup");
   for (const child of [...activeCommands]) {
     try { await child.stop(); }
     catch { commandCleanupVerified = false; }
@@ -483,7 +505,8 @@ async function cleanupResources() {
   } catch (error) {
     report.status = "FAIL";
     report.cleanup = "FAIL: isolated state retained because shutdown was not confirmed";
-    report.cleanupFailure = { stage: cleanupStage, code: cleanupCodes[cleanupStage] };
+    const failure = installEvidence.fail("cleanup", error, cleanupStage);
+    report.cleanupFailure = { stage: cleanupStage, code: cleanupCodes[cleanupStage], details: failure };
     if (cleanupStage === "tracked_process" && Number.isInteger(cleanupTrackedPidIndex)) {
       report.cleanupFailure.trackedPidIndex = cleanupTrackedPidIndex;
       report.cleanupFailure.trackedPidCount = backendPids.size;
@@ -498,6 +521,13 @@ async function cleanupResources() {
     if (["SIGTERM", "SIGKILL", "SIGINT", "SIGABRT"].includes(error.signal)) {
       report.cleanupFailure.commandSignal = error.signal;
     }
+    await collectProductDiagnostics("cleanupProductDiagnostics");
+    if (evidence.status !== "DISABLED" && evidence.status !== "UNAVAILABLE") {
+      const observations = await evidence.collect("cleanupObservations", () => observeInstallCleanup({
+        pidPath: stateHome ? pidPath() : undefined, trackedPids: backendPids, port: backendPort,
+      }), { budgetMs: 2_000 });
+      if (observations.status === "OK") report.cleanupObservations = observations.value;
+    }
   }
   for (const server of [endpoint, registry]) {
     if (!server?.listening) continue;
@@ -506,21 +536,34 @@ async function cleanupResources() {
   }
 }
 
+async function collectProductDiagnostics(name) {
+  if (!stateHome || evidence.status === "DISABLED" || evidence.status === "UNAVAILABLE") return;
+  await evidence.collect(name, () => collectInstallProductDiagnostics(stateHome), { budgetMs: 2_000 });
+}
+
+function finishEvidence() {
+  report.evidenceStatus = evidence.finish({ testOutcome: report.status, failure: installEvidence.failureSummary() });
+}
+
 function handleSignal(signal) {
   if (receivedSignal) return;
   receivedSignal = signal;
   report.status = "FAIL";
   report.signal = signal;
+  report.primaryFailure ??= installEvidence.fail("primary", { signal });
   report.stage = stage;
   const exitCode = signal === "SIGINT" ? 130 : 143;
   const timeout = setTimeout(() => {
     report.cleanup = "FAIL: owned resource cleanup exceeded its time limit";
+    installEvidence.fail("cleanup", { testCode: "INSTALL_COMMAND_TIMEOUT" }, cleanupStage);
+    finishEvidence();
     console.log(JSON.stringify(report, null, 2));
     process.exit(exitCode);
   }, 60_000);
   void cleanup().finally(() => {
     clearTimeout(timeout);
     report.status = "FAIL";
+    finishEvidence();
     console.log(JSON.stringify(report, null, 2));
     process.exit(exitCode);
   });
@@ -642,18 +685,15 @@ async function rememberPid() {
 }
 async function verifyBackendReplacement(before, label) {
   stage = `${label} Backend replacement`;
-  const after = await readJson(pidPath());
-  let oldProcessAlive = true;
-  try { process.kill(before.pid, 0); }
-  catch (error) { if (error.code === "ESRCH") oldProcessAlive = false; else throw error; }
-  try { process.kill(after.pid, 0); }
-  catch { check(false, "Updated Backend PID does not identify a live process"); }
-  check(after.url === `http://127.0.0.1:${backendPort}`, "Updated Backend has an unexpected endpoint");
-  const response = await fetch(new URL("/health", after.url), { signal: AbortSignal.timeout(5_000) });
-  check(response.ok, "Updated Backend did not answer its health endpoint successfully");
-  assertBackendReplacement(before, after, await response.json(), oldProcessAlive);
+  const after = await verifyBackendReplacementState(before, {
+    readAfter: () => readJson(pidPath()), expectedUrl: `http://127.0.0.1:${backendPort}`,
+    observe(diagnostic) {
+      report.backendReplacement = diagnostic;
+    },
+  });
   backendPids.delete(before.pid);
-  report.checks.push(`${label}: old Backend exited; new PID, instance and live health identity agree`);
+  backendPids.add(after.pid);
+  report.checks.push(`${label}: Backend instance changed; current process and health identity agree`);
 }
 async function stopAndVerify() {
   cleanupStage = "pid_record_read";
@@ -714,6 +754,7 @@ async function terminalSetup(mode) {
         "usernamePromptSeen", "keyPromptSeen", "languagePromptSeen", "accountInputSent", "outputBytes", "cursorPositionReplies", "exitCode", "signal",
       ].filter((key) => typeof safe[key] === "boolean" || Number.isFinite(safe[key])).map((key) => [key, safe[key]]));
       if (/^[A-Z][A-Z0-9_]{1,79}$/.test(safe.nativeErrorCode)) error.terminalNativeError = safe.nativeErrorCode;
+      error.terminalDisposal = projectTerminalDisposal(safe.terminalDisposal);
     } catch {}
     throw error;
   } finally {
@@ -771,6 +812,7 @@ async function makeReplacementFaultArtifact(packageRoot, faultMarker, oldPid) {
     `writeFileSync(marker, JSON.stringify({ stage: "postinstall", transitionState: transition.state, oldBackendStopped, candidateVersion: ${JSON.stringify(manifest.version)} }), { mode: 0o600 });`,
     'process.exit(23);', "",
   ].join("\n"));
+  installEvidence.setPhase("replacement_artifact_pack");
   const packed = JSON.parse((await run(npmCommand,
     ["pack", faultRoot, "--ignore-scripts", "--pack-destination", faultRoot, "--json"])).stdout);
   check(packed.length === 1 && typeof packed[0].filename === "string", "Fault-injected npm artifact was not packed");
@@ -787,6 +829,12 @@ function check(condition, message) {
 async function readJson(path) { return JSON.parse(await readFile(path, "utf8")); }
 
 async function run(command, args, input = "", options = {}) {
+  const label = classifyInstallCommand(command, args, { npmCommand, entrypoint, claudeCommand, ptyScript,
+    memoryEntrypoint: entrypoint ? join(dirname(entrypoint), "memorax-cli.mjs") : undefined });
+  return installEvidence.command(label, () => runCommand(command, args, input, options));
+}
+
+async function runCommand(command, args, input = "", options = {}) {
   check(!receivedSignal || options.cleanup === true, "Installation smoke is stopping");
   const invocation = process.platform === "win32" && command === npmCommand
     ? resolveNpmInvocation(args, { env }) : resolveInvocation(command, args, { env });

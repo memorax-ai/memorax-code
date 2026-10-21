@@ -8,16 +8,18 @@ import { basename, dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
+import { writeCursorAppProgress } from "./cursor-app-report.mjs";
 import { startCursorAgentMock } from "./cursor-app-mock-server.mjs";
 import { assertCursorAppNativeContent, assertCursorAppNativeSubagent, assertCursorAppWritebacks } from "./cursor-app-native-content-check.mjs";
 import { assertCursorAppSkillReference, assertCursorAppMemoryOperation } from "./cursor-app-memory-check.mjs";
 import { readCursorRepoMemoryDelegation, projectCursorRepoMemoryDelegation, parseCursorRepoMemoryClaim, assertCursorRepoMemoryRejected,
   verifyCursorRepoMemoryFailure } from "./cursor-app-repo-memory-check.mjs";
-import { collectCursorAppDiagnostics, collectCursorAppLaunchDiagnostics,
+import { collectCursorAppDiagnostics, collectCursorAppLaunchDiagnostics, createCursorAppDriverDiagnostics,
   collectCursorAppBackendDiagnostics, collectCursorAppSubmissionDiagnostics,
   collectCursorAppShellDiagnostics, collectCursorAppShellOutputDiagnostics,
   projectCursorAppShellDiagnostics, collectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
-import { collectCursorAppHookDiagnostics, collectCursorAppHookTiming, projectCursorAppHookTiming } from "./cursor-app-hook-diagnostics.mjs";
+import { collectCursorAppHookDiagnostics, collectCursorAppHookTiming, projectCursorAppHookTiming,
+  collectCursorAppSessionHookDiagnostics, projectCursorAppHookReadinessFailure } from "./cursor-app-hook-diagnostics.mjs";
 import { collectCursorAppSkillHookContext } from "./cursor-app-hook-context.mjs";
 
 const [packageRoot, appPath, expectedVersion, playwrightRoot, reportDir, expectedNodeMajor = "24"] = process.argv.slice(2);
@@ -57,9 +59,37 @@ let interruption, denial, repoMemory, repoMemoryHelper, repoMemoryDefinition;
 let macos, macosPaths, windows, windowsPaths, backendPort = 18787, debugPort = 9222;
 let appStartedAt, appLaunch = 0, activeHookTiming;
 const readyHookSessions = new Map();
-const observedMacosPids = new Set();
+const observedMacosProcesses = new Map();
 const referenceTexts = new Map();
 const exec = promisify(execFile);
+const progressTimer = setInterval(checkpointReport, 1000);
+progressTimer.unref();
+
+function agentReport() {
+  return { runs: agent.runs.length, cancelled: agent.runs.map((run) => run.cancelled === true), writes: agent.runs.map((run) => run.kvWriteCount),
+    acknowledgements: agent.runs.map((run) => run.kvAckCount), ancillaryRequestCount: agent.ancillaryRequestCount,
+    unsupportedRpcCount: agent.unsupportedRpcCount, historyTurns: agent.runs.map((run) => run.turnRefs.length),
+    reads: agent.runs.map((run) => run.kvReadCount), readResults: agent.runs.map((run) => run.kvReadResultCount),
+    execRequests: agent.runs.map((run) => run.execRequestCount), execResults: agent.runs.map((run) => run.execResultCount),
+    execCloses: agent.runs.map((run) => run.execCloseCount),
+    contextRequests: agent.runs.map((run) => run.requestContextRequestCount),
+    contextResults: agent.runs.map((run) => run.requestContextResultCount),
+    contextCloses: agent.runs.map((run) => run.requestContextCloseCount) };
+}
+function checkpointReport() {
+  try {
+    const progress = { ...report, memoryRequestCount: memoryRequests.length };
+    if (agent) {
+      progress.agent = agentReport();
+      progress.agent.errors = [...agent.errors];
+      if (agent.errors.length) progress.errorCode ??= safeCode({ code: agent.errors[0] });
+    }
+    if (activeHookTiming) progress.hookTimings = [...(report.hookTimings ?? []),
+      projectCursorAppHookTiming(activeHookTiming.snapshot ?? activeHookTiming)].slice(0, 32);
+    writeCursorAppProgress(reportDir, progress,
+      { expectedVersion, nodeMajor: expectedNodeMajor, platform: process.platform });
+  } catch { /* Diagnostic persistence must not replace the native failure. */ }
+}
 
 async function prepareRepoMemoryWorkspace() {
   const repo = join(root, "cursor-repo-memory");
@@ -80,21 +110,25 @@ async function prepareRepoMemoryWorkspace() {
 
 function check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); }
 function safeCode(error) { return /^CURSOR_(?:APP|AGENT|MOCK)_[A-Z0-9_]+$/.test(error?.code) ? error.code : "CURSOR_APP_CHECK_FAILED"; }
-async function bounded(promise, code, timeoutMs = 10000) {
+async function bounded(promise, code, timeoutMs = 10000, onTimeout) {
   let timer;
   try {
     return await Promise.race([promise, new Promise((_, reject) => {
-      timer = setTimeout(() => reject(Object.assign(new Error(code), { code })), timeoutMs);
+      timer = setTimeout(() => {
+        try { onTimeout?.(); } catch { /* Diagnostics cannot replace the timeout. */ }
+        reject(Object.assign(new Error(code), { code }));
+      }, timeoutMs);
     })]);
   } finally { clearTimeout(timer); }
 }
-async function waitFor(predicate, code, timeoutMs = 30000) {
+async function waitFor(predicate, code, timeoutMs = 30000, onTimeout) {
   const deadline = Date.now() + timeoutMs;
   do {
     check(!app || (app.exitCode === null && app.signalCode === null), "CURSOR_APP_EXITED");
-    if (await bounded(Promise.resolve().then(predicate), code, 5000)) return;
+    if (await bounded(Promise.resolve().then(predicate), code, 5000, () => onTimeout?.("predicate"))) return;
     await delay(200);
   } while (Date.now() < deadline);
+  try { onTimeout?.("overall"); } catch { /* Diagnostics cannot replace the timeout. */ }
   check(false, code);
 }
 function beginHookTiming(phase, sessionId, { runIndex = null, resumedSession = false } = {}) {
@@ -114,6 +148,7 @@ async function observeHookTiming() {
   if (matched) current.observedMs.modelRequest ??= Date.now() - appStartedAt;
   const timing = await collectCursorAppHookTiming({ home: userData, startedAt: appStartedAt,
     sessionId: current.sessionId, ...(matched ? { turnId: run.requestId } : {}) });
+  if (current.finished) return current.snapshot;
   if (timing.sessionStartReady) {
     current.observedMs.sessionStartReady ??= Date.now() - appStartedAt;
     readyHookSessions.set(current.sessionId, current.observedMs.sessionStartReady);
@@ -121,6 +156,7 @@ async function observeHookTiming() {
   if (matched && current.observedMs.turnStart == null) {
     const diagnostics = await collectCursorAppDiagnostics({ home: env.MEMORAX_CODE_HOME,
       sessionId: current.sessionId, turnId: run.requestId });
+    if (current.finished) return current.snapshot;
     if (diagnostics.trace?.readStatus === "present" && diagnostics.trace.turnStartCount === 1) {
       current.observedMs.turnStart = Date.now() - appStartedAt;
     }
@@ -130,6 +166,7 @@ async function observeHookTiming() {
 }
 function finishHookTiming() {
   if (!activeHookTiming) return;
+  activeHookTiming.finished = true;
   const snapshots = report.hookTimings ??= [];
   if (snapshots.length < 32) snapshots.push(projectCursorAppHookTiming(activeHookTiming.snapshot ?? activeHookTiming));
   activeHookTiming = undefined;
@@ -138,13 +175,49 @@ async function waitForHookReady(phase, sessionId) {
   if (!["linux", "darwin"].includes(process.platform)) return;
   beginHookTiming(phase, sessionId);
   report.stage = phase === "config" ? "hook-config-ready" : "hook-session-ready";
+  checkpointReport();
+  const waitStartedAt = Date.now(), timingContext = activeHookTiming;
+  let frozen = false, observationPending = false, timeoutKind = "none";
+  let lastObservation = null, lastObservationElapsedMs = null;
   try {
     // This isolates startup; a later native configuration reload can still race submission.
     await waitFor(async () => {
-      const timing = await observeHookTiming();
+      observationPending = true;
+      let timing;
+      try { timing = await observeHookTiming(); }
+      finally { if (!frozen) observationPending = false; }
+      if (!frozen) {
+        lastObservation = projectCursorAppHookTiming(timing);
+        lastObservationElapsedMs = Date.now() - waitStartedAt;
+      }
       return timing?.requiredUserHooksLoaded && (phase === "config" || timing.sessionStartReady);
-    }, phase === "config" ? "CURSOR_APP_HOOK_CONFIG_READY_TIMEOUT" : "CURSOR_APP_SESSION_START_READY_TIMEOUT");
-  } finally { finishHookTiming(); }
+    }, phase === "config" ? "CURSOR_APP_HOOK_CONFIG_READY_TIMEOUT" : "CURSOR_APP_SESSION_START_READY_TIMEOUT", 30000,
+    (kind) => { if (!frozen && timeoutKind === "none") timeoutKind = kind; });
+  } catch (error) {
+    frozen = true;
+    if (timingContext) timingContext.finished = true;
+    // Freeze the failed observation before another read or cleanup can finish.
+    // The session parameter remains authoritative even when no model run exists.
+    if (!report.hookReadinessFailure) {
+      report.errorCode ??= safeCode(error);
+      report.hookReadinessFailure = projectCursorAppHookReadinessFailure({ phase, appLaunch,
+        code: safeCode(error), timeoutKind, waitElapsedMs: Date.now() - waitStartedAt,
+        lastObservationElapsedMs, observationPending, lastObservation });
+      checkpointReport();
+      if (phase === "session") {
+        let sessionDiagnosticsStatus = "completed", sessionStart;
+        try {
+          sessionStart = await bounded(collectCursorAppSessionHookDiagnostics({ home: userData,
+            startedAt: appStartedAt, sessionId }), "CURSOR_APP_SESSION_START_DIAGNOSTICS_TIMEOUT", 1000,
+          () => { sessionDiagnosticsStatus = "timeout"; });
+        } catch { if (sessionDiagnosticsStatus !== "timeout") sessionDiagnosticsStatus = "failed"; }
+        report.hookReadinessFailure = projectCursorAppHookReadinessFailure({ ...report.hookReadinessFailure,
+          sessionDiagnosticsStatus, sessionStart });
+        checkpointReport();
+      }
+    }
+    throw error;
+  } finally { frozen = true; finishHookTiming(); }
 }
 async function assertMarkerAbsent(marker, code) {
   try { await lstat(marker); check(false, code); }
@@ -172,7 +245,7 @@ async function command(args, code) {
 async function ownedProcessesRemain({ includeBackend = true } = {}) {
   if (macos) return macos.auditMacosProcesses({ appBundle: macosPaths.appBundle, packageRoot,
     stateHome: env.MEMORAX_CODE_HOME, marker: interruption?.marker, includeBackend, selfPid: process.pid,
-    observedPids: observedMacosPids });
+    observedProcesses: observedMacosProcesses });
   if (windows) return windows.auditWindowsProcesses({ appPath, packageRoot, stateHome: env.MEMORAX_CODE_HOME,
     marker: interruption?.marker, encodedCommand: interruption?.encodedCommand, includeBackend, selfPid: process.pid, env });
   for (const entry of await readdir("/proc")) {
@@ -285,7 +358,7 @@ async function stopApp() {
     } finally { app.removeListener("exit", onExit); }
   }
   if (macos && app && app.exitCode === null && app.signalCode === null) {
-    try { for (const pid of await macos.captureMacosDescendants(app.pid)) observedMacosPids.add(pid); }
+    try { for (const [pid, startedAt] of await macos.captureMacosDescendants(app.pid)) observedMacosProcesses.set(pid, startedAt); }
     catch (error) { closeError = error; }
   }
   try { await bounded(browser?.close(), "CURSOR_APP_BROWSER_CLEANUP"); } catch (error) { closeError ??= error; }
@@ -329,7 +402,10 @@ async function assertProcessesStopped(options = {}) {
   }
   // Never kill discovered PIDs; residual descendants fail acceptance for runner/container teardown.
   for (let attempt = 0; attempt < 25; attempt++) {
-    if (!await ownedProcessesRemain(options)) return;
+    if (!await ownedProcessesRemain(options)) {
+      if (macos) observedMacosProcesses.clear();
+      return;
+    }
     await delay(200);
   }
   check(false, "CURSOR_APP_CLEANUP_DESCENDANTS");
@@ -337,33 +413,46 @@ async function assertProcessesStopped(options = {}) {
 async function startApp() {
   if (["linux", "darwin"].includes(process.platform)) { appStartedAt = Date.now(); appLaunch += 1; readyHookSessions.clear(); }
   appLaunchLog = ""; appSpawnError = undefined; appDebugEndpointSeen = false;
-  const endpoint = macos?.createDevToolsEndpointReader(debugPort);
-  let endpointError;
-  // Electron on Windows rejects a standalone URL followed by more arguments.
-  app = spawn(appPath, ["--user-data-dir", userData, "--extensions-dir", join(root, "extensions"), "--new-window",
-    "--skip-onboarding", "--skip-welcome", "--skip-release-notes", "--skip-add-to-recently-opened",
-    "--disable-updates", "--disable-telemetry", "--disable-crash-reporter", "--use-inmemory-secretstorage",
-    "--enable-smoke-test-driver", "--smoke-test-use-real-agent-http", `--test-backend-url=${agent.url}`,
-    ...(macos || windows ? ["--force-disable-user-env"] : []),
-    "--remote-debugging-address=127.0.0.1", `--remote-debugging-port=${debugPort}`, workspace],
-  { cwd: workspace, env, stdio: ["ignore", "pipe", "pipe"] });
-  app.stdout.resume();
-  app.stderr.on("data", (chunk) => {
-    appLaunchLog = (appLaunchLog + chunk).slice(-1024 * 1024);
-    try { endpoint?.push(chunk); } catch (error) { endpointError = error; }
-  });
-  app.on("error", (error) => { report.appSpawnFailed = true; appSpawnError = error.code; });
-  await waitFor(async () => {
-    if (endpointError) throw endpointError;
-    if (endpoint) return Boolean(endpoint.get());
-    try { return (await fetch(`http://127.0.0.1:${debugPort}/json/version`, { signal: AbortSignal.timeout(300) })).ok; } catch { return false; }
-  }, "CURSOR_APP_DEBUG_PORT");
-  appDebugEndpointSeen = true;
-  browser = await chromium.connectOverCDP(endpoint?.get() ?? `http://127.0.0.1:${debugPort}`, { timeout: 5000 });
-  await waitFor(async () => {
-    page = browser.contexts().flatMap((context) => context.pages()).find((item) => item.url().includes("workbench.html"));
-    return page && await page.evaluate(() => Boolean(window.driver)).catch(() => false);
-  }, "CURSOR_APP_DRIVER", windows ? 90000 : 30000);
+  const driver = createCursorAppDriverDiagnostics({ onUpdate(value) { report.appDriver = value; } });
+  let driverReady = false;
+  try {
+    const endpoint = macos?.createDevToolsEndpointReader(debugPort);
+    let endpointError;
+    // Electron on Windows rejects a standalone URL followed by more arguments.
+    app = spawn(appPath, ["--user-data-dir", userData, "--extensions-dir", join(root, "extensions"), "--new-window",
+      "--skip-onboarding", "--skip-welcome", "--skip-release-notes", "--skip-add-to-recently-opened",
+      "--disable-updates", "--disable-telemetry", "--disable-crash-reporter", "--use-inmemory-secretstorage",
+      "--enable-smoke-test-driver", "--smoke-test-use-real-agent-http", `--test-backend-url=${agent.url}`,
+      ...(macos || windows ? ["--force-disable-user-env"] : []),
+      "--remote-debugging-address=127.0.0.1", `--remote-debugging-port=${debugPort}`, workspace],
+    { cwd: workspace, env, stdio: ["ignore", "pipe", "pipe"] });
+    app.stdout.resume();
+    app.stderr.on("data", (chunk) => {
+      appLaunchLog = (appLaunchLog + chunk).slice(-1024 * 1024);
+      try { endpoint?.push(chunk); } catch (error) { endpointError = error; }
+    });
+    app.on("error", (error) => { report.appSpawnFailed = true; appSpawnError = error.code; });
+    await waitFor(async () => {
+      if (endpointError) throw endpointError;
+      if (endpoint) return Boolean(endpoint.get());
+      try { return (await fetch(`http://127.0.0.1:${debugPort}/json/version`, { signal: AbortSignal.timeout(300) })).ok; } catch { return false; }
+    }, "CURSOR_APP_DEBUG_PORT");
+    appDebugEndpointSeen = true;
+    browser = await chromium.connectOverCDP(endpoint?.get() ?? `http://127.0.0.1:${debugPort}`, { timeout: 5000 });
+    driver.connected(); driver.beginWait();
+    await waitFor(async () => {
+      const contexts = browser.contexts(), pages = contexts.flatMap((context) => context.pages());
+      page = pages.find((item) => item.url().includes("workbench.html"));
+      let workbenchCount = null;
+      try { workbenchCount = pages.filter((item) => item.url().includes("workbench.html")).length; } catch {}
+      const probe = driver.beginProbe({ contextCount: contexts.length, pageCount: pages.length,
+        workbenchCount, pageSelected: Boolean(page) });
+      return page && await page.evaluate(() => Boolean(window.driver)).then((ready) => {
+        driver.resolved(probe, ready); return ready;
+      }).catch((error) => { driver.rejected(probe, error); return false; });
+    }, "CURSOR_APP_DRIVER", windows ? 90000 : 30000, (kind) => driver.timeout(kind));
+    driverReady = true;
+  } finally { driver.finish(driverReady ? "ready" : "failed"); }
   page.setDefaultTimeout(10000);
   await bounded(page.evaluate(async () => {
     // Keep synthetic login from replacing the IDE window with the Agents window.
@@ -376,6 +465,7 @@ async function startApp() {
 }
 async function openSession(sessionId) {
   report.stage = "session-open";
+  checkpointReport();
   await bounded(page.evaluate((id) => id
     ? window.driver.executeCommand("composer.openComposer", id, { openInNewTab: false })
     : window.driver.executeCommand("workbench.action.chat.open"), sessionId), "CURSOR_APP_CHAT_OPEN_TIMEOUT");
@@ -461,11 +551,13 @@ async function runTurn(sessionId, fixture = fixtures[turns.length]) {
   const decidedTools = new Set();
   turns.push({ sessionId, workspaceName: basename(workspace), ...fixture });
   report.stage = "native-submit";
+  checkpointReport();
   const composer = page.locator(`[data-composer-id="${sessionId}"][data-composer-status]:visible`);
   // Cancellation can open an inline editor; new turns must use the primary input in the same composer.
   const input = composer.locator('.aislash-editor-input[contenteditable="true"][role="textbox"]:visible');
   await submitPrompt(input, fixture, { composer, sessionId });
   report.stage = "agent-transport";
+  checkpointReport();
   await waitFor(async () => {
     await observeHookTiming();
     check(!agent.errors.length, agent.errors[0]);
@@ -501,6 +593,7 @@ async function runTurn(sessionId, fixture = fixtures[turns.length]) {
   check(run.requestContextRequestCount === 1 && run.requestContextResultCount === 1 && run.requestContextCloseCount === 1,
     "CURSOR_APP_SKILL_CONTEXT_COUNT");
   report.stage = "native-persistence";
+  checkpointReport();
   let content;
   await waitFor(() => {
     try { content = assertSnapshot(sessionId); return true; }
@@ -509,6 +602,7 @@ async function runTurn(sessionId, fixture = fixtures[turns.length]) {
   delete report.nativeContentError;
   report.evidence.nativeContent.push(content);
   report.stage = "automatic-add";
+  checkpointReport();
   await waitFor(async () => {
     await observeHookTiming();
     return memoryRequests.length >= turns.length + turns.filter((turn) => turn.operation).length;
@@ -580,6 +674,7 @@ async function interruptPendingShell() {
   const sessionId = await openSession();
   interruption = { sessionId, runIndex: agent.runs.length, marker: join(workspace, "cancelled-shell-marker") };
   report.stage = "pending-shell-interruption";
+  checkpointReport();
   const composer = page.locator(`[data-composer-id="${sessionId}"][data-composer-status]:visible`);
   const input = composer.locator('.aislash-editor-input[contenteditable="true"][role="textbox"]:visible');
   await input.fill(interruptedFixture.prompt); await input.press("Enter");
@@ -697,6 +792,7 @@ function assertRepoMemoryNativeContent() {
 
 async function runRepoMemoryWorker() {
   report.stage = "repo-memory-worker";
+  checkpointReport();
   await stopApp();
   await assertProcessesStopped({ includeBackend: false });
   const fixture = await prepareRepoMemoryWorkspace();
@@ -705,6 +801,7 @@ async function runRepoMemoryWorker() {
   const sessionId = await openSession();
   repoMemory = { ...fixture, sessionId, runIndex: agent.runs.length };
   report.stage = "repo-memory-worker";
+  checkpointReport();
   turns.push({ sessionId, workspaceName: basename(workspace), scope: "repository-name.v1", ...repoMemoryFixture });
   const composer = page.locator(`[data-composer-id="${sessionId}"][data-composer-status]:visible`);
   const input = composer.locator('.aislash-editor-input[contenteditable="true"][role="textbox"]:visible');
@@ -771,6 +868,7 @@ async function runRepoMemoryWorker() {
 }
 
 try {
+  checkpointReport();
   const [nodeMajor, nodeMinor] = process.versions.node.split(".").map(Number);
   check([7, 8].includes(process.argv.length) && ["linux", "darwin", "win32"].includes(process.platform) && ["22", "24"].includes(expectedNodeMajor)
     && nodeMajor === Number(expectedNodeMajor) && (nodeMajor !== 22 || nodeMinor >= 13),
@@ -857,6 +955,7 @@ try {
   cli = (action) => command([action, "--home", env.MEMORAX_CODE_HOME, "--cursor-home", env.CURSOR_HOME,
     "--port", String(backendPort), "--clients", "cursor", "--json"], `CURSOR_APP_CANDIDATE_${action.toUpperCase()}`);
   report.stage = "candidate-install";
+  checkpointReport();
   started = true;
   const installation = (await cli("start")).cursorAdapter;
   check(installation?.enabled === true, "CURSOR_APP_ADAPTER_DISABLED");
@@ -870,6 +969,7 @@ try {
     referenceTexts.set(operation, await readFile(join(skillRoot, "references", `memorax-${operation}.md`), "utf8"));
   }
   report.stage = "app-start";
+  checkpointReport();
   await startApp();
   const firstSession = await openSession();
   await runTurn(firstSession);
@@ -877,6 +977,7 @@ try {
   await runTurn(firstSession);
   report.evidence.sameSessionFollowup = true;
   report.stage = "workspace-switch";
+  checkpointReport();
   await stopApp();
   await assertProcessesStopped({ includeBackend: false });
   assertWriteback();
@@ -887,13 +988,15 @@ try {
   check(secondSession !== firstSession, "CURSOR_APP_SESSION_NOT_ISOLATED");
   await runTurn(secondSession);
   report.stage = "app-restart";
-  const oldPid = app.pid;
+  checkpointReport();
+  const oldApp = app;
   await stopApp();
   await assertProcessesStopped({ includeBackend: false });
   assertWriteback();
   workspace = firstWorkspace;
   await startApp();
-  check(app.pid !== oldPid, "CURSOR_APP_RESTART_IDENTITY");
+  check(app !== oldApp && (oldApp.exitCode !== null || oldApp.signalCode !== null)
+    && app.exitCode === null && app.signalCode === null, "CURSOR_APP_RESTART_IDENTITY");
   await openSession(firstSession);
   assertSnapshot(firstSession);
   assertWriteback();
@@ -920,8 +1023,10 @@ try {
   report.evidence.sameSessionRecovered = true;
   await runRepoMemoryWorker();
   report.stage = "cleanup";
+  checkpointReport();
 } catch (error) {
   report.errorCode = safeCode(error);
+  checkpointReport();
   await observeHookTiming().catch(() => {});
   finishHookTiming();
   const shellResult = collectCursorAppShellDiagnostics(agent?.firstShellFailure);
@@ -949,15 +1054,7 @@ finally {
   } catch (error) { report.cleanupError ??= safeCode(error); }
   if (agent) {
     await bounded(agent.close(), "CURSOR_APP_AGENT_CLEANUP").catch(() => { report.cleanupError = "CURSOR_APP_AGENT_CLEANUP"; });
-    report.agent = { runs: agent.runs.length, cancelled: agent.runs.map((run) => run.cancelled === true), writes: agent.runs.map((run) => run.kvWriteCount),
-      acknowledgements: agent.runs.map((run) => run.kvAckCount), ancillaryRequestCount: agent.ancillaryRequestCount,
-      unsupportedRpcCount: agent.unsupportedRpcCount, historyTurns: agent.runs.map((run) => run.turnRefs.length),
-      reads: agent.runs.map((run) => run.kvReadCount), readResults: agent.runs.map((run) => run.kvReadResultCount),
-      execRequests: agent.runs.map((run) => run.execRequestCount), execResults: agent.runs.map((run) => run.execResultCount),
-      execCloses: agent.runs.map((run) => run.execCloseCount),
-      contextRequests: agent.runs.map((run) => run.requestContextRequestCount),
-      contextResults: agent.runs.map((run) => run.requestContextResultCount),
-      contextCloses: agent.runs.map((run) => run.requestContextCloseCount) };
+    report.agent = agentReport();
     if (agent.errors.length) {
       report.agent.errors = agent.errors;
       report.errorCode ??= safeCode({ code: agent.errors[0] });
@@ -992,6 +1089,8 @@ finally {
       report.status = "FAIL"; report.cleanupError = "CURSOR_APP_STATE_CLEANUP"; report.evidence.cleanup = false;
     });
   }
+  checkpointReport();
+  clearInterval(progressTimer);
   if (reportDir) {
     await mkdir(reportDir, { recursive: true });
     await writeFile(join(reportDir, "report.json"), `${JSON.stringify(report, null, 2)}\n`);

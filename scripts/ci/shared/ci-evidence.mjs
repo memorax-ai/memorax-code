@@ -176,8 +176,9 @@ export function createEvidenceRecorder({
       const value = await Promise.race([
         Promise.resolve().then(collector),
         new Promise((_, reject) => {
+          // Awaited collection must reach its deadline even when the collector
+          // owns no active handles. The finally block releases this timer.
           timer = setTimeout(() => reject(Object.assign(new Error("Evidence budget expired"), { evidenceBudget: true })), budgetMs);
-          timer.unref?.();
         }),
       ]);
       append({ kind: "collect", name, status: "OK", elapsedMs: Math.round(now() - begun), value: project(value) }, { reserved: true });
@@ -290,7 +291,7 @@ const LEDGER_EVENTS = ["start", "end", "skip", "not_run", "incomplete"];
 const SKIP_REASONS = ["pending_implementation"];
 const WRAPPER_PHASES = ["setup", "suites", "cleanup"];
 // Suites whose runners write a journal and a result; the ledger alone tracks every other suite.
-const EVIDENCE_SUITES = new Set(["codex-install-smoke", "opencode-native-check"]);
+const EVIDENCE_SUITES = new Set(["codex-install-smoke", "codex-install-interruption-check", "opencode-native-check", "claude-install-smoke"]);
 
 function writeLedgerRecord(directory, record) {
   appendFileSync(join(directory, "ledger.jsonl"), `${JSON.stringify({ v: EVIDENCE_SCHEMA, at: new Date().toISOString(), ...record })}\n`,

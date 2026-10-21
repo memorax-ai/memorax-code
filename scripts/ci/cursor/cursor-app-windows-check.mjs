@@ -3,9 +3,12 @@ import { lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } fro
 import { dirname, join, resolve, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { projectNativeReport, readReleaseManifest } from "./cursor-app-container-check.mjs";
+import { readReleaseManifest } from "./cursor-app-container-check.mjs";
 import { selectCursorWindowsRelease, verifyCursorWindowsInstalledApp, withVerifiedCursorWindowsInstaller } from "./cursor-app-windows-artifact.mjs";
 import { windowsRuntimePaths } from "./cursor-app-windows-runtime.mjs";
+import { observeWindowsInstaller, readWindowsInstallerLog, windowsInstallerPhaseMarkers } from "./cursor-app-windows-installer-diagnostics.mjs";
+
+import { classifyCursorAppExecution, collectCursorAppNativeReport, writeCursorAppFinalReport } from "./cursor-app-report.mjs";
 
 const exec = promisify(execFile);
 const scripts = dirname(fileURLToPath(import.meta.url));
@@ -28,13 +31,17 @@ export function windowsInstallerCommand(installerPath, appDirectory, logPath) {
     && !/[\0\r\n"]/.test(value)), "CURSOR_APP_WINDOWS_ARGUMENTS");
   const quote = (value) => `'${value.replaceAll("'", "''")}'`;
   const args = ["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/MERGETASKS=!runcode", `/DIR="${appDirectory}"`, `/LOG="${logPath}"`];
+  const phase = (name) => `try { [Console]::Error.WriteLine('${windowsInstallerPhaseMarkers[name]}') } catch {}; `;
   // On Windows, Start-Process -Wait waits for the installer and its descendants.
-  const script = `$ErrorActionPreference='Stop'; try { $installer=Start-Process -FilePath ${quote(installerPath)} `
+  const script = `$ErrorActionPreference='Stop'; ${phase("powershellStart")}try { ${phase("launchStart")}`
+    + `$installer=Start-Process -FilePath ${quote(installerPath)} `
     + `-ArgumentList ${args.map(quote).join(",")} -Wait -PassThru; `
-    + `[ordered]@{status='exited';exitCode=$installer.ExitCode;nativeErrorCode=$null} | ConvertTo-Json -Compress; exit $installer.ExitCode `
+    + phase("treeWaitComplete")
+    + `[ordered]@{status='exited';exitCode=$installer.ExitCode;nativeErrorCode=$null} | ConvertTo-Json -Compress; `
+    + `${phase("jsonComplete")}exit $installer.ExitCode `
     + `} catch { $native=$null; $current=$_.Exception; for($i=0;$i -lt 8 -and $null -ne $current;$i++) { `
     + `if($current -is [ComponentModel.Win32Exception]) { $native=$current.NativeErrorCode; break }; $current=$current.InnerException }; `
-    + `[ordered]@{status='launch-error';exitCode=$null;nativeErrorCode=$native} | ConvertTo-Json -Compress; exit 1 }`;
+    + `[ordered]@{status='launch-error';exitCode=$null;nativeErrorCode=$native} | ConvertTo-Json -Compress; ${phase("jsonComplete")}exit 1 }`;
   return ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")];
 }
 
@@ -59,7 +66,7 @@ export function projectWindowsInstallerOutcome(stdout, error) {
 }
 
 export async function runWindowsCheck(candidatePath, reportPath, { releaseManifest, channel, nodeMajor = "24", signal } = {}) {
-  let root, output, artifact, installerOutcome, nativeStarted = false, cleanupFailed = false;
+  let root, output, artifact, installerOutcome, installerDiagnostics, nativeStarted = false, cleanupFailed = false;
   let report = { status: "FAIL", client: "cursor", kind: "app-native-session-flows", platform: "win32", stage: "windows-preflight", evidence: {} };
   try {
     // This uses the fresh hosted runner account, not a private Windows logon profile.
@@ -108,23 +115,31 @@ export async function runWindowsCheck(candidatePath, reportPath, { releaseManife
       check(false, "CURSOR_APP_WINDOWS_PACKAGE_SMOKE");
     }
     report.stage = "windows-acquisition";
-    await withVerifiedCursorWindowsInstaller({ release, root, signal }, async ({ installerPath, confirmProcessesClosed }) => {
+    await withVerifiedCursorWindowsInstaller({ release, root, signal }, async ({ installerPath, artifact: downloadedArtifact, confirmProcessesClosed }) => {
       let installerClosed = false;
-      artifact = { installerSignatureVerified: true, publisherVerified: true, appIdentityVerified: false, appArchitectureVerified: false };
+      artifact = { installerSignatureVerified: true, publisherVerified: true, appIdentityVerified: false, appArchitectureVerified: false,
+        observedSha256: typeof downloadedArtifact?.observedSha256 === "string" && /^[a-f0-9]{64}$/.test(downloadedArtifact.observedSha256)
+          ? downloadedArtifact.observedSha256 : null,
+        bytes: Number.isSafeInteger(downloadedArtifact?.bytes) && downloadedArtifact.bytes > 0 && downloadedArtifact.bytes <= 600_000_000
+          ? downloadedArtifact.bytes : null };
       try {
         report.stage = "windows-app-installation";
         const appDirectory = join(env.LOCALAPPDATA, "Programs", "Cursor"), logPath = join(root, "installer.log");
         try {
-          const result = await exec(join(env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+          const execution = await observeWindowsInstaller(exec, join(env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
             windowsInstallerCommand(installerPath, appDirectory, logPath),
             { cwd: root, env, timeout: 300_000, signal, maxBuffer: 64 * 1024, killSignal: "SIGKILL", windowsHide: true });
-          installerOutcome = projectWindowsInstallerOutcome(result.stdout);
+          installerDiagnostics = execution.diagnostics;
+          if (!execution.succeeded) throw execution.error;
+          installerOutcome = projectWindowsInstallerOutcome(execution.result.stdout);
           installerClosed = installerOutcome.status === "exited";
           check(installerOutcome.status === "exited" && installerOutcome.exitCode === 0, "CURSOR_APP_WINDOWS_INSTALLER_EXIT");
         } catch (error) {
           installerOutcome ??= projectWindowsInstallerOutcome(error.stdout, error);
           installerClosed = installerOutcome.status === "exited";
           check(false, "CURSOR_APP_WINDOWS_INSTALLER_EXIT");
+        } finally {
+          installerDiagnostics = { ...installerDiagnostics, log: await readWindowsInstallerLog(logPath) };
         }
         report.stage = "windows-app-verification";
         const installed = await verifyCursorWindowsInstalledApp({ release, root, profileRoot: env.HOME, appDirectory, signal });
@@ -140,10 +155,15 @@ export async function runWindowsCheck(candidatePath, reportPath, { releaseManife
             join(appDirectory, "Cursor.exe"), release.version, join(root, "probe", "node_modules", "playwright-core"), nativeOutput, nodeMajor],
           { cwd: root, env, timeout: 10 * 60_000, signal, maxBuffer: 1024 * 1024, killSignal: "SIGKILL", windowsHide: true });
         } catch (error) { executionError = error; }
-        const path = join(nativeOutput, "report.json"), info = await lstat(path);
-        check(info.isFile() && !info.isSymbolicLink() && info.size <= 64 * 1024, "CURSOR_APP_WINDOWS_REPORT");
-        report = projectNativeReport(JSON.parse(await readFile(path, "utf8")),
-          { expectedVersion: release.version, nodeMajor, platform: "win32" });
+        report = await collectCursorAppNativeReport({
+          readReport: async (name) => {
+            const path = join(nativeOutput, name), info = await lstat(path);
+            check(info.isFile() && !info.isSymbolicLink() && info.size <= 64 * 1024, "CURSOR_APP_WINDOWS_REPORT");
+            return readFile(path, "utf8");
+          },
+          expected: { expectedVersion: release.version, nodeMajor, platform: "win32" },
+          fallback: report, execution: classifyCursorAppExecution(executionError), exitErrorCode: "CURSOR_APP_WINDOWS_NATIVE_EXIT",
+        });
         check(!executionError && report.status === "PASS", "CURSOR_APP_WINDOWS_NATIVE_EXIT");
       } catch (error) {
         if (error.cleanupErrorCode) cleanupFailed = true;
@@ -167,8 +187,8 @@ export async function runWindowsCheck(candidatePath, reportPath, { releaseManife
     } else if (root) cleanupFailed = true;
     if (cleanupFailed) { report.status = "FAIL"; report.cleanupError ??= "CURSOR_APP_WINDOWS_CLEANUP"; }
     if (artifact) report.windows = artifact;
-    if (installerOutcome) report.windowsInstaller = installerOutcome;
-    if (output) await writeFile(join(output, "report.json"), `${JSON.stringify(report, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+    if (installerOutcome) report.windowsInstaller = { ...installerOutcome, diagnostics: installerDiagnostics };
+    if (output) await writeCursorAppFinalReport(join(output, "report.json"), report, "CURSOR_APP_WINDOWS_REPORT_WRITE", writeFile);
   }
   return report;
 }
