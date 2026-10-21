@@ -85,7 +85,7 @@ test("memorax-code references keep authority and operation boundaries explicit",
   assert.match(memoraxAdd, /`workspaceScopeFallbackReason: git_metadata_invalid`/);
   assert.match(memoraxAdd, /successful Add returns `quotaNotice`/);
   assert.match(memoraxAdd, /Never run `memorax-code account --show-mark-id` for the user/);
-  assert.doesNotMatch(memoraxAdd, /--memory-file/);
+  assert.doesNotMatch(memoraxAdd.split("## Eligible Knowledge")[1], /--memory-file/);
   assert.match(repoRead, /Current implementation claims and code edits still require live-code verification/);
   assert.match(repoBuild, /scripts\/repo-memory\.mjs collect/);
   assert.match(repoUpdate, /scripts\/repo-memory\.mjs detect-updates/);

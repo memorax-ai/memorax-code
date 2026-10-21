@@ -11,6 +11,7 @@ after(() => rm(writebackHome, { recursive: true, force: true }));
 
 const WRITEBACK_ENV = {
   MEMORAX_CODE_HOME: writebackHome,
+  MEMORAX_CODE_MEMORAX_ADD_CONTENT_TYPE: "code",
   MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
   MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "false",
   MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
@@ -870,7 +871,7 @@ test("automatic work dialogue uses chat routing without code chunks and freezes 
     client: "workbuddy", sessionKey: "work-routing", repositoryScope: REPOSITORY_SCOPE,
     userText: "What is the expense approval threshold?", assistantText: "I will check the policy.",
     fetchImpl: memoraxFetch(requests),
-    env: { ...WRITEBACK_ENV, MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "true",
+    env: { ...WRITEBACK_ENV, MEMORAX_CODE_MEMORAX_ADD_CONTENT_TYPE: "dialogue", MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "true",
       MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_TURNS: "10", MEMORAX_CODE_MEMORY_WRITEBACK_CHUNK_MAX_CHARS: "10" },
   };
   try {
@@ -922,6 +923,51 @@ test("automatic code writes preserve legacy deduplication keys in immediate and 
       assert.equal(requests[0].body.metadata.idempotency_key, prefix + digest);
       assert.equal(requests[0].body.content_type, "code");
       assert.equal(requests[0].body.mode, "default");
+    } finally { runtime.close(); }
+  }
+});
+
+test("auto and work dispatch each completed turn independently without code chunks", async () => {
+  for (const route of [undefined, "auto", "work"]) {
+    const requests = [];
+    const runtime = createAutomaticMemoryWritebackRuntime();
+    try {
+      for (const turn of ["one", "two"]) {
+        assert.deepEqual(runtime.enqueue({ client: "workbuddy", sessionKey: "auto-session",
+          userText: `Discuss ${turn}`, assistantText: `Answer ${turn}`, repositoryScope: REPOSITORY_SCOPE,
+          env: { ...WRITEBACK_ENV, MEMORAX_CODE_MEMORAX_ADD_CONTENT_TYPE: route,
+            MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "true", MEMORAX_CODE_MEMORY_WRITEBACK_CHUNK_MAX_CHARS: "5" },
+          fetchImpl: memoraxFetch(requests),
+        }), { accepted: true });
+      }
+      await runtime.drain();
+      assert.equal(requests.length, 2);
+      for (const { body } of requests) {
+        assert.equal(body.content_type, route ?? "auto");
+        assert.equal(body.mode, "default");
+        assert.equal(body.chunk, undefined);
+        assert.equal(body.code_extraction_instructions, undefined);
+        assert.equal(body.messages.length, 2);
+        assert.ok(body.messages.every((message) => Number.isFinite(message.timestamp)));
+        assert.equal(body.session_id, "auto-session");
+        assert.equal(body.metadata.source, "memorax-code");
+      }
+    } finally { runtime.close(); }
+  }
+});
+
+test("auto and work reject oversized completed turns before clipping or dispatch", async () => {
+  for (const route of ["auto", "work"]) {
+    const requests = [];
+    const runtime = createAutomaticMemoryWritebackRuntime();
+    try {
+      assert.deepEqual(runtime.enqueue({ client: "codex", sessionKey: "oversized",
+        userText: "Long user text", assistantText: "answer", repositoryScope: REPOSITORY_SCOPE,
+        env: { ...WRITEBACK_ENV, MEMORAX_CODE_MEMORAX_ADD_CONTENT_TYPE: route,
+          MEMORAX_CODE_MEMORY_WRITEBACK_MAX_MESSAGE_CHARS: "10" }, fetchImpl: memoraxFetch(requests),
+      }), { accepted: false, reason: "message_too_long" });
+      await runtime.drain();
+      assert.equal(requests.length, 0);
     } finally { runtime.close(); }
   }
 });

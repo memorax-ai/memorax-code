@@ -1,30 +1,57 @@
 # MemoraX Code Coding and Work Memory Add
 
-Use these instructions to add reusable coding knowledge or user-requested work dialogue through `memorax-cli`. Invoke the skill as `$memorax-code` in Codex or `/memorax-code` in Claude Code. In OpenCode, ask the agent to use the `memorax-code` skill by name. Do not route memory operations through the lifecycle-only `memorax-code` CLI. Do not use this authority for personal procedures, interaction preferences, generated repository facts, or one-off task details.
+Use these instructions to add reusable coding knowledge or user-requested work dialogue and full document snapshots through `memorax-cli`. Invoke the skill as `$memorax-code` in Codex or `/memorax-code` in Claude Code. In OpenCode, ask the agent to use the `memorax-code` skill by name. Do not route memory operations through the lifecycle-only `memorax-code` CLI. Do not use this authority for personal procedures, interaction preferences, generated repository facts, or one-off task details.
 
 ## Work Memory Add
 
 Select the content type from the source being saved, not from the client name
-or search results. In any client, use `--content-type dialogue --mode default`
+or search results. In any client, use `--content-type work --mode default`
 for grounded office requirements, discussions, and decisions. Use
 `--content-type code --mode pre_summarized` for reusable coding lessons. The
-service applies Chat rules to dialogue; do not wrap work facts in a
+service applies Chat rules to work or dialogue; do not wrap work facts in a
 `CODE_AGENT_MEMORY` card or promote an unresolved request into a completed fact.
 The coding eligibility and card guidance below applies only to coding memory.
 
 ```bash
-memorax-cli add --content-type dialogue --mode default \
+memorax-cli add --content-type work --mode default \
   --memory 'The user requested the travel reimbursement approval threshold; the policy still needs verification.' \
   --type episodic --reason 'Preserve the office requirement requested by the user.'
 ```
 
-Document ingestion remains in the MemoraX backend's existing snapshot path,
-where document content uses Document extraction rules. Do not send document
-contents as dialogue to simulate document indexing. Use document search only
-for already indexed documents. An Add acknowledgement confirms submission,
-not completed extraction. The scope, quoting, failure, and quota rules below
-apply to both coding and work dialogue Add. On Windows PowerShell use
-`memorax-cli.cmd`.
+Use `--content-type auto --mode default` when MemoraX should classify an
+ordinary completed discussion as code or work. Auto and work accept only default
+mode. Omitted type preserves the existing manual CLI behavior. Do not add a
+coding card or code extraction instructions to auto/work content.
+
+### Full document snapshots
+
+For an explicitly requested document import or replacement, send a complete
+UTF-8 text file with caller-supplied stable identity and revision:
+
+```bash
+memorax-cli add --content-type document --memory-file './policy.txt' \
+  --document-id 'policy' --input-id '12345678-1234-4234-8234-123456789abc' \
+  --expected-revision 0
+```
+
+Use a fresh UUID for a new snapshot and the last confirmed document revision
+(`0` when creating it). The file's full text is preserved, including BOM,
+whitespace and line endings, up to 2,000,000 Unicode characters. This path does
+not need `--type` or `--reason` and bypasses the ordinary memory size limit.
+Never summarize, trim, prefix, truncate, or wrap the document in a coding card.
+Do not infer IDs or revisions, parse binary files, scrape tool output, watch
+files, or simulate indexing by sending document text as dialogue. Empty text
+requires explicit `--allow-empty` and user intent to clear that document.
+
+A user-authorized retry of the identical snapshot must reuse the exact input
+ID, expected revision, text, scope, and output language. Do not automatically
+retry after an uncertain result. No local version cache is maintained. A receipt
+with `pending: true` acknowledges submission and exposes `task_id`; it does not
+confirm completed extraction or the new revision. Completed synchronous results
+preserve structured `events`; use their document ID/revision if present. Never
+guess a revision from asynchronous task status or human-readable memory text.
+The scope, quoting, failure, and quota rules below apply to all Add routes. On
+Windows PowerShell use `memorax-cli.cmd`.
 
 ## Eligible Knowledge
 

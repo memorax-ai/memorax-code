@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { open, readFile, stat } from "node:fs/promises";
 import { backendDebug } from "../shared/debug-log.js";
 import { diagnoseMemoryCliFailure, fileErrorFields, memoryCliUnexpectedFailure, type MemoryCliFailureDetails } from "./cli-diagnostics.js";
 import { invokeMemoraxMemoryProvider } from "../provider/memorax/adapter.js";
@@ -210,21 +211,41 @@ async function memoryAdd(args: string[], options: MemoryCliOptions): Promise<Mem
   if (!memoryCliAddEnabled(env)) {
     return { ok: false, action: "memory.add", errorCode: "MEMORY_ADD_DISABLED", stage: "configuration", error: "memory add is disabled by MEMORAX_CODE_MEMORY_CLI_ADD_ENABLED=false or [memory.cli].add_enabled=false" };
   }
-  const memoryResult = await readTextArg(args, "--memory", "--memory-file", "memory");
-  if (!memoryResult.ok) return { ...memoryResult, action: "memory.add" };
-  const memory = memoryResult.text;
-  const maxChars = memoryCliMaxMemoryChars(env);
-  if (memory.length > maxChars) {
-    return { ok: false, action: "memory.add", error: `memory is too long: ${memory.length} chars > ${maxChars}` };
-  }
-  const memoryType = requiredArg(args, "--type");
-  if (!memoryType.ok) return { ok: false, action: "memory.add", error: memoryType.error };
-  const reason = requiredArg(args, "--reason");
-  if (!reason.ok) return { ok: false, action: "memory.add", error: reason.error };
+  const flags = validateMemoryAddFlags(args);
+  if (!flags.ok) return { ...flags, action: "memory.add" };
   const repositoryMemory = await resolveMemoryCliRepositoryMemory(options);
   if (!repositoryMemory.ok) return memoryCliRepositoryFailure("memory.add", repositoryMemory);
   const contentOptions = memoryAddContentOptions(args, env, repositoryMemory.client);
   if (!contentOptions.ok) return { ok: false, action: "memory.add", error: contentOptions.error };
+  const document = contentOptions.context.contentType === "document";
+  let context: Record<string, unknown>;
+  let memory: string;
+  if (document) {
+    const snapshot = await readDocumentSnapshot(args);
+    if (!snapshot.ok) return { ...snapshot, action: "memory.add" };
+    memory = snapshot.content;
+    context = { ...contentOptions.context, documents: [snapshot.document] };
+  } else {
+    if (["--document-id", "--input-id", "--expected-revision", "--allow-empty"].some((flag) => args.includes(flag))) {
+      return { ok: false, action: "memory.add", error: "document flags require --content-type document" };
+    }
+    const memoryResult = await readTextArg(args, "--memory", "--memory-file", "memory");
+    if (!memoryResult.ok) return { ...memoryResult, action: "memory.add" };
+    memory = memoryResult.text;
+    const maxChars = memoryCliMaxMemoryChars(env);
+    if (memory.length > maxChars) return { ok: false, action: "memory.add", error: `memory is too long: ${memory.length} chars > ${maxChars}` };
+    const memoryType = requiredArg(args, "--type");
+    if (!memoryType.ok) return { ok: false, action: "memory.add", error: memoryType.error };
+    const reason = requiredArg(args, "--reason");
+    if (!reason.ok) return { ok: false, action: "memory.add", error: reason.error };
+    const route = contentOptions.context.contentType;
+    context = {
+      idempotencyKey: `memory-cli:${memoryCliSessionId(args, env)}:${hashText(`${memoryType.value}\n${reason.value}\n${memory}`)}${route === "code" ? "" : `:${route}`}`,
+      messages: [{ role: "user", content: memory }],
+      ...contentOptions.context,
+      metadata: { source_detail: "memorax_code_memory_cli", memory_type: memoryType.value, memorax_code_memory_reason: reason.value },
+    };
+  }
   options.diagnosticTrace = repositoryMemory.traceContext;
 
   const sessionId = memoryCliSessionId(args, env);
@@ -238,16 +259,7 @@ async function memoryAdd(args: string[], options: MemoryCliOptions): Promise<Mem
       slot: "state_context",
       operation: "writeback",
       dispatch: "async_best_effort",
-      context: {
-        idempotencyKey: `memory-cli:${sessionId}:${hashText(`${memoryType.value}\n${reason.value}\n${memory}`)}${contentOptions.context.contentType === "dialogue" ? ":dialogue" : ""}`,
-        messages: [{ role: "user", content: memory }],
-        ...contentOptions.context,
-        metadata: {
-          source_detail: "memorax_code_memory_cli",
-          memory_type: memoryType.value,
-          memorax_code_memory_reason: reason.value,
-        },
-      },
+      context,
     },
     {
       config: repositoryMemory.memory.config,
@@ -539,10 +551,79 @@ function memoryAddContentOptions(
   const effectiveContentType = route.options.contentType
     ?? (client === "workbuddy" ? "dialogue" : "code");
   const effectiveMode = mode || (effectiveContentType === "code" ? "pre_summarized" : "default");
-  if (effectiveContentType === "dialogue" && effectiveMode === "pre_summarized") {
+  if (effectiveContentType !== "code" && effectiveMode === "pre_summarized") {
     return { ok: false, error: "pre_summarized requires code content" };
   }
+  const validated = memoraxAddOptionsFromContext({ contentType: effectiveContentType, mode: effectiveMode }, env);
+  if (!validated.ok) return validated;
   return { ok: true, context: { contentType: effectiveContentType, mode: effectiveMode } };
+}
+
+function validateMemoryAddFlags(args: string[]): { ok: true } | { ok: false; error: string } {
+  const valueFlags = new Set(["--memory", "--memory-file", "--type", "--reason", "--session-id", "--content-type", "--mode", "--document-id", "--input-id", "--expected-revision"]);
+  const seen = new Set<string>();
+  for (let index = 0; index < args.length; index++) {
+    const flag = args[index]!;
+    if (!flag.startsWith("--")) return { ok: false, error: "unexpected positional argument for add" };
+    if (!valueFlags.has(flag) && flag !== "--allow-empty" && flag !== "--json") return { ok: false, error: `unsupported add flag ${flag}` };
+    if (seen.has(flag)) return { ok: false, error: `use ${flag} only once` };
+    seen.add(flag);
+    if (valueFlags.has(flag)) {
+      if (args[index + 1] === undefined || args[index + 1]!.startsWith("--")) return { ok: false, error: `${flag} requires a value` };
+      index++;
+    }
+  }
+  return { ok: true };
+}
+
+async function readDocumentSnapshot(args: string[]): Promise<
+  | { ok: true; content: string; document: Record<string, unknown> }
+  | ({ ok: false; error: string } & MemoryCliFailureDetails)
+> {
+  if (argValue(args, "--content-type") !== "document") return { ok: false, error: "document ingestion requires explicit --content-type document" };
+  if (args.includes("--memory")) return { ok: false, error: "document snapshots require --memory-file without --memory" };
+  const file = requiredArg(args, "--memory-file");
+  if (!file.ok) return file;
+  const documentId = requiredArg(args, "--document-id");
+  if (!documentId.ok) return documentId;
+  const inputId = requiredArg(args, "--input-id");
+  if (!inputId.ok) return inputId;
+  const revision = requiredArg(args, "--expected-revision");
+  if (!revision.ok) return revision;
+  if (!/^\d+$/.test(revision.value) || !Number.isSafeInteger(Number(revision.value))) return { ok: false, error: "--expected-revision must be a nonnegative safe integer" };
+  const maxBytes = 8_000_000;
+  const tooLarge = { ok: false as const, error: `document file exceeds ${maxBytes} bytes` };
+  const notRegular = { ok: false as const, error: "document snapshot must be a regular file" };
+  let content: string;
+  let handle: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    const info = await stat(file.value);
+    if (!info.isFile()) return notRegular;
+    if (info.size > maxBytes) return tooLarge;
+    // Nonblocking open also prevents a path replaced with a FIFO from waiting
+    // for a writer. Verify the opened file, then bound reads if it grows.
+    handle = await open(file.value, constants.O_RDONLY | (constants.O_NONBLOCK ?? 0));
+    const opened = await handle.stat();
+    if (!opened.isFile()) return notRegular;
+    if (opened.size > maxBytes) return tooLarge;
+    const chunks: Buffer[] = [];
+    let bytes = 0;
+    for await (const chunk of handle.createReadStream({ highWaterMark: 64 * 1024, autoClose: false })) {
+      bytes += chunk.length;
+      if (bytes > maxBytes) return tooLarge;
+      chunks.push(chunk);
+    }
+    content = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(Buffer.concat(chunks, bytes));
+  } catch (error) {
+    return { ok: false, error: "--memory-file must be a readable UTF-8 text snapshot", errorCode: "MEMORY_INPUT_UNREADABLE", stage: "input", ...fileErrorFields(error) };
+  } finally {
+    await handle?.close();
+  }
+  return { ok: true, content, document: {
+    document_id: argValue(args, "--document-id"), input_id: argValue(args, "--input-id"),
+    expected_revision: Number(revision.value), content,
+    ...(args.includes("--allow-empty") ? { allow_empty: true } : {}),
+  } };
 }
 
 async function readTextArg(

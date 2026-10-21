@@ -94,12 +94,13 @@ type MemoraxSearchPayload = {
   min_semantic_similarity?: number;
 };
 
-type MemoraxAddPayload = {
+type MemoraxMessageAddPayload = {
   messages: Array<{ role: "user" | "assistant"; content: string; timestamp: number }>;
   user_id: string;
   memory_output_language: "zh" | "en";
   mode?: MemoraxAddOptions["mode"];
-  content_type?: "dialogue" | "code";
+  content_type?: MemoraxAddOptions["contentType"];
+  documents?: never;
   chunk?: {
     group_id: string;
     index: number;
@@ -110,6 +111,26 @@ type MemoraxAddPayload = {
   async_mode: true;
   timestamp: number;
 };
+
+type MemoraxDocumentSnapshot = {
+  document_id: string;
+  input_id: string;
+  expected_revision: number;
+  content: string;
+  allow_empty?: boolean;
+};
+
+type MemoraxDocumentAddPayload = {
+  user_id: string;
+  memory_output_language: "zh" | "en";
+  content_type: "document";
+  mode: "default";
+  async_mode: true;
+  documents: [MemoraxDocumentSnapshot];
+  messages?: never;
+};
+
+type MemoraxAddPayload = MemoraxMessageAddPayload | MemoraxDocumentAddPayload;
 
 type MemoraxWritebackMessage = {
   role: "user" | "assistant";
@@ -281,7 +302,7 @@ export async function callMemoAdd(
   payload: MemoraxAddPayload,
   fetchImpl: typeof fetch = fetch,
 ): Promise<MemoraxJsonResponse> {
-  return postMemoraxJson(config, "/v1/memories/add", payload, fetchImpl);
+  return postMemoraxJson({ ...config, timeoutMs: config.addTimeoutMs ?? 15_000 }, "/v1/memories/add", payload, fetchImpl);
 }
 
 function recordMemoryObservabilityEvent(
@@ -341,13 +362,26 @@ async function invokeMemoraxWriteback(
   const context = isRecord(request.context) ? request.context : {};
   const addOptions = memoraxAddOptionsFromContext(context, env);
   if (!addOptions.ok) return { ok: false, error: addOptions.error };
-  const messages = writebackMessagesFromContext(context, request.content, addOptions.options);
-  if (messages.length === 0) return { ok: false, error: "writeback messages are required" };
-  const idempotencyKey = writebackIdempotencyKeyFromContext(context);
-  if (!idempotencyKey) return { ok: false, error: "writeback idempotency key is required" };
-  const payload = buildMemoraxAddPayload(config, run, messages, context, idempotencyKey, repositoryScope, addOptions.options);
+  let payload: MemoraxAddPayload;
+  if (context.documents !== undefined || addOptions.options.contentType === "document") {
+    const document = documentSnapshotFromContext(context, request.content, addOptions.options);
+    if (!document.ok) return document;
+    payload = {
+      user_id: repositoryScope.effectiveUserId,
+      memory_output_language: config.memoryOutputLanguage ?? MEMORAX_DEFAULT_MEMORY_OUTPUT_LANGUAGE,
+      content_type: "document", mode: "default", async_mode: true,
+      documents: [document.snapshot],
+    };
+  } else {
+    const messages = writebackMessagesFromContext(context, request.content, addOptions.options);
+    if (messages.length === 0) return { ok: false, error: "writeback messages are required" };
+    const idempotencyKey = writebackIdempotencyKeyFromContext(context);
+    if (!idempotencyKey) return { ok: false, error: "writeback idempotency key is required" };
+    payload = buildMemoraxAddPayload(config, run, messages, context, idempotencyKey, repositoryScope, addOptions.options);
+  }
   try {
     const { body: raw, quota } = await callMemoAdd(config, payload, options.fetchImpl);
+    const receipt = memoraxAddReceipt(raw);
     recordMemoryObservabilityEvent(options, {
       operation: "writeback",
       ok: true,
@@ -372,13 +406,15 @@ async function invokeMemoraxWriteback(
         ...(quota ? { quota } : {}),
         tool_result_payload: {
           accepted: true,
+          ...receipt,
           receiptId: memoraxReceiptId(raw),
           raw,
         },
         dispatch_receipt: {
           accepted: true,
           receipt_id: memoraxReceiptId(raw),
-          summary: `memorax writeback accepted ${messages.length} message(s)`,
+          ...receipt,
+          summary: receipt.pending ? "memorax writeback accepted; extraction pending" : "memorax writeback completed",
         },
       },
     };
@@ -397,6 +433,52 @@ async function invokeMemoraxWriteback(
   }
 }
 
+function documentSnapshotFromContext(
+  context: Record<string, unknown>,
+  fallbackContent: unknown,
+  options: MemoraxAddOptions,
+): { ok: true; snapshot: MemoraxDocumentSnapshot } | { ok: false; error: string } {
+  if (options.contentType !== "document" && options.contentType !== "auto" && options.contentType !== "work") {
+    return { ok: false, error: "documents require document, auto, or work content" };
+  }
+  if (context.messages !== undefined || fallbackContent !== undefined) {
+    return { ok: false, error: "documents and messages cannot be mixed" };
+  }
+  if (!Array.isArray(context.documents) || context.documents.length !== 1 || !isRecord(context.documents[0])) {
+    return { ok: false, error: "exactly one document snapshot is required" };
+  }
+  const snapshot = context.documents[0];
+  const { document_id, input_id, expected_revision, content, allow_empty } = snapshot;
+  if (typeof document_id !== "string" || !document_id || document_id !== document_id.trim() || [...document_id].length > 200) {
+    return { ok: false, error: "document_id must contain 1 to 200 characters without outer whitespace" };
+  }
+  if (typeof input_id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(input_id)) {
+    return { ok: false, error: "input_id must be a UUID" };
+  }
+  if (typeof expected_revision !== "number" || !Number.isSafeInteger(expected_revision) || expected_revision < 0) {
+    return { ok: false, error: "expected_revision must be a nonnegative safe integer" };
+  }
+  if (allow_empty !== undefined && typeof allow_empty !== "boolean") return { ok: false, error: "allow_empty must be boolean" };
+  if (typeof content !== "string" || (!content.trim() && allow_empty !== true)) {
+    return { ok: false, error: "document content is required; allow_empty must be explicit to clear a document" };
+  }
+  let chars = 0;
+  for (const _character of content) if (++chars > 2_000_000) return { ok: false, error: "document exceeds 2000000 characters" };
+  return { ok: true, snapshot: { document_id, input_id, expected_revision, content,
+    ...(allow_empty === undefined ? {} : { allow_empty }) } };
+}
+
+function memoraxAddReceipt(raw: unknown): Record<string, unknown> {
+  const data = isRecord(raw) && isRecord(raw.data) ? raw.data : {};
+  const status = typeof data.status === "string" ? data.status.toLowerCase() : "accepted";
+  return {
+    status,
+    pending: status !== "completed",
+    ...(typeof data.task_id === "string" ? { task_id: data.task_id } : {}),
+    ...(Array.isArray(data.data) ? { events: data.data } : {}),
+  };
+}
+
 function buildMemoraxAddPayload(
   config: MemoraxAdapterConfig,
   run: MemoraxRunContext,
@@ -405,7 +487,7 @@ function buildMemoraxAddPayload(
   idempotencyKey: string,
   repositoryScope: RepositoryMemoryScope,
   options: MemoraxAddOptions = {},
-): MemoraxAddPayload {
+): MemoraxMessageAddPayload {
   const now = Date.now();
   const extraMetadata = writebackMetadataFromContext(context);
   const chunk = options.contentType === "code" && options.mode === "default"
@@ -453,7 +535,7 @@ function memoraxScopeVersion(scopeKind: ReturnType<typeof repositoryMemoryScopeK
   return "workspace-name.v1";
 }
 
-function writebackChunkFromContext(context: Record<string, unknown>): MemoraxAddPayload["chunk"] {
+function writebackChunkFromContext(context: Record<string, unknown>): MemoraxMessageAddPayload["chunk"] {
   if (!isRecord(context.chunk)) return undefined;
   const groupId = typeof context.chunk.group_id === "string" ? context.chunk.group_id.trim() : "";
   const index = context.chunk.index;

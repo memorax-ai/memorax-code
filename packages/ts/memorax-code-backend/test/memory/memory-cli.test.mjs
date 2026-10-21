@@ -1723,8 +1723,142 @@ test("memory CLI work routing preserves legacy code mode and idempotency while h
   assert.equal(requests.at(-1).content_type, "dialogue");
   const count = requests.length;
   for (const invalid of [
-    ["--content-type", "document"], ["--content-type", "work"],
+    ["--content-type", "document"], ["--content-type", "unknown"],
     ["--content-type", "dialogue", "--mode", "pre_summarized"],
   ]) assert.equal((await runMemoryCli([...args, ...invalid], options)).ok, false);
   assert.equal(requests.length, count);
+});
+
+test("memory CLI explicit auto and work use default mode with pending receipts", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-cli-auto-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const requests = [];
+  const options = { cwd: root, env: { MEMORAX_CODE_HOME: join(root, "home"),
+    MEMORAX_CODE_MEMORAX_API_KEY: "secret", MEMORAX_CODE_MEMORAX_USER_ID: "user-1" },
+    fetchImpl: async (_url, init) => { requests.push(JSON.parse(init.body));
+      return Response.json({ success: true, data: { task_id: "pending-task", status: "accepted" } }); } };
+  const base = ["add", "--memory", "Verified discussion", "--type", "semantic", "--reason", "Evidence"];
+  for (const type of ["auto", "work"]) {
+    const result = await runMemoryCli([...base, "--content-type", type], options);
+    assert.equal(result.ok, true, result.error);
+    assert.equal(result.receipt.pending, true);
+    assert.equal(result.receipt.task_id, "pending-task");
+    assert.equal(requests.at(-1).content_type, type);
+    assert.equal(requests.at(-1).mode, "default");
+    for (const mode of ["raw", "pre_summarized"]) assert.equal((await runMemoryCli([...base, "--content-type", type, "--mode", mode], options)).ok, false);
+  }
+  assert.equal(requests.length, 2);
+});
+
+test("memory CLI document preserves full UTF-8 snapshot and identical retry bodies", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-cli-document-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const file = join(root, "snapshot.txt");
+  const content = `\uFEFF  Policy\r\n${"文😀".repeat(2000)}\r\n  `;
+  await writeFile(file, content);
+  const requests = [];
+  const receipt = { document_id: "policy:v1", revision: 3, status: "updated" };
+  const options = { cwd: root, env: { MEMORAX_CODE_HOME: join(root, "home"),
+    MEMORAX_CODE_MEMORAX_API_KEY: "secret", MEMORAX_CODE_MEMORAX_USER_ID: "user-1" },
+    fetchImpl: async (_url, init) => { requests.push(init.body);
+      return Response.json({ success: true, data: { status: "completed", data: [receipt] } }); } };
+  const args = ["add", "--content-type", "document", "--memory-file", file, "--document-id", "policy:v1",
+    "--input-id", "12345678-1234-4234-8234-123456789abc", "--expected-revision", "2"];
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const result = await runMemoryCli(args, options);
+    assert.equal(result.ok, true, result.error);
+    assert.equal(result.receipt.pending, false);
+    assert.deepEqual(result.receipt.events, [receipt]);
+  }
+  assert.equal(requests[0], requests[1]);
+  const body = JSON.parse(requests[0]);
+  assert.deepEqual(Object.keys(body).sort(), ["async_mode", "content_type", "documents", "memory_output_language", "mode", "user_id"]);
+  assert.equal(body.user_id, `user-1@${root.split(/[\\/]/).at(-1)}`);
+  assert.deepEqual(body.documents, [{ document_id: "policy:v1", input_id: "12345678-1234-4234-8234-123456789abc", expected_revision: 2, content }]);
+  assert.equal(Buffer.from(body.documents[0].content).equals(await readFile(file)), true);
+  for (const invalid of [
+    args.filter((_value, index) => index !== 7 && index !== 8),
+    [...args, "--memory", "mixed"], [...args, "--document-id", "duplicate"],
+    [...args, "--allow-empty", "false"],
+    args.map((value) => value === "2" ? "1.5" : value),
+    args.map((value) => value === "12345678-1234-4234-8234-123456789abc" ? "bad-uuid" : value),
+  ]) assert.equal((await runMemoryCli(invalid, options)).ok, false);
+  assert.equal(requests.length, 2);
+  await writeFile(file, "");
+  assert.equal((await runMemoryCli(args, options)).ok, false);
+  assert.equal((await runMemoryCli([...args, "--allow-empty"], options)).ok, true);
+  assert.equal(JSON.parse(requests.at(-1)).documents[0].allow_empty, true);
+  assert.equal(JSON.parse(requests.at(-1)).documents[0].content, "");
+});
+
+test("memory CLI document rejects invalid UTF-8 and unauthorized workspace before dispatch", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-cli-document-invalid-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const file = join(root, "snapshot.txt");
+  await writeFile(file, Buffer.from([0xc3, 0x28]));
+  let requests = 0;
+  const options = { cwd: root, env: { MEMORAX_CODE_HOME: join(root, "home"),
+    MEMORAX_CODE_MEMORAX_API_KEY: "secret", MEMORAX_CODE_MEMORAX_USER_ID: "user-1" },
+    fetchImpl: async () => { requests++; return Response.json({ success: true }); } };
+  const args = ["add", "--content-type", "document", "--memory-file", file, "--document-id", "policy",
+    "--input-id", "12345678-1234-4234-8234-123456789abc", "--expected-revision", "0", "--json"];
+  const invalid = await runMemoryCli(args, options);
+  assert.equal(invalid.ok, false);
+  assert.match(invalid.error, /UTF-8/);
+  await writeFile(file, "Valid document");
+  const unscoped = await runMemoryCli(args, { ...options, cwd: join(root, "missing-workspace") });
+  assert.equal(unscoped.ok, false);
+  assert.equal(requests, 0);
+});
+
+test("memory CLI bounds document file reads and accepts the complete UTF-8 byte limit", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-cli-document-file-bound-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const file = join(root, "snapshot.txt");
+  const content = "😀".repeat(2_000_000);
+  const requests = [];
+  const options = { cwd: root, env: { MEMORAX_CODE_HOME: join(root, "home"),
+    MEMORAX_CODE_MEMORAX_API_KEY: "secret", MEMORAX_CODE_MEMORAX_USER_ID: "user-1" },
+    fetchImpl: async (_url, init) => { requests.push(JSON.parse(init.body));
+      return Response.json({ success: true, data: { task_id: "bounded", status: "accepted" } }); } };
+  const args = ["add", "--content-type", "document", "--memory-file", file, "--document-id", "policy",
+    "--input-id", "12345678-1234-4234-8234-123456789abc", "--expected-revision", "0"];
+  await writeFile(file, `${content}x`);
+  const oversized = await runMemoryCli(args, options);
+  assert.equal(oversized.ok, false);
+  assert.match(oversized.error, /8000000 bytes/);
+  const directory = await runMemoryCli(args.map((value) => value === file ? root : value), options);
+  assert.equal(directory.ok, false);
+  assert.match(directory.error, /regular file/);
+  if (process.platform !== "win32") {
+    const fifo = join(root, "snapshot.fifo");
+    await execFileAsync("mkfifo", [fifo]);
+    const special = await runMemoryCli(args.map((value) => value === file ? fifo : value), options);
+    assert.equal(special.ok, false);
+    assert.match(special.error, /regular file/);
+  }
+  assert.equal(requests.length, 0);
+  await writeFile(file, content);
+  const accepted = await runMemoryCli(args, options);
+  assert.equal(accepted.ok, true, accepted.error);
+  assert.equal(Buffer.byteLength(requests[0].documents[0].content), 8_000_000);
+  assert.equal(requests[0].documents[0].content, content);
+
+  // Grow the real file after its opened-handle stat to exercise the read bound,
+  // independently of either size preflight check.
+  await writeFile(file, "initial");
+  const probe = await fsPromises.open(file, "r");
+  const prototype = Object.getPrototypeOf(probe);
+  const originalStat = prototype.stat;
+  await probe.close();
+  const statMock = t.mock.method(prototype, "stat", async function (...args) {
+    const info = await originalStat.apply(this, args);
+    await fsPromises.truncate(file, 8_000_001);
+    return info;
+  });
+  const grown = await runMemoryCli(args, options);
+  statMock.mock.restore();
+  assert.equal(grown.ok, false);
+  assert.match(grown.error, /8000000 bytes/);
+  assert.equal(requests.length, 1);
 });

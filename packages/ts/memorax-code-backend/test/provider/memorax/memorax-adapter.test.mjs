@@ -747,6 +747,7 @@ for (const [phase, operation] of [["headers", "query"], ["body", "writeback"]]) 
           userId: "user-1",
           topK: 6,
           timeoutMs: 10,
+          addTimeoutMs: 10,
           maxContextChars: 4000,
           maxItemChars: 1000,
           memoryTypeOrder: ["core", "procedural", "unclassified"],
@@ -991,4 +992,82 @@ test("MemoraX adapter preserves supported empty Search and asynchronous Add ackn
       else assert.equal(result.result.dispatch_receipt.accepted, true);
     }
   }
+});
+
+test("MemoraX document payload rejects mixed authority and preserves synchronous receipts", async () => {
+  const requests = [];
+  const document = { document_id: "policy", input_id: "12345678-1234-4234-8234-123456789abc", expected_revision: 0, content: "  Full document\n" };
+  const receipts = [{ document_id: "policy", status: "created", revision: 1 }];
+  const options = { env: { MEMORAX_CODE_MEMORAX_API_KEY: "secret", MEMORAX_CODE_MEMORAX_USER_ID: "user-1" },
+    repositoryScope: testRepositoryScope(), fetchImpl: async (_url, init) => {
+      requests.push(JSON.parse(init.body));
+      return Response.json({ success: true, data: { status: "completed", data: receipts } });
+    } };
+  const request = { operation: "writeback", context: { contentType: "document", documents: [document] } };
+  const run = { sessionId: "unused-session", prompt: "" };
+  const result = await invokeMemoraxMemoryProvider(run, request, options);
+  assert.equal(result.ok, true, result.error);
+  assert.deepEqual(requests[0].documents, [document]);
+  assert.equal(requests[0].messages, undefined);
+  assert.equal(requests[0].timestamp, undefined);
+  assert.equal(requests[0].metadata, undefined);
+  assert.deepEqual(result.result.dispatch_receipt.events, receipts);
+  assert.equal(result.result.dispatch_receipt.pending, false);
+  for (const context of [
+    { ...request.context, messages: [{ role: "user", content: "mixed" }] },
+    { ...request.context, contentType: "auto", messages: [{ role: "user", content: "mixed" }] },
+    { ...request.context, contentType: "code" },
+    { ...request.context, documents: [document, document] },
+    { ...request.context, documents: [{ ...document, expected_revision: -1 }] },
+    { ...request.context, documents: [{ ...document, content: " " }] },
+  ]) assert.equal((await invokeMemoraxMemoryProvider(run, { ...request, context }, options)).ok, false);
+  assert.equal((await invokeMemoraxMemoryProvider(run, request, { ...options, repositoryScope: undefined })).ok, false);
+  assert.equal((await invokeMemoraxMemoryProvider(run, request, { ...options, repositoryScope: testRepositoryScope("another-user") })).ok, false);
+  assert.equal(requests.length, 1);
+});
+
+test("MemoraX Add has an independent deadline while Search retains its timeout", async () => {
+  const config = { baseUrl: "http://memorax.test", apiKey: "secret", userId: "user-1", memoryOutputLanguage: "en",
+    timeoutMs: 5, addTimeoutMs: 100, topK: 6, kDense: 6, kSparse: 6, maxContextChars: 4000,
+    maxItemChars: 1000, memoryTypeOrder: [], renderByMemoryType: false };
+  const options = { config, repositoryScope: testRepositoryScope(), fetchImpl: async (_url, init) => {
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(resolve, 25);
+      init.signal.addEventListener("abort", () => { clearTimeout(timer); reject(new DOMException("aborted", "AbortError")); });
+    });
+    return Response.json({ success: true, data: { status: "accepted", task_id: "pending" } });
+  } };
+  const run = { sessionId: "session", prompt: "" };
+  const added = await invokeMemoraxMemoryProvider(run, { operation: "writeback", context: {
+    contentType: "auto", idempotencyKey: "turn", messages: [{ role: "user", content: "text" }],
+  } }, options);
+  assert.equal(added.ok, true, added.error);
+  assert.equal(added.result.dispatch_receipt.pending, true);
+  assert.equal(added.result.dispatch_receipt.task_id, "pending");
+  const searched = await invokeMemoraxMemoryProvider(run, { operation: "query", query: "text" }, options);
+  assert.equal(searched.ok, false);
+  assert.equal(searched.errorKind, "timeout");
+});
+
+test("MemoraX document aliases and Unicode budgets preserve the complete snapshot", async () => {
+  const requests = [];
+  const document = { document_id: "unicode", input_id: "12345678-1234-4234-8234-123456789abc", expected_revision: 0, content: "😀".repeat(2_000_000) };
+  const options = { env: { MEMORAX_CODE_MEMORAX_API_KEY: "secret", MEMORAX_CODE_MEMORAX_USER_ID: "user-1" },
+    repositoryScope: testRepositoryScope(), fetchImpl: async (_url, init) => {
+      requests.push(JSON.parse(init.body)); return Response.json({ success: true, data: { status: "accepted", task_id: "doc" } });
+    } };
+  for (const contentType of ["auto", "work"]) {
+    const result = await invokeMemoraxMemoryProvider({ sessionId: "s", prompt: "" }, {
+      operation: "writeback", context: { contentType, documents: [document] },
+    }, options);
+    assert.equal(result.ok, true, result.error);
+    assert.equal(requests.at(-1).content_type, "document");
+    assert.equal(requests.at(-1).documents[0].content, document.content);
+  }
+  const oversized = await invokeMemoraxMemoryProvider({ sessionId: "s", prompt: "" }, {
+    operation: "writeback", context: { contentType: "document", documents: [{ ...document, content: `${document.content}x` }] },
+  }, options);
+  assert.equal(oversized.ok, false);
+  assert.match(oversized.error, /2000000/);
+  assert.equal(requests.length, 2);
 });

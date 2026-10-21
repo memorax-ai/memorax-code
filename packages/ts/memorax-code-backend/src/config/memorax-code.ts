@@ -55,7 +55,8 @@ export type MemoraxCodeConfig = Readonly<{
       chunk_overlap_ratio?: number;
     }>;
     add?: Readonly<{
-      content_type?: "dialogue" | "code";
+      content_type?: "auto" | "work" | "dialogue" | "code" | "document";
+      timeout_ms?: number;
       mode?: "default" | "raw" | "pre_summarized";
       output_language?: MemoraxMemoryOutputLanguage;
     }>;
@@ -353,6 +354,7 @@ function normalizeMemoraxCodeConfig(value: unknown): MemoraxCodeConfig {
       }),
       add: prune({
         content_type: stringField(add, "content_type"),
+        timeout_ms: numberField(add, "timeout_ms"),
         mode: stringField(add, "mode"),
         output_language: stringField(add, "output_language"),
       }),

@@ -787,6 +787,7 @@ environment switch can disable both, as described below.
 | Field | Environment override | Fallback |
 | --- | --- | --- |
 | `memory.add.content_type` | `MEMORAX_CODE_MEMORAX_ADD_CONTENT_TYPE` | command-dependent |
+| `memory.add.timeout_ms` | `MEMORAX_CODE_MEMORAX_ADD_TIMEOUT_MS` | `15000` ms; independent of Search |
 | `memory.add.mode` | `MEMORAX_CODE_MEMORAX_ADD_MODE` | command-dependent |
 | `memory.add.output_language` | `MEMORAX_CODE_MEMORY_OUTPUT_LANGUAGE` | `zh` |
 | `memory.cli.add_enabled` | `MEMORAX_CODE_MEMORY_CLI_ADD_ENABLED` | `true` |
@@ -797,32 +798,55 @@ not a model-controlled request option; every automatic and explicit add sends
 the resolved value to MemoraX. Invalid values fail closed instead of silently
 selecting another language. The setting affects newly generated content;
 `raw` input and client-supplied `pre_summarized` text are not translated.
-Command arguments override the other add defaults. Automatic writeback uses
+Command arguments override the other Add defaults. Automatic writeback uses
 `mode: default` and resolves `content_type` from the environment override, then
-`memory.add.content_type`, then the client default: `dialogue` for WorkBuddy,
-`code` for other clients. The selected type is frozen before buffering; code
-and dialogue buffers are isolated. Dialogue sends complete selected messages
-without code chunk metadata. Existing message-size and redaction limits apply.
-Do not set automatic conversation writeback to `document`; it rejects that
-configuration because a conversation is not a document snapshot.
+`memory.add.content_type`, then `auto` for every client. With `auto`, MemoraX
+classifies each completed turn as code or work before extraction. `work` uses
+Chat extraction; explicit `code` and `dialogue` keep their existing routes.
+Auto and work send each completed turn separately, without buffering multiple
+turns or code chunk metadata. They preserve existing redaction rules and reject
+messages exceeding `max_message_chars` instead of clipping them for classification.
+Explicit code and dialogue retain their buffering behavior; only code uses
+code chunks. Automatic conversation writeback rejects `document` because it
+requires an explicit full snapshot.
 
-Explicit Add resolves `--content-type` before configuration and the same client
-default. Unless `--mode` is supplied, code uses `pre_summarized` and
-dialogue uses `default`, preserving the CLI mode defaults independently of
-`memory.add.mode`. For a work task in any supported client, the shared
-Skill selects `--content-type dialogue --mode default`; coding lessons select
-`--content-type code`. Routing uses these explicit choices and client defaults,
-not a keyword classifier. To use work dialogue for automatic writes in other
-clients, set `[memory.add].content_type = "dialogue"` or
-`MEMORAX_CODE_MEMORAX_ADD_CONTENT_TYPE=dialogue`.
+Explicit Add resolves `--content-type` before configuration. With neither,
+it retains `code`/`pre_summarized`, or `dialogue`/`default` for a validated
+WorkBuddy context. Unless `--mode` is supplied, code uses `pre_summarized` and
+other types use `default`, independently of `memory.add.mode`. `auto`, `work`,
+and `document` require `default` mode. Use `--content-type work` for grounded
+work discussion, `--content-type auto` to let MemoraX classify it, or
+`--content-type code --mode pre_summarized` for a reusable coding lesson.
+Ordinary Add still requires `--type` and `--reason` and observes the CLI memory
+size limit. Search behavior and its timeout are unchanged.
 
-The service selects Chat extraction rules for `dialogue`, Document extraction
-rules for `document`, and Code processing for `code`. No `work` content type or
-client-generated extraction prompt is required.
+Document Add sends one full UTF-8 text snapshot through MemoraX's existing
+revision-aware ingestion path:
 
-Document snapshots continue to enter through the MemoraX backend's existing
-revision-aware ingestion path. This CLI does not import or replace documents;
-`--sources document` searches already indexed document facts.
+```bash
+memorax-cli add --content-type document --memory-file ./policy.txt \
+  --document-id policy --input-id 12345678-1234-4234-8234-123456789abc \
+  --expected-revision 0
+```
+
+Supply the stable document ID, a UUID input ID, and the known nonnegative
+revision (`0` for creation). Document text retains BOM, line endings, and outer
+whitespace. Input must be a regular file, read with an 8,000,000-byte ceiling
+that also rejects growth beyond the limit. The document limit is 2,000,000
+Unicode characters, independent of the ordinary 2,000-character CLI limit; `--type` and `--reason` are unnecessary.
+Invalid UTF-8, mixed inline content, duplicate flags, or missing identity and
+revision fail before dispatch. Empty or whitespace-only snapshots require
+`--allow-empty` to authorize clearing the document. The CLI does not parse
+binary documents, infer identities/revisions, watch files, or maintain a revision
+cache. A retry of an unchanged snapshot must reuse the same input ID and revision;
+its request body remains identical. A new snapshot needs a new input ID and the
+last confirmed revision. Never infer a revision from task status text.
+
+An accepted or queued receipt has `pending: true` and includes the backend
+`task_id` when available; submission does not confirm extraction completion.
+A synchronous completed receipt has `pending: false` and preserves the returned
+`events`, including structured document IDs and revisions. The CLI does not poll
+task status. `--sources document` continues to search already indexed facts.
 
 ### Disabling memory writes
 

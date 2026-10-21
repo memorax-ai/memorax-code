@@ -37,6 +37,7 @@ export type MemoraxAdapterConfig = Readonly<{
   kDense: number;
   kSparse: number;
   timeoutMs: number;
+  addTimeoutMs?: number;
   minScore?: number;
   maxContextChars: number;
   maxItemChars: number;
@@ -44,8 +45,10 @@ export type MemoraxAdapterConfig = Readonly<{
   renderByMemoryType: boolean;
 }>;
 
+export type MemoraxAddContentType = "auto" | "work" | "dialogue" | "code" | "document";
+
 export type MemoraxAddOptions = Readonly<{
-  contentType?: "dialogue" | "code";
+  contentType?: MemoraxAddContentType;
   mode?: "default" | "raw" | "pre_summarized";
 }>;
 
@@ -87,7 +90,8 @@ export type MemoraxConfigStatus = Readonly<{
     writebackChunk: MemoryWritebackChunkConfig;
   }>;
   add: Readonly<{
-    contentType?: "dialogue" | "code";
+    contentType?: MemoraxAddContentType;
+    timeoutMs: number;
     mode?: "default" | "raw" | "pre_summarized";
     outputLanguage?: MemoraxMemoryOutputLanguage;
   }>;
@@ -123,6 +127,7 @@ export function memoraxConfigFromEnv(
       userId,
       memoryOutputLanguage: outputLanguage.value,
       ...searchConfig,
+      addTimeoutMs: memoraxAddTimeoutMs(env, config),
       ...(minScore === undefined ? {} : { minScore }),
     },
   };
@@ -264,6 +269,9 @@ export function memoraxAddOptionsFromContext(
 
   const contentType = contentTypeResult.value;
   const mode = modeResult.value ?? (contentType ? "default" : undefined);
+  if ((contentType === "auto" || contentType === "work" || contentType === "document") && mode !== "default") {
+    return { ok: false, error: `${contentType} content requires default mode` };
+  }
   return {
     ok: true,
     options: {
@@ -337,10 +345,15 @@ function memoraxAddStatus(
   const modeResult = parseAddMode(stringValue(env.MEMORAX_CODE_MEMORAX_ADD_MODE) ?? config.memory?.add?.mode, "mode");
   const outputLanguage = memoraxMemoryOutputLanguage(env, config);
   return {
+    timeoutMs: memoraxAddTimeoutMs(env, config),
     ...(contentTypeResult.ok && contentTypeResult.value ? { contentType: contentTypeResult.value } : {}),
     ...(modeResult.ok && modeResult.value ? { mode: modeResult.value } : {}),
     ...(outputLanguage.ok ? { outputLanguage: outputLanguage.value } : {}),
   };
+}
+
+function memoraxAddTimeoutMs(env: Record<string, string | undefined>, config: MemoraxCodeConfig): number {
+  return clampInteger(env.MEMORAX_CODE_MEMORAX_ADD_TIMEOUT_MS ?? config.memory?.add?.timeout_ms ?? 15_000, 1000, 120_000, 15_000);
 }
 
 function memoraxMemoryOutputLanguage(
@@ -356,10 +369,10 @@ function memoraxMemoryOutputLanguage(
     : { ok: false, error: "memory output language must be zh or en" };
 }
 
-function parseAddContentType(value: string | undefined, label: string): { ok: true; value?: "dialogue" | "code" } | { ok: false; error: string } {
+function parseAddContentType(value: string | undefined, label: string): { ok: true; value?: MemoraxAddContentType } | { ok: false; error: string } {
   if (!value) return { ok: true };
-  if (value === "dialogue" || value === "code") return { ok: true, value };
-  return { ok: false, error: `${label} must be dialogue or code` };
+  if (value === "dialogue" || value === "code" || value === "auto" || value === "work" || value === "document") return { ok: true, value };
+  return { ok: false, error: `${label} must be auto, work, dialogue, code, or document` };
 }
 
 function parseAddMode(value: string | undefined, label: string): { ok: true; value?: MemoraxAddOptions["mode"] } | { ok: false; error: string } {

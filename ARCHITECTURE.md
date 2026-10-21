@@ -662,8 +662,10 @@ flowchart LR
 `memorax-cli` enters through Backend `src/memorax-cli.ts` and
 `src/memory/cli.ts`. It does not traverse Hook HTTP or the `MemoryService`
 composition, but it reuses the repository-scope, MemoraX-provider, and
-local-trace components. Manual Add additionally validates user-supplied
-`--reason` metadata. The direct entrypoint is not permission to fall back to
+local-trace components. Ordinary manual Add additionally validates user-supplied
+`--reason` metadata. Explicit document Add validates one full UTF-8 snapshot with
+caller-supplied document ID, input UUID and expected revision; it preserves the
+text and sends no message or volatile timestamp metadata. The direct entrypoint is not permission to fall back to
 unscoped provider calls or to reconstruct identity from unrelated process
 state.
 
@@ -738,17 +740,22 @@ that recover do not produce terminal failure records.
   point. Interrupted Turns can instead discard metadata with an explicit reason.
   Unbuffered dispatch starts during enqueue. Buffering defers dispatch until a
   flush; turn or size limits can trigger that flush during enqueue.
-- Add routing uses the declared content type, never keywords in native content.
-  WorkBuddy defaults to dialogue; other clients default to code. An explicit
-  Add type or configured Add content type overrides the client default.
-  Manual Add retains a validated explicit client binding when missing or stale
-  current-turn state requires cwd scope; it does not fabricate turn attribution.
-  The shared native CodeBuddy session variable requires a unique validated
-  current turn to distinguish CodeBuddy from WorkBuddy.
-  Automatic native conversation writeback freezes its code/dialogue route at
-  enqueue, isolates buffered routes, and applies code chunking only to code.
-  Document ingestion remains in MemoraX; native conversations are not document snapshots.
-  MemoraX owns extraction prompts: dialogue uses Chat rules, document uses
+- Automatic Add defaults to `auto` for all clients. MemoraX classifies one
+  completed turn as code or work; configured `code`, `dialogue`, or `work` bypass
+  classification. The local provider performs no content classification.
+  Auto and work dispatch each turn separately without code chunking and reject
+  oversized content rather than clipping it. Explicit code and dialogue retain
+  their existing buffers; code alone uses the code chunk protocol.
+  Manual Add preserves its existing client defaults and accepts explicit
+  auto/work with default mode. It retains a validated client binding when
+  missing or stale current-turn state requires cwd scope, without fabricating
+  turn attribution. The shared native CodeBuddy session variable requires a
+  unique validated current turn to distinguish CodeBuddy from WorkBuddy.
+  Explicit document Add sends a single full snapshot with stable identity and
+  revision through the same validated workspace scope. Provider payloads separate
+  documents from messages and reject mixtures. Document request bodies contain
+  no volatile timestamps or session metadata, so unchanged retries are identical.
+  MemoraX owns extraction prompts: work/dialogue use Chat rules, documents use
   Document rules, and code retains Code processing.
 - Buffering and chunking belong to the memory capability; rollout, transcript,
   DSH event-interval, and SDK message parsing remains client-specific.
@@ -818,7 +825,10 @@ that recover do not produce terminal failure records.
   client and session before buffering under the Git scope. It does not migrate
   or flush those turns across namespaces.
 - The Backend records the initial Add response but does not poll asynchronous
-  Add task status after that response.
+  Add task status after that response. Accepted/queued receipts remain pending and
+  expose the task ID; synchronous completed receipts preserve structured events,
+  including document revisions. Add has an independent timeout to accommodate
+  server classification without changing Search deadlines.
 
 ### 3.5 Repo Memory coordination
 

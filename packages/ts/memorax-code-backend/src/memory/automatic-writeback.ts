@@ -68,7 +68,7 @@ export type AutomaticMemoryWritebackOptions = AutomaticMemoryWritebackTiming & {
 };
 
 type AutomaticMemoryWritebackDecision = {
-  contentType?: "code" | "dialogue";
+  contentType?: "auto" | "work" | "code" | "dialogue";
   client: AutomaticMemoryWritebackClient;
   sessionKey: string;
   idempotencyKey: string;
@@ -82,6 +82,7 @@ export type AutomaticMemoryWritebackRejectionReason =
   | "workspace_scope_missing"
   | "user_prompt_empty"
   | "assistant_text_empty"
+  | "message_too_long"
   | "decision_error"
   | "config_missing"
   | RepositoryMemoryScopeFailureReason;
@@ -192,8 +193,9 @@ function enqueueAutomaticMemoryWritebackForRuntime(
         ? { accepted: true }
         : { accepted: false, reason: decision.skipReason };
     }
-    if (memoryWritebackBufferEnabled(options.env ?? process.env)) {
-      state.writebackBuffer.enqueue(decision, options, {
+    if (decision.contentType !== "auto" && decision.contentType !== "work"
+      && memoryWritebackBufferEnabled(options.env ?? process.env)) {
+      state.writebackBuffer.enqueue({ ...decision, contentType: decision.contentType }, options, {
         debug: redactAutomaticMemoryWritebackDiagnosticIdentifiers(state.diagnosticLogger),
         flush: (bufferedDecision, bufferedOptions) => flushAutomaticMemoryWritebackBuffer(
           state,
@@ -268,7 +270,9 @@ function automaticMemoryWritebackDecision(
 
   const route = memoraxAddOptionsFromContext({ mode: "default" }, env);
   if (!route.ok) throw new Error(route.error);
-  const contentType = route.options.contentType ?? (options.client === "workbuddy" ? "dialogue" : "code");
+  const contentType = route.options.contentType ?? "auto";
+  if (contentType === "document") throw new Error("automatic writeback requires conversation content");
+  const preserveTurn = contentType === "auto" || contentType === "work";
   const sessionKey = options.sessionKey.trim();
   const maxMessageChars = memoryWritebackMaxMessageChars(env);
   const rawUserText = options.userText?.trim() ?? "";
@@ -285,6 +289,9 @@ function automaticMemoryWritebackDecision(
   }
   if (!rawUserText) return { write: false, skipReason: "user_prompt_empty" };
   if (!rawAssistantText) return { write: false, skipReason: "assistant_text_empty" };
+  if (preserveTurn && (rawUserText.length > maxMessageChars || rawAssistantText.length > maxMessageChars)) {
+    return { write: false, skipReason: "message_too_long" };
+  }
   const boundedUserText = limitMessageContent(rawUserText, maxMessageChars, {
     role: "user",
     sessionKey,
@@ -299,6 +306,9 @@ function automaticMemoryWritebackDecision(
   const assistantRedaction = redactMemoryPayloadText(boundedAssistantText);
   logAutomaticMemoryPayloadRedaction(state, sessionKey, "user", rawUserText, userRedaction);
   logAutomaticMemoryPayloadRedaction(state, sessionKey, "assistant", rawAssistantText, assistantRedaction);
+  if (preserveTurn && (userRedaction.text.length > maxMessageChars || assistantRedaction.text.length > maxMessageChars)) {
+    return { write: false, skipReason: "message_too_long" };
+  }
   const userText = limitMessageContent(userRedaction.text, maxMessageChars, {
     role: "user",
     sessionKey,
@@ -310,7 +320,7 @@ function automaticMemoryWritebackDecision(
   if (!hasMeaningfulMemoryPayloadText(userText)) return { write: false, skipReason: "user_prompt_empty" };
   if (!hasMeaningfulMemoryPayloadText(assistantText)) return { write: false, skipReason: "assistant_text_empty" };
 
-  const idempotencyKey = `automatic:${options.client}:${hashText(options.repositoryScope.effectiveUserId)}:${sessionKey}:${hashText(userText)}:${hashText(assistantText)}${contentType === "dialogue" ? ":dialogue" : ""}`;
+  const idempotencyKey = `automatic:${options.client}:${hashText(options.repositoryScope.effectiveUserId)}:${sessionKey}:${hashText(userText)}:${hashText(assistantText)}${contentType === "code" ? "" : `:${contentType}`}`;
   if (hasPendingWriteback(state, idempotencyKey)) return { write: false, skipReason: "duplicate_pending" };
   // Freeze missing-time observations before buffering or retries. Upload time
   // must never replace a native message time or pretend to be one.

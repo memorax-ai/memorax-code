@@ -43,10 +43,10 @@ or prior office discussions. Read [references/memorax-search.md](references/memo
 and select document or dialogue sources as described there. A user's question
 about a policy is not evidence of the policy itself. These searches use the same
 workspace scope and CLI rules as coding memory; searches do not import documents.
-To save work dialogue, read
+To save work dialogue or an explicitly requested full document snapshot, read
 [references/memorax-add.md](references/memorax-add.md) and select the matching
-content type. Work dialogue uses Chat extraction; documents indexed through
-the MemoraX backend use Document extraction. Do not encode business evidence as a coding lesson.
+content type. Work dialogue uses Chat extraction; explicit document snapshots use Document extraction with stable identity and
+revision. Do not encode business evidence as a coding lesson.
 
 ### Repo Memory
 
