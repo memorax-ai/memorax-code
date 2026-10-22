@@ -153,9 +153,27 @@ export function assertNativeReadText(output, expected) {
     "NATIVE_READ_REFERENCE_INCOMPLETE");
 }
 
-export function selectNativeBashStdout(output, command) {
+export function selectNativeBashStdout(output, command, { client, body, call } = {}) {
   check(typeof output === "string" && identifier(command), "NATIVE_BASH_RESULT_INVALID");
-  const prefix = `Command: ${command}\nStdout: `;
+  // CodeBuddy no longer echoes Command in newer Bash results. Bind both native
+  // formats to the exact assistant invocation before trusting their output.
+  if (client === "codebuddy") {
+    check(identifier(call?.id) && call.name === "Bash" && call.input?.command === command
+      && Array.isArray(body?.messages), "NATIVE_BASH_CALL_MISMATCH");
+    const calls = body.messages.flatMap((message, index) => message.role === "assistant" && Array.isArray(message.tool_calls)
+      ? message.tool_calls.filter((candidate) => candidate?.id === call.id).map((candidate) => ({ candidate, index })) : []);
+    const results = body.messages.map((message, index) => ({ message, index }))
+      .filter(({ message }) => message.role === "tool" && message.tool_call_id === call.id);
+    check(calls.length === 1 && calls[0].candidate.type === "function"
+      && calls[0].candidate.function?.name === "Bash" && results.length === 1
+      && results[0].message.content === output && calls[0].index < results[0].index, "NATIVE_BASH_CALL_MISMATCH");
+    let input;
+    try { input = JSON.parse(calls[0].candidate.function.arguments); }
+    catch { check(false, "NATIVE_BASH_CALL_MISMATCH"); }
+    check(isDeepStrictEqual(input, call.input), "NATIVE_BASH_CALL_MISMATCH");
+  }
+  const prefix = client === "codebuddy" && output.startsWith("Stdout: ")
+    ? "Stdout: " : `Command: ${command}\nStdout: `;
   const suffix = "\nStderr: (empty)\nExit Code: 0\nSignal: (none)";
   check(output.startsWith(prefix) && output.endsWith(suffix), "NATIVE_BASH_RESULT_MISMATCH");
   const stdout = output.slice(prefix.length, -suffix.length);

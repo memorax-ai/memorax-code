@@ -114,7 +114,7 @@ test("Skill Bash diagnostics distinguish shell startup failures without exposing
   const command = `memorax-cli search --query '${secret}' --json`;
   const output = `Command: ${command}\nStdout: (empty)\nStderr: /private/${secret}/memorax-cli: line 2: import: command not found\nline 3: syntax error near unexpected token '('\nENOEXEC\nExit Code: 2\nSignal: (none)`;
   const result = summarizeNativeSkillBashResult(output, command);
-  assert.equal(result.expectedCommandMatched, true);
+  assert.equal(result.commandEchoMatched, true);
   assert.equal(result.structuredEnvelopeMatched, true);
   assert.equal(result.stderr, "nonempty");
   assert.equal(result.exitCode, "nonzero");
@@ -124,6 +124,21 @@ test("Skill Bash diagnostics distinguish shell startup failures without exposing
   assert.ok(!JSON.stringify(result).includes(secret));
   assert.ok(!JSON.stringify(result).includes("/private"));
   assert.ok(!JSON.stringify(result).includes(command));
+});
+
+test("CodeBuddy commandless Skill diagnostics report status without claiming a command echo", () => {
+  const command = "memorax-cli search --query fixture --json";
+  const output = 'Stdout: {"ok":false,"errorCode":"MEMORY_SCOPE_MISMATCH"}\nStderr: (empty)\nExit Code: 1\nSignal: (none)';
+  const result = summarizeNativeSkillBashResult(output, command, { client: "codebuddy" });
+  assert.equal(result.structuredEnvelopeMatched, true);
+  assert.equal(result.commandEchoMatched, false);
+  assert.equal(result.stderr, "empty");
+  assert.equal(result.exitCode, "nonzero");
+  assert.equal(result.signal, "none");
+  assert.equal(result.stdoutJson, true);
+  assert.equal(result.memoryError, "MEMORY_SCOPE_MISMATCH");
+  assert.deepEqual(result.errorSignatures, []);
+  assert.equal(summarizeNativeSkillBashResult(output, command, { client: "workbuddy" }).structuredEnvelopeMatched, false);
 });
 
 test("Skill Bash diagnostics preserve only known scope error enums from JSON", () => {
@@ -150,7 +165,7 @@ test("Skill Bash diagnostics do not classify ordinary successful Memory content 
 test("Skill Bash diagnostics bound malformed output and never return arbitrary enums", () => {
   const result = summarizeNativeSkillBashResult(`ENOEXEC ${"private".repeat(20000)}`, "not-the-command");
   assert.equal(result.resultTruncated, true);
-  assert.equal(result.expectedCommandMatched, false);
+  assert.equal(result.commandEchoMatched, false);
   assert.equal(result.structuredEnvelopeMatched, false);
   assert.equal(result.exitCode, "missing");
   assert.deepEqual(result.errorSignatures, ["enoexec"]);
