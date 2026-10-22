@@ -141,9 +141,9 @@ test("server diagnostics return unknown for unreadable or malformed state withou
   assert.equal(JSON.stringify(snapshot).includes("PRIVATE_INVALID_JSON"), false);
 });
 
-test("native harness shares only an explicit test cache and ignores ordinary npm cache settings", async (t) => {
+test("native harness isolates npm cache and audit settings from the invoking user", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "memorax-opencode-cache-isolation-"));
-  const names = ["MEMORAX_CODE_TEST_NPM_CACHE", "npm_config_cache", "NPM_CONFIG_CACHE", "ProgramFiles"];
+  const names = ["MEMORAX_CODE_TEST_NPM_CACHE", "npm_config_cache", "NPM_CONFIG_CACHE", "npm_config_audit", "NPM_CONFIG_AUDIT", "ProgramFiles"];
   const previous = new Map(names.map((name) => [name, process.env[name]]));
   t.after(async () => {
     for (const [name, value] of previous) {
@@ -159,12 +159,16 @@ test("native harness shares only an explicit test cache and ignores ordinary npm
   process.env.ProgramFiles = join(root, "tools");
   process.env.npm_config_cache = join(root, "personal-lowercase-cache");
   process.env.NPM_CONFIG_CACHE = join(root, "personal-uppercase-cache");
+  process.env.npm_config_audit = "true";
+  process.env.NPM_CONFIG_AUDIT = "true";
   delete process.env.MEMORAX_CODE_TEST_NPM_CACHE;
   const options = { packageRoot: root, openCodeCommand: process.execPath, ripgrepCommand: process.execPath };
   const standalone = await createNativeHarness(options);
   try {
     assert.equal(standalone.env.npm_config_cache, join(standalone.root, "npm-cache"));
     assert.equal(Object.hasOwn(standalone.env, "NPM_CONFIG_CACHE"), false);
+    assert.equal(standalone.env.npm_config_audit, "false");
+    assert.equal(Object.hasOwn(standalone.env, "NPM_CONFIG_AUDIT"), false);
   } finally { await standalone.close(); }
 
   const sharedCache = join(root, "job-npm-cache");
@@ -174,6 +178,7 @@ test("native harness shares only an explicit test cache and ignores ordinary npm
   const shared = await createNativeHarness(options);
   try {
     assert.equal(shared.env.npm_config_cache, sharedCache);
+    assert.equal(shared.env.npm_config_audit, "false");
     assert.notEqual(shared.home, standalone.home);
     assert.notEqual(shared.openCodeConfigDir, standalone.openCodeConfigDir);
     assert.equal(Object.hasOwn(shared.env, "MEMORAX_CODE_TEST_NPM_CACHE"), false);

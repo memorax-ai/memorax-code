@@ -543,6 +543,8 @@ function isolatedEnv({ root, home, stateHome, openCodeConfigDir, openCodeCommand
     APPDATA: join(home, "AppData", "Roaming"), LOCALAPPDATA: join(home, "AppData", "Local"),
     TMPDIR: join(root, "tmp"), TMP: join(root, "tmp"), TEMP: join(root, "tmp"),
     npm_config_cache: npmCache ?? join(root, "npm-cache"),
+    // Match the wrapper installs: registry audits must not block native session startup.
+    npm_config_audit: "false",
     XDG_CONFIG_HOME: join(home, ".config"), XDG_DATA_HOME: join(home, ".local", "share"),
     XDG_STATE_HOME: join(home, ".local", "state"), XDG_CACHE_HOME: join(home, ".cache"),
     GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: join(home, "missing-git-config"), GIT_TERMINAL_PROMPT: "0",
