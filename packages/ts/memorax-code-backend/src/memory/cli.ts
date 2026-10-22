@@ -1,3 +1,6 @@
+import { resolve } from "node:path";
+import { prepareDocumentUpload, readDocumentManifest, validateDocumentUploadInput } from "./document-input.js";
+import { uploadMemoraxDocument, getMemoraxDocumentStatus, type DocumentOperationResult } from "../provider/memorax/documents.js";
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { open, readFile, stat } from "node:fs/promises";
@@ -40,7 +43,7 @@ type MemoryCliOptions = {
 
 type MemoryCliResult = MemoryCliFailureDetails & {
   ok: boolean;
-  action: "memory.status" | "memory.search" | "memory.add";
+  action: "memory.status" | "memory.search" | "memory.add" | "memory.add-status";
   error?: string;
   provider?: "memory.memorax";
   baseUrl?: string;
@@ -62,6 +65,8 @@ type MemoryCliResult = MemoryCliFailureDetails & {
   answer?: string;
   items?: unknown[];
   receipt?: unknown;
+  results?: DocumentOperationResult[];
+  waitTimedOut?: boolean;
 };
 
 type MemoryCliObservability = {
@@ -79,15 +84,15 @@ export async function runMemoryCli(args: string[], options: MemoryCliOptions = {
   const env = options.env ?? process.env;
   const nextOptions: MemoryCliOptions = { ...options, env };
   if (command === "status") return await memoryStatus(nextOptions, args.includes("--config-only"));
-  if (command === "search" || command === "add") {
-    const action = command === "search" ? "memory.search" : "memory.add";
+  if (command === "search" || command === "add" || command === "add-status") {
+    const action = command === "search" ? "memory.search" : command === "add-status" ? "memory.add-status" : "memory.add";
     let result: MemoryCliResult;
     try {
-      result = await (command === "search" ? memorySearch : memoryAdd)(args.slice(1), nextOptions);
+      result = await (command === "search" ? memorySearch : command === "add-status" ? memoryDocumentStatus : memoryAdd)(args.slice(1), nextOptions);
     } catch (error) {
       result = { ok: false, action, ...memoryCliUnexpectedFailure(error) };
     }
-    if (result.ok) return result;
+    if (result.ok || result.results) return result;
     const binding = memoryCliTraceBinding(env);
     return diagnoseMemoryCliFailure(
       { ...result, action }, defaultMemoraxCodeHome(env), nextOptions.diagnosticTrace,
@@ -215,6 +220,12 @@ async function memoryAdd(args: string[], options: MemoryCliOptions): Promise<Mem
   if (!flags.ok) return { ...flags, action: "memory.add" };
   const repositoryMemory = await resolveMemoryCliRepositoryMemory(options);
   if (!repositoryMemory.ok) return memoryCliRepositoryFailure("memory.add", repositoryMemory);
+  if (args.includes("--document-file") || args.includes("--document-manifest")) {
+    return memoryDocumentUpload(args, options, repositoryMemory.memory);
+  }
+  if (["--wait", "--wait-timeout-ms", "--poll-interval-ms", "--sha256"].some(flag => args.includes(flag))) {
+    return { ok: false, action: "memory.add", error: "upload and wait options require --document-file or --document-manifest" };
+  }
   const contentOptions = memoryAddContentOptions(args, env, repositoryMemory.client);
   if (!contentOptions.ok) return { ok: false, action: "memory.add", error: contentOptions.error };
   const document = contentOptions.context.contentType === "document";
@@ -550,7 +561,7 @@ function memoryAddContentOptions(
   }, env);
   if (!route.ok) return route;
   const effectiveContentType = route.options.contentType
-    ?? (client === "workbuddy" ? "dialogue" : "code");
+    ?? "auto";
   const effectiveMode = mode || (effectiveContentType === "code" ? "pre_summarized" : "default");
   if (effectiveContentType !== "code" && effectiveMode === "pre_summarized") {
     return { ok: false, error: "pre_summarized requires code content" };
@@ -561,12 +572,12 @@ function memoryAddContentOptions(
 }
 
 function validateMemoryAddFlags(args: string[]): { ok: true } | { ok: false; error: string } {
-  const valueFlags = new Set(["--memory", "--memory-file", "--type", "--reason", "--session-id", "--content-type", "--mode", "--document-id", "--input-id", "--expected-revision"]);
+  const valueFlags = new Set(["--memory", "--memory-file", "--type", "--reason", "--session-id", "--content-type", "--mode", "--document-id", "--input-id", "--expected-revision", "--document-file", "--document-manifest", "--sha256", "--wait-timeout-ms", "--poll-interval-ms"]);
   const seen = new Set<string>();
   for (let index = 0; index < args.length; index++) {
     const flag = args[index]!;
     if (!flag.startsWith("--")) return { ok: false, error: "unexpected positional argument for add" };
-    if (!valueFlags.has(flag) && flag !== "--allow-empty" && flag !== "--json") return { ok: false, error: `unsupported add flag ${flag}` };
+    if (!valueFlags.has(flag) && flag !== "--allow-empty" && flag !== "--json" && flag !== "--wait") return { ok: false, error: `unsupported add flag ${flag}` };
     if (seen.has(flag)) return { ok: false, error: `use ${flag} only once` };
     seen.add(flag);
     if (valueFlags.has(flag)) {
@@ -575,6 +586,101 @@ function validateMemoryAddFlags(args: string[]): { ok: true } | { ok: false; err
     }
   }
   return { ok: true };
+}
+
+function documentWaitOptions(args: string[]): { timeoutMs: number; intervalMs: number } | undefined {
+  const timeout = argValue(args, "--wait-timeout-ms") ?? "300000";
+  const interval = argValue(args, "--poll-interval-ms") ?? "1000";
+  if (![timeout, interval].every(value => /^\d+$/.test(value) && Number.isSafeInteger(Number(value)) && Number(value) >= 1 && Number(value) <= 3_600_000)) return undefined;
+  return { timeoutMs: Number(timeout), intervalMs: Number(interval) };
+}
+
+async function waitForDocument(
+  initial: DocumentOperationResult, args: string[], options: MemoryCliOptions, memory: ConfiguredRepositoryMemory,
+): Promise<DocumentOperationResult> {
+  const settings = documentWaitOptions(args)!;
+  const deadline = Date.now() + settings.timeoutMs;
+  let result = initial;
+  while (result.ok && result.receipt?.pending && result.receipt.task_id) {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) return { ...result, waitTimedOut: true };
+    const next = await getMemoraxDocumentStatus({ ...memory.config, timeoutMs: Math.min(memory.config.timeoutMs, remaining) },
+      memory.scope, result.receipt.task_id, options.fetchImpl);
+    if (!next.ok && !next.receipt) {
+      if (next.errorCode === "MEMORAX_TIMEOUT" && remaining <= memory.config.timeoutMs) return { ...result, waitTimedOut: true };
+      return { ...next, receipt: result.receipt };
+    }
+    if (next.receipt && result.receipt.document_id && (next.receipt.document_id !== result.receipt.document_id || next.receipt.input_id !== result.receipt.input_id)) {
+      return { ok: false, receipt: result.receipt, error: "Document status identity changed", errorCode: "MEMORAX_INVALID_RESPONSE" };
+    }
+    result = next;
+    if (result.ok && result.receipt?.pending) await new Promise(resolveWait => setTimeout(resolveWait, Math.min(settings.intervalMs, Math.max(0, deadline - Date.now()))));
+  }
+  return result;
+}
+
+async function memoryDocumentStatus(args: string[], options: MemoryCliOptions): Promise<MemoryCliResult> {
+  const allowed = new Set(["--task-id", "--wait-timeout-ms", "--poll-interval-ms"]);
+  const seen = new Set<string>();
+  for (let index = 0; index < args.length; index++) {
+    const flag = args[index]!;
+    if (seen.has(flag) || (!allowed.has(flag) && flag !== "--wait" && flag !== "--json")) return { ok: false, action: "memory.add-status", error: "Invalid task status flags" };
+    seen.add(flag);
+    if (allowed.has(flag) && (!args[++index] || args[index]!.startsWith("--"))) return { ok: false, action: "memory.add-status", error: "Task status flag requires a value" };
+  }
+  const taskId = argValue(args, "--task-id");
+  if (!taskId || !documentWaitOptions(args)) return { ok: false, action: "memory.add-status", error: "Task ID and valid wait limits are required" };
+  const repositoryMemory = await resolveMemoryCliRepositoryMemory(options);
+  if (!repositoryMemory.ok) return { ...memoryCliRepositoryFailure("memory.add", repositoryMemory), action: "memory.add-status" };
+  let result = await getMemoraxDocumentStatus(repositoryMemory.memory.config, repositoryMemory.memory.scope, taskId, options.fetchImpl);
+  if (args.includes("--wait")) result = await waitForDocument(result, args, options, repositoryMemory.memory);
+  return { ...result, action: "memory.add-status", ...memoryCliIdentityFields(repositoryMemory.memory), ...(!result.ok ? { stage: "response" as const } : {}) };
+}
+
+async function memoryDocumentUpload(args: string[], options: MemoryCliOptions, memory: ConfiguredRepositoryMemory): Promise<MemoryCliResult> {
+  const invalid = (error: string): MemoryCliResult => ({ ok: false, action: "memory.add", error, errorCode: "MEMORY_INPUT_INVALID", stage: "input" });
+  if (!documentWaitOptions(args)) return invalid("Wait limits must be positive integers no greater than 3600000 ms");
+  if (["--memory", "--memory-file", "--allow-empty", "--type", "--reason", "--session-id"].some(flag => args.includes(flag))
+    || (argValue(args, "--content-type") && argValue(args, "--content-type") !== "document")
+    || (argValue(args, "--mode") && argValue(args, "--mode") !== "default")) return invalid("Binary document uploads cannot be mixed with message or text snapshot options");
+  const manifest = argValue(args, "--document-manifest");
+  if (manifest && ["--document-file", "--document-id", "--input-id", "--expected-revision", "--sha256"].some(flag => args.includes(flag))) return invalid("A document manifest supplies every file identity independently");
+  let inputs: unknown[];
+  try {
+    if (manifest) inputs = await readDocumentManifest(resolve(options.cwd ?? process.cwd(), manifest));
+    else {
+      const revision = argValue(args, "--expected-revision");
+      inputs = [{ path: resolve(options.cwd ?? process.cwd(), argValue(args, "--document-file") ?? ""),
+        document_id: argValue(args, "--document-id"), input_id: argValue(args, "--input-id"),
+        expected_revision: revision && /^\d+$/.test(revision) ? Number(revision) : NaN,
+        ...(argValue(args, "--sha256") ? { sha256: argValue(args, "--sha256") } : {}) }];
+    }
+  } catch (error) { return invalid(error instanceof Error ? error.message : "Document manifest is invalid"); }
+  const results: DocumentOperationResult[] = [];
+  const seenIds = new Set<string>();
+  for (const input of inputs) {
+    if (!validateDocumentUploadInput(input) || seenIds.has(input.input_id)) {
+      results.push({ ok: false, error: "Each document requires a unique input UUID, explicit document ID, file and nonnegative revision", errorCode: "MEMORY_INPUT_INVALID" });
+      continue;
+    }
+    seenIds.add(input.input_id);
+    let result: DocumentOperationResult;
+    try {
+      const prepared = await prepareDocumentUpload(input);
+      result = await uploadMemoraxDocument(memory.config, memory.scope, prepared, options.fetchImpl);
+      if (args.includes("--wait")) result = await waitForDocument(result, args, options, memory);
+    } catch (error) {
+      result = { ok: false, error: error instanceof Error ? error.message : "Document file is unreadable", errorCode: "MEMORY_INPUT_UNREADABLE", stage: "input",
+        receipt: { status: "failed", pending: false, document_id: input.document_id, input_id: input.input_id, expected_revision: input.expected_revision, revision: null } };
+    }
+    results.push(result);
+  }
+  const identity = memoryCliIdentityFields(memory);
+  if (manifest) return { ok: results.every(result => result.ok), action: "memory.add", ...identity, results };
+  const result = results[0]!;
+  return { ...result, action: "memory.add", ...identity,
+    ...(!result.ok ? { stage: result.stage ?? (result.receipt ? "request" as const : "input" as const),
+      ...(result.receipt?.status === "submission_unknown" ? { userAction: "Submission is uncertain. Keep this input ID and revision; verify the existing task before any authorized retry. Do not generate a replacement input ID." } : {}) } : {}) };
 }
 
 async function readDocumentSnapshot(args: string[]): Promise<

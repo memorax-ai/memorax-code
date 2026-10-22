@@ -271,7 +271,7 @@ the current repository.
 | **Personal&nbsp;Memory** | How should the agent communicate and collaborate with you? | User Profile preferences such as language, tone, explanation depth, and result format |
 | **Procedure&nbsp;Memory** | How should this kind of task be carried out? | Reusable steps, checklists, prerequisites, exceptions, and validation gates |
 
-For Work Memory search and document filters, see the [Search guide](packages/ts/memorax-code-codex-adapter/skills/memorax-code/references/memorax-search.md). Documents use the existing MemoraX document ingestion pipeline and document extraction rules.
+For Work Memory search and document filters, see the [Search guide](packages/ts/memorax-code-codex-adapter/skills/memorax-code/references/memorax-search.md). Explicit PDF, DOCX, XLSX and PPTX imports use `memorax-cli add --document-file` with a document ID, input UUID and known revision. `add-status` confirms ingestion completion; acceptance alone remains pending. Ordinary manual Add defaults to automatic classification; reusable coding lessons can explicitly select code/pre_summarized. See [upload and status configuration](docs/configuration.md#binary-document-uploads-and-task-status).
 
 Personal Memory and Procedure Memory are global to the user under
 `$MEMORAX_CODE_HOME/personal-memory/` (default `~/.memorax-code/personal-memory/`): User Profile

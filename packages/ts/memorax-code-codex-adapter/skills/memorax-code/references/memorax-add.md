@@ -20,8 +20,39 @@ memorax-cli add --content-type work --mode default \
 
 Use `--content-type auto --mode default` when MemoraX should classify an
 ordinary completed discussion as code or work. Auto and work accept only default
-mode. Omitted type preserves the existing manual CLI behavior. Do not add a
+mode. Omitted content type defaults to auto/default in every client. Do not add a
 coding card or code extraction instructions to auto/work content.
+
+### Binary document imports
+
+Only when the user requests a file import, use the original PDF, DOCX, XLSX or
+PPTX file, up to 150 MiB, with caller-supplied document identity and revision:
+
+```bash
+memorax-cli add --document-file './policy.pdf' --document-id 'policy' \
+  --input-id '12345678-1234-4234-8234-123456789abc' --expected-revision 0 --json
+memorax-cli add-status --task-id 'TASK_ID' --wait --wait-timeout-ms 300000 --json
+```
+
+This sends the original bytes for server-side parsing. Do not scrape tool
+outputs, infer document identity from filenames, automatically scan attachments,
+or treat a selected file as permission to import it. Keep `--memory-file` for
+complete UTF-8 text snapshots. Binary upload does not require `--type` or `--reason`.
+For multiple files use `--document-manifest` with a JSON array; each entry contains
+`path`, `document_id`, `input_id`, `expected_revision` and optional `sha256`.
+Paths are relative to the manifest; every input ID must be unique. Each entry
+has an independent result, so preserve successful receipts when another fails.
+
+A new snapshot needs a fresh input UUID and the last confirmed revision (`0`
+for creation). Never guess revisions. An unchanged user-authorized retry must
+reuse the exact file, input ID, revision, scope, output language and optional
+checksum. Upload uses the input ID as its request idempotency key. Do not retry
+an uncertain submission automatically or generate a replacement ID for it.
+`pending: true` only confirms submission; `queued`, `parsing`, and `indexing`
+are unfinished. Only `succeeded` confirms the returned revision. `failed` and
+`submission_unknown` are not successful ingestion. Optional `summary_state`
+does not replace ingestion status. `--wait` polls the existing task and never
+reuploads; on wait timeout keep the task ID and resume status checks later.
 
 ### Full document snapshots
 

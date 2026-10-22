@@ -371,7 +371,7 @@ export async function runNativeMemoryCheck({ client, args }) {
       && result.workspace === basename(harness.workspace) && result.scopeKind === "local-directory"
       && result.workspaceScope === "bound", "EXPLICIT_MEMORY_SCOPE_RESULT_MISMATCH");
   }
-  function verifyExplicitRequest(request, { operation, value, reason, sessionId, contentType = workbuddy ? "dialogue" : "code" }) {
+  function verifyExplicitRequest(request, { operation, value, reason, sessionId, contentType = "auto" }) {
     check(request?.method === "POST" && request.path === `/v1/memories/${operation}`
       && request.authorization === `Token ${fixtureKey}`, "EXPLICIT_MEMORY_TRANSPORT_MISMATCH");
     const body = request.body;

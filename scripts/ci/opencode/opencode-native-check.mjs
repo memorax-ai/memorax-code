@@ -138,7 +138,7 @@ try {
     const request = harness.memoryRequests.slice(before).find((entry) =>
       operation === "search" ? entry.path === "/v1/memories/search"
         : entry.body.metadata?.source_detail === "memorax_code_memory_cli");
-    verifyExplicitRequest(request, { operation, value: operation === "search" ? query : memory, reason, sessionId: first });
+    verifyExplicitRequest(request, { operation, value: operation === "search" ? query : memory, reason, contentType: "code", sessionId: first });
   }
   report.checks.push("real Skill loader, full installed references, native shell.env and PATH-discovered Search/Add commands");
 
@@ -424,7 +424,7 @@ async function verifyBackgroundGlobalConfiguration() {
   }
 }
 
-function verifyExplicitRequest(request, { operation, value, reason, sessionId }) {
+function verifyExplicitRequest(request, { operation, value, reason, sessionId, contentType = "auto" }) {
   check(request?.method === "POST" && request.path === `/v1/memories/${operation}`
     && request.authorization === `Token ${fixtureKey}`, "EXPLICIT_MEMORY_TRANSPORT_MISMATCH");
   const body = request.body;
@@ -433,13 +433,15 @@ function verifyExplicitRequest(request, { operation, value, reason, sessionId })
     check(body.query === value && !Object.hasOwn(body, "session_id") && !Object.hasOwn(body, "metadata"), "EXPLICIT_SEARCH_PAYLOAD_MISMATCH");
     return;
   }
+  check(body.content_type === contentType && body.mode === (contentType === "code" ? "pre_summarized" : "default")
+    && body.async_mode === true && !Object.hasOwn(body, "chunk"), "EXPLICIT_ADD_ROUTE_MISMATCH");
   check(body.session_id === sessionId && body.metadata?.memorax_code_session_id === sessionId, "EXPLICIT_ADD_SESSION_MISMATCH");
   check(body.metadata.memorax_code_base_user_id === fixtureUser
     && body.metadata.memorax_code_workspace === basename(harness.workspace)
     && body.metadata.memorax_code_memory_scope === "workspace-name.v1", "EXPLICIT_ADD_SCOPE_METADATA_MISMATCH");
   check(JSON.stringify(body.messages?.map(({ role, content }) => ({ role, content })))
     === JSON.stringify([{ role: "user", content: value }]), "EXPLICIT_ADD_CONTENT_MISMATCH");
-  check(body.metadata.idempotency_key === `memory-cli:${sessionId}:${hash(`procedural\n${reason}\n${value}`)}`
+  check(body.metadata.idempotency_key === `memory-cli:${sessionId}:${hash(`procedural\n${reason}\n${value}`)}${contentType === "code" ? "" : `:${contentType}`}`
     && body.metadata.source_detail === "memorax_code_memory_cli" && body.metadata.memory_type === "procedural"
     && body.metadata.memorax_code_memory_reason === reason, "EXPLICIT_ADD_METADATA_MISMATCH");
 }

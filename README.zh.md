@@ -227,7 +227,7 @@ cd test-repo
 | **Personal&nbsp;Memory** | Agent 应该如何与你沟通和协作？ | User Profile 中记录的语言、语气、解释深度和结果呈现偏好 |
 | **Procedure&nbsp;Memory** | 这类任务应该如何执行？ | 可复用的步骤、检查清单、前置条件、例外情况和验证要求 |
 
-Work Memory 的检索和文档筛选方式见 [Search 指南](packages/ts/memorax-code-codex-adapter/skills/memorax-code/references/memorax-search.md)。文档通过已有的 MemoraX 文档导入流程处理，走 document 抽取规则。
+Work Memory 的检索和文档筛选方式见 [Search 指南](packages/ts/memorax-code-codex-adapter/skills/memorax-code/references/memorax-search.md)。用户明确要求导入 PDF、DOCX、XLSX 或 PPTX 时，通过 `memorax-cli add --document-file` 提供文档 ID、输入 UUID 和已知版本；使用 `add-status` 确认入库完成，接收回执仍表示处理中。普通手动 Add 默认自动分类；可复用编码经验可以明确选择 code/pre_summarized。详见[上传与状态配置](docs/configuration.md#binary-document-uploads-and-task-status)。
 
 Personal Memory 和 Procedure Memory 在用户级目录
 `$MEMORAX_CODE_HOME/personal-memory/`（默认 `~/.memorax-code/personal-memory/`）下：User

@@ -693,7 +693,13 @@ composition, but it reuses the repository-scope, MemoraX-provider, and
 local-trace components. Ordinary manual Add additionally validates user-supplied
 `--reason` metadata. Explicit document Add validates one full UTF-8 snapshot with
 caller-supplied document ID, input UUID and expected revision; it preserves the
-text and sends no message or volatile timestamp metadata. The direct entrypoint is not permission to fall back to
+text and sends no message or volatile timestamp metadata. Binary document Add
+uses `memory/document-input.ts` for explicit local file/manifest validation and
+file-backed snapshots. `provider/memorax/documents.ts` owns multipart upload,
+request idempotency, scoped status response validation and safe receipts; its
+HTTP boundary remains `provider/memorax/http.ts`. CLI orchestration polls only
+an existing task and never retransmits. File paths and retained trace records
+are not provider payload authority. The direct entrypoint is not permission to fall back to
 unscoped provider calls or to reconstruct identity from unrelated process
 state.
 

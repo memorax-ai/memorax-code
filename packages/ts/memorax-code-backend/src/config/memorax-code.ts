@@ -56,6 +56,7 @@ export type MemoraxCodeConfig = Readonly<{
       chunk_overlap_ratio?: number;
     }>;
     add?: Readonly<{
+      upload_timeout_ms?: number;
       content_type?: "auto" | "work" | "dialogue" | "code" | "document";
       timeout_ms?: number;
       mode?: "default" | "raw" | "pre_summarized";
@@ -367,6 +368,7 @@ function normalizeMemoraxCodeConfig(value: unknown): MemoraxCodeConfig {
         chunk_overlap_ratio: numberField(writeback, "chunk_overlap_ratio"),
       }),
       add: prune({
+        upload_timeout_ms: numberField(add, "upload_timeout_ms"),
         content_type: stringField(add, "content_type"),
         timeout_ms: numberField(add, "timeout_ms"),
         mode: stringField(add, "mode"),

@@ -657,7 +657,14 @@ function formatMemoryItemLine(item: unknown, maxItemChars: number): string {
   if (!text) return "";
   const time = memoryTimeForItem(item);
   const prefix = time ? `   -[${time}] ` : "   - ";
-  return `${prefix}${escapeText(truncate(text, maxItemChars))}`;
+  const source = isRecord(item) ? item : {};
+  const metadata = isRecord(source.metadata) ? source.metadata : {};
+  const documentId = source.document_id ?? metadata.document_id;
+  const revision = source.revision ?? source.document_revision ?? metadata.revision ?? metadata.document_revision;
+  const provenance = typeof documentId === "string" && documentId.trim()
+    ? ` [document_id=${sanitizeInline(documentId)}${Number.isSafeInteger(revision) ? `, revision=${revision}` : ""}]`
+    : "";
+  return `${prefix}${escapeText(truncate(text, maxItemChars))}${escapeText(provenance)}`;
 }
 
 function memoryTextForItem(item: unknown): string {

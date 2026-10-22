@@ -1098,7 +1098,7 @@ test("memory CLI search binds to the current WorkBuddy trace and workspace", asy
   assert.equal(events[0].trace.context_origin, "current-turn-file");
   const addArgs = ["add", "--memory", "The expense approval request is pending.", "--type", "episodic", "--reason", "Save office requirement"];
   assert.equal((await runMemoryCli(addArgs, { cwd: nestedCwd, env, fetchImpl })).ok, true);
-  assert.equal(requests[1].content_type, "dialogue");
+  assert.equal(requests[1].content_type, "auto");
   assert.equal(requests[1].mode, "default");
   assert.equal((await runMemoryCli([...addArgs, "--content-type", "code"], { cwd: nestedCwd, env, fetchImpl })).ok, true);
   assert.equal(requests[2].content_type, "code");
@@ -1107,7 +1107,7 @@ test("memory CLI search binds to the current WorkBuddy trace and workspace", asy
   assert.equal((await runMemoryCli(addArgs, {
     cwd: nestedCwd, env: { ...nativeEnv, CODEBUDDY_SESSION_ID: sessionId }, fetchImpl,
   })).ok, true);
-  assert.equal(requests[3].content_type, "dialogue", "native WorkBuddy binding must use the resolved client, not the shared environment variable name");
+  assert.equal(requests[3].content_type, "auto", "manual defaults must remain automatic for native WorkBuddy bindings");
 });
 
 test("memory CLI Add preserves validated explicit WorkBuddy identity during cwd fallback", async (t) => {
@@ -1142,7 +1142,7 @@ test("memory CLI Add preserves validated explicit WorkBuddy identity during cwd 
     const result = await runMemoryCli(args, options);
     assert.equal(result.ok, true, scenario);
     assert.equal(result.effectiveUserId, "user-1@workspace", scenario);
-    assert.equal(requests.at(-1).content_type, "dialogue", scenario);
+    assert.equal(requests.at(-1).content_type, "auto", scenario);
     assert.equal(requests.at(-1).mode, "default", scenario);
     await assert.rejects(readFile(clientTracePaths("workbuddy", root).eventsJsonl("fallback-session"), "utf8"));
   }
@@ -1152,7 +1152,7 @@ test("memory CLI Add preserves validated explicit WorkBuddy identity during cwd 
     { MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT: undefined, MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID: undefined, CODEBUDDY_SESSION_ID: "missing-native" },
   ]) {
     assert.equal((await runMemoryCli(args, { ...options, env: { ...env, ...overrides } })).ok, true);
-    assert.equal(requests.at(-1).content_type, "code");
+    assert.equal(requests.at(-1).content_type, "auto");
   }
   for (const override of [
     { args: [...args, "--content-type", "code"], env },
@@ -1526,8 +1526,8 @@ test("memory CLI add writes a short memory through MemoraX", async () => {
     assert.equal(requests[0].authorization, "Token secret");
     assert.equal(requests[0].body.user_id, "user-1@memorax-code");
     assert.equal(requests[0].body.session_id, "session-manual");
-    assert.equal(requests[0].body.content_type, "code");
-    assert.equal(requests[0].body.mode, "pre_summarized");
+    assert.equal(requests[0].body.content_type, "auto");
+    assert.equal(requests[0].body.mode, "default");
     assert.equal(requests[0].body.memory_output_language, "en");
     assert.deepEqual(requests[0].body.messages.map((message) => ({
       role: message.role,
@@ -1688,7 +1688,7 @@ async function createLinkedWorktreeMetadata(workspace, commonDir, name) {
 }
 
 
-test("memory CLI work routing preserves legacy code mode and idempotency while honoring type precedence", async (t) => {
+test("memory CLI defaults to auto while preserving explicit code mode and idempotency", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "memorax-cli-routing-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const home = join(root, "home");
@@ -1707,9 +1707,9 @@ test("memory CLI work routing preserves legacy code mode and idempotency while h
     await writeFile(join(home, "config.toml"), config);
     const result = await runMemoryCli(args, options);
     assert.equal(result.ok, true, result.error);
-    assert.equal(requests.at(-1).content_type, "code");
-    assert.equal(requests.at(-1).mode, "pre_summarized");
-    assert.equal(requests.at(-1).metadata.idempotency_key, legacyKey);
+    assert.equal(requests.at(-1).content_type, config ? "code" : "auto");
+    assert.equal(requests.at(-1).mode, config ? "pre_summarized" : "default");
+    assert.equal(requests.at(-1).metadata.idempotency_key, config ? legacyKey : `${legacyKey}:auto`);
   }
   await writeFile(join(home, "config.toml"), '[memory.add]\ncontent_type = "dialogue"\n');
   assert.equal((await runMemoryCli(args, options)).ok, true);

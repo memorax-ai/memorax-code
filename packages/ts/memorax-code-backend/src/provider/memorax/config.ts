@@ -38,6 +38,7 @@ export type MemoraxAdapterConfig = Readonly<{
   kSparse: number;
   timeoutMs: number;
   addTimeoutMs?: number;
+  uploadTimeoutMs?: number;
   minScore?: number;
   maxContextChars: number;
   maxItemChars: number;
@@ -128,6 +129,7 @@ export function memoraxConfigFromEnv(
       memoryOutputLanguage: outputLanguage.value,
       ...searchConfig,
       addTimeoutMs: memoraxAddTimeoutMs(env, config),
+      uploadTimeoutMs: clampInteger(env.MEMORAX_CODE_MEMORAX_UPLOAD_TIMEOUT_MS ?? config.memory?.add?.upload_timeout_ms ?? 300_000, 1000, 3_600_000, 300_000),
       ...(minScore === undefined ? {} : { minScore }),
     },
   };
