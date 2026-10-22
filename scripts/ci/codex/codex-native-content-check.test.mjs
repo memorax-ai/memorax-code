@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { assertCompleteText, assertNoForeignContent, assertSearchResult, assertSkillReferenceContract,
+import { assertAutomaticWritebackPayload, assertCompleteText, assertNoForeignContent, assertSearchResult, assertSkillReferenceContract,
   assertWritebackMessages, expectedSearchAnswer, redactExpectedFixtureText, selectNativeTurnContent } from "./codex-native-content-check.mjs";
 
 const paragraphs = ["第一段：完整保留 Unicode 🧪 与开头。", "第二段：中间内容不能被遗漏，café。", "第三段：末尾仍必须存在。"];
@@ -48,6 +48,21 @@ test("writeback structure permits additional valid context messages after the re
   assert.throws(() => assertWritebackMessages([...messages, { role: "tool", content: "Wrong role", timestamp: 4 }]), /NATIVE_MESSAGE_STRUCTURE_INVALID/);
 });
 
+test("default automatic writeback requires auto mode and one complete unchunked turn", () => {
+  const body = { content_type: "auto", mode: "default", async_mode: true,
+    messages: [{ role: "user", content, timestamp: 1 }, { role: "assistant", content: "Answer", timestamp: 2 }] };
+  assertAutomaticWritebackPayload(body);
+  for (const change of [{ content_type: "code" }, { content_type: "work" }, { content_type: undefined },
+    { mode: "pre_summarized" }, { mode: "raw" }, { mode: undefined }, { async_mode: false },
+    { chunk: { group_id: "turn", index: 0, count: 1 } }, { chunk: undefined }]) {
+    assert.throws(() => assertAutomaticWritebackPayload({ ...body, ...change }), /NATIVE_WRITEBACK_ROUTE_MISMATCH/);
+  }
+  assert.throws(() => assertAutomaticWritebackPayload({ ...body, messages: [...body.messages, body.messages[0]] }),
+    /NATIVE_WRITEBACK_MESSAGE_COUNT_MISMATCH/);
+  assert.throws(() => assertAutomaticWritebackPayload({ ...body, messages: body.messages.toReversed() }),
+    /NATIVE_MESSAGE_STRUCTURE_INVALID/);
+});
+
 test("foreign source controls inspect every message while allowing same-source additional context", () => {
   const messages = [{ role: "user", content }, { role: "assistant", content: "Answer" },
     { role: "user", content: "Additional local context" }];
@@ -58,12 +73,14 @@ test("foreign source controls inspect every message while allowing same-source a
   ]) assert.throws(() => assertNoForeignContent(mutated, ["Other workspace question", "Other workspace answer"]), /NATIVE_FOREIGN_CONTENT/);
 });
 
-const reference = (operation) => `# MemoraX Code Coding Memory ${operation === "search" ? "Search" : "Add"}\n
+const reference = (operation) => `# MemoraX Code Coding and Work Memory ${operation === "search" ? "Search" : "Add"}\n
 In Windows PowerShell, use \`memorax-cli.cmd\`; on macOS and Linux, use \`memorax-cli\`. Never invoke \`memorax-cli.ps1\`.
 \`memorax-cli ${operation}\` and \`memorax-cli.cmd ${operation}\` are the documented entrypoints.`;
 test("installed Skill references select the documented platform executable and reject broken commands", () => {
   for (const operation of ["search", "add"]) {
     const text = reference(operation);
+    assert.throws(() => assertSkillReferenceContract(text.replace("Coding and Work Memory", "Coding Memory"), operation, "linux"),
+      /NATIVE_SKILL_REFERENCE_IDENTITY_MISMATCH/);
     assert.equal(assertSkillReferenceContract(text, operation, "linux"), "memorax-cli");
     assert.equal(assertSkillReferenceContract(text, operation, "win32"), "memorax-cli.cmd");
     assert.equal(assertSkillReferenceContract(text.replaceAll("\n", "\r\n"), operation, "win32"), "memorax-cli.cmd");

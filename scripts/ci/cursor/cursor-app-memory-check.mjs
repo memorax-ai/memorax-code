@@ -12,7 +12,7 @@ export function assertCursorAppSkillReference(text, operation, platform) {
   catch { check(false, "CURSOR_APP_SKILL_REFERENCE"); }
 }
 
-// These are the isolated canary's default CLI contracts, not product parsers.
+// These are the isolated canary's selected coding CLI contracts, not product parsers.
 export function assertCursorAppMemoryOperation({ request, result, operation, query, memory, reason,
   sessionId = "memorax-cli", apiKey, baseUserId, workspaceName } = {}) {
   check(["search", "add"].includes(operation), "CURSOR_APP_MEMORY_OPERATION");

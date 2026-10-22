@@ -4,8 +4,8 @@ import { mkdir, readFile, readdir, realpath } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { assertNoSensitivePayload, check, createNativeHarness, describeSafeError, fixtureKey, fixtureModel, fixtureProvider, fixtureUser,
   processAlive, searchResult, waitFor } from "./opencode-native-support.mjs";
-import { assertCompleteText, assertNoForeignContent, assertSearchResult, assertSkillReferenceContract,
-  assertWritebackMessages, expectedSearchAnswer } from "../codex/codex-native-content-check.mjs";
+import { assertAutomaticWritebackPayload, assertCompleteText, assertNoForeignContent, assertSearchResult, assertSkillReferenceContract,
+  expectedSearchAnswer } from "../codex/codex-native-content-check.mjs";
 import { createEvidenceRecorder } from "../shared/ci-evidence.mjs";
 import { inventoryRepoMemoryJobs, projectProcessRoles, projectProductDiagnostics, projectRepoMemoryJobs,
   projectTraceEvents } from "../shared/ci-evidence-projections.mjs";
@@ -101,7 +101,7 @@ try {
     const memory = "The native Skill preserves parser validation before interpretation.";
     const reason = "Keep the verified parser validation lesson.";
     const args = operation === "search" ? ["search", "--query", query, "--json"]
-      : ["add", "--memory", memory, "--type", "procedural", "--reason", reason, "--json"];
+      : ["add", "--content-type", "code", "--mode", "pre_summarized", "--memory", memory, "--type", "procedural", "--reason", reason, "--json"];
     const before = harness.memoryRequests.length;
     const answer = operation === "search" ? `Recalled Coding Memory: ${searchResult}` : "Native Skill Add accepted.";
     await turn({ sessionId: first, prompt: `Use the memorax-code skill to ${operation} the parser validation lesson.`,
@@ -298,15 +298,14 @@ async function turn({ prompt, answer, sessionId, cwd = harness.workspace, expect
   const automatic = harness.memoryRequests.slice(before).filter((request) => request.body.metadata?.idempotency_key?.startsWith("automatic:opencode:"));
   check(automatic.length === 1, "EXPECTED_ONE_AUTOMATIC_ADD_PER_TURN");
   const body = automatic[0].body;
-  assertWritebackMessages(body.messages);
-  check(body.messages.length === 2, "NATIVE_WRITEBACK_MESSAGE_COUNT_MISMATCH");
+  assertAutomaticWritebackPayload(body);
   assertCompleteText(body.messages[0].content, expectedPrompt, "NATIVE_PROMPT_INCOMPLETE");
   assertCompleteText(body.messages[1].content, answer, "NATIVE_REPLY_INCOMPLETE");
   check(body.session_id === output.sessionId && body.metadata.memorax_code_session_id === output.sessionId,
     "NATIVE_WRITEBACK_SESSION_MISMATCH");
   check(body.user_id === `${fixtureUser}@${basename(cwd)}` && body.metadata.memorax_code_workspace === basename(cwd)
     && body.metadata.memorax_code_memory_scope === "workspace-name.v1", "NATIVE_WRITEBACK_SCOPE_MISMATCH");
-  check(body.metadata.idempotency_key === `automatic:opencode:${hash(body.user_id)}:${output.sessionId}:${hash(body.messages[0].content)}:${hash(body.messages[1].content)}`,
+  check(body.metadata.idempotency_key === `automatic:opencode:${hash(body.user_id)}:${output.sessionId}:${hash(body.messages[0].content)}:${hash(body.messages[1].content)}:auto`,
     "NATIVE_WRITEBACK_IDEMPOTENCY_MISMATCH");
   expectedTurns.push({ prompt, answer, sessionId: output.sessionId, assistantMessageId, cwd, body, kind, tools });
   return output.sessionId;

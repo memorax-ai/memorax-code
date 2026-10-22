@@ -34,6 +34,13 @@ export function assertWritebackMessages(messages) {
   }
 }
 
+export function assertAutomaticWritebackPayload(body) {
+  check(body?.content_type === "auto" && body.mode === "default" && body.async_mode === true
+    && !Object.hasOwn(body, "chunk"), "NATIVE_WRITEBACK_ROUTE_MISMATCH");
+  assertWritebackMessages(body.messages);
+  check(body.messages.length === 2, "NATIVE_WRITEBACK_MESSAGE_COUNT_MISMATCH");
+}
+
 export function assertNoForeignContent(messages, forbiddenFragments) {
   check(Array.isArray(messages), "NATIVE_MESSAGES_INVALID");
   for (const message of messages) {
@@ -47,7 +54,7 @@ export function assertNoForeignContent(messages, forbiddenFragments) {
 
 export function assertSkillReferenceContract(text, operation, platform) {
   check(["search", "add"].includes(operation) && typeof text === "string", "NATIVE_SKILL_REFERENCE_INVALID");
-  check(text.split(/\r?\n/, 1)[0] === `# MemoraX Code Coding Memory ${operation === "search" ? "Search" : "Add"}`,
+  check(text.split(/\r?\n/, 1)[0] === `# MemoraX Code Coding and Work Memory ${operation === "search" ? "Search" : "Add"}`,
     "NATIVE_SKILL_REFERENCE_IDENTITY_MISMATCH");
   const commands = text.match(/\bmemorax-cli[.\w-]*/g) ?? [];
   check(commands.length > 0 && commands.every((command) => ["memorax-cli", "memorax-cli.cmd", "memorax-cli.ps1"].includes(command)),

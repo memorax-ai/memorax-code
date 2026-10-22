@@ -160,10 +160,10 @@ function writebackFixture({ sessionId: turnSessionId = sessionId, workspaceName 
   const hash = (text) => digest(text).toString("hex").slice(0, 16);
   const body = {
     messages: [{ role: "user", content: prompt, timestamp: 123 }, { role: "assistant", content: answer, timestamp: 124 }],
-    session_id: turnSessionId, user_id: userId,
+    session_id: turnSessionId, user_id: userId, content_type: "auto", mode: "default", async_mode: true,
     metadata: { memorax_code_session_id: turnSessionId, memorax_code_base_user_id: baseUserId,
       memorax_code_workspace: workspaceName, memorax_code_memory_scope: scope,
-      idempotency_key: `automatic:cursor:${hash(userId)}:${turnSessionId}:${hash(prompt)}:${hash(answer)}` },
+      idempotency_key: `automatic:cursor:${hash(userId)}:${turnSessionId}:${hash(prompt)}:${hash(answer)}:auto` },
   };
   return { sessionId: turnSessionId, prompt, answer, apiKey, baseUserId, workspaceName, scope,
     requests: [{ method: "POST", path: "/v1/memories/add", authorization: `Token ${apiKey}`, body }] };
@@ -178,6 +178,10 @@ test("automatic Add preserves exact Unicode content, session, local or Git scope
       [(request) => { request.method = "GET"; }, "TRANSPORT"],
       [(request) => { request.path += "?private"; }, "TRANSPORT"],
       [(request) => { request.authorization = "Bearer synthetic-private-api-key"; }, "TRANSPORT"],
+      ...[{ content_type: "code" }, { content_type: "work" }, { content_type: undefined },
+        { mode: "pre_summarized" }, { mode: "raw" }, { mode: undefined }, { async_mode: false },
+        { chunk: { group_id: "turn", index: 0, count: 1 } }, { chunk: undefined }]
+        .map((change) => [(request) => { Object.assign(request.body, change); }, "ROUTE"]),
       [(request) => { request.body.messages.reverse(); }, "CONTENT"],
       [(request) => { request.body.messages.push({ role: "assistant", content: privateCanary }); }, "CONTENT"],
       [(request) => { request.body.messages[0].role = "system"; }, "CONTENT"],
@@ -194,7 +198,7 @@ test("automatic Add preserves exact Unicode content, session, local or Git scope
       mutate(invalid.requests[0]);
       rejects(() => assertCursorAppWriteback(invalid), `CURSOR_APP_ADD_${suffix}`);
     }
-    for (let part = 0; part < 6; part += 1) {
+    for (let part = 0; part < 7; part += 1) {
       const invalid = structuredClone(input), metadata = invalid.requests[0].body.metadata;
       const pieces = metadata.idempotency_key.split(":");
       pieces[part] = part === 1 ? "codex" : privateCanary;

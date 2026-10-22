@@ -139,6 +139,8 @@ export function assertCursorAppWriteback(input) {
     check(request?.method === "POST" && request.path === "/v1/memories/add"
       && request.authorization === `Token ${apiKey}`, "CURSOR_APP_ADD_TRANSPORT");
     const body = request.body, messages = body?.messages;
+    check(body?.content_type === "auto" && body.mode === "default" && body.async_mode === true
+      && !Object.hasOwn(body, "chunk"), "CURSOR_APP_ADD_ROUTE");
     check(Array.isArray(messages) && messages.length === 2
       && messages[0]?.role === "user" && messages[0].content === prompt
       && messages[1]?.role === "assistant" && messages[1].content === answer, "CURSOR_APP_ADD_CONTENT");
@@ -149,7 +151,7 @@ export function assertCursorAppWriteback(input) {
       && metadata.memorax_code_workspace === workspaceName
       && metadata.memorax_code_memory_scope === scope, "CURSOR_APP_ADD_SCOPE");
     const hash = (text) => createHash("sha256").update(text).digest("hex").slice(0, 16);
-    check(metadata.idempotency_key === `automatic:cursor:${hash(scopeUserId)}:${sessionId}:${hash(prompt)}:${hash(answer)}`,
+    check(metadata.idempotency_key === `automatic:cursor:${hash(scopeUserId)}:${sessionId}:${hash(prompt)}:${hash(answer)}:auto`,
       "CURSOR_APP_ADD_IDEMPOTENCY");
     return { automaticAdd: 1 };
   } catch (error) {

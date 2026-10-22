@@ -3,8 +3,8 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, readdir, realpath } from "node:fs/promises";
 import { basename, isAbsolute, join, relative } from "node:path";
 import { check, createNativeHarness, fixtureKey, fixtureModel, fixtureUser, searchResult, waitFor } from "./claude-native-support.mjs";
-import { assertCompleteText, assertNoForeignContent, assertSearchResult, assertSkillReferenceContract,
-  assertWritebackMessages, expectedSearchAnswer } from "../codex/codex-native-content-check.mjs";
+import { assertAutomaticWritebackPayload, assertCompleteText, assertNoForeignContent, assertSearchResult, assertSkillReferenceContract,
+  expectedSearchAnswer } from "../codex/codex-native-content-check.mjs";
 import { assertExactText, assertNativeReadText, selectNativeMemoraxPlugin, selectNativeTurnContent } from "./claude-native-content-check.mjs";
 import { verifyBackgroundGlobalConfiguration } from "./claude-background-check.mjs";
 
@@ -123,7 +123,7 @@ try {
     const memory = "The native Skill preserves parser validation before interpretation.";
     const reason = "Keep the verified parser validation lesson.";
     const args = operation === "search" ? ["search", "--query", query, "--json"]
-      : ["add", "--memory", memory, "--type", "procedural", "--reason", reason, "--json"];
+      : ["add", "--content-type", "code", "--mode", "pre_summarized", "--memory", memory, "--type", "procedural", "--reason", reason, "--json"];
     const before = harness.memoryRequests.length;
     const answer = operation === "search" ? `Recalled Coding Memory: ${searchResult}` : "Native Skill Add accepted.";
     await turn({ sessionId: first, prompt: `Use the memorax-code skill to ${operation} the parser validation lesson.`,
@@ -163,7 +163,7 @@ try {
     check(request.authorization === `Token ${fixtureKey}`, "MEMORY_AUTHORIZATION_MISMATCH");
     const payload = JSON.stringify(request.body);
     for (const forbidden of [fixtureKey, redactionCanary, toolCanary, commentaryCanary, "## Authority Router",
-      "# MemoraX Code Coding Memory Search", "# MemoraX Code Coding Memory Add", harness.root, harness.root.replaceAll("\\", "/")]) {
+      "# MemoraX Code Coding and Work Memory Search", "# MemoraX Code Coding and Work Memory Add", harness.root, harness.root.replaceAll("\\", "/")]) {
       check(!payload.includes(JSON.stringify(forbidden).slice(1, -1)), "LOCAL_OR_SENSITIVE_CONTENT_ENTERED_MEMORY_PAYLOAD");
     }
     if (Array.isArray(request.body.messages)) {
@@ -254,14 +254,14 @@ async function turn({ prompt, answer, sessionId, cwd = harness.workspace, expect
   check(automatic.length === 1, "NATIVE_AUTOMATIC_ADD_COUNT_MISMATCH");
   const [request] = automatic, body = request.body;
   check(request.method === "POST" && request.path === "/v1/memories/add", "NATIVE_AUTOMATIC_ADD_TRANSPORT_MISMATCH");
-  assertWritebackMessages(body.messages);
+  assertAutomaticWritebackPayload(body);
   assertCompleteText(body.messages[0].content, expectedPrompt, "NATIVE_WRITEBACK_PROMPT_MISMATCH");
   assertCompleteText(body.messages[1].content, answer, "NATIVE_WRITEBACK_ANSWER_MISMATCH");
   check(body.session_id === output.sessionId && body.metadata?.memorax_code_session_id === output.sessionId,
     "NATIVE_WRITEBACK_SESSION_MISMATCH");
   check(body.user_id === `${fixtureUser}@${basename(cwd)}` && body.metadata.memorax_code_workspace === basename(cwd)
     && body.metadata.memorax_code_memory_scope === "workspace-name.v1", "NATIVE_WRITEBACK_SCOPE_MISMATCH");
-  check(body.metadata.idempotency_key === `automatic:claude-code:${hash(body.user_id)}:${output.sessionId}:${hash(body.messages[0].content)}:${hash(body.messages[1].content)}`,
+  check(body.metadata.idempotency_key === `automatic:claude-code:${hash(body.user_id)}:${output.sessionId}:${hash(body.messages[0].content)}:${hash(body.messages[1].content)}:auto`,
     "NATIVE_WRITEBACK_IDEMPOTENCY_MISMATCH");
   expectedTurns.push({ prompt, answer, expectedPrompt, sessionId: output.sessionId, assistantUuid: final[0].uuid, cwd, body, kind, tools });
   const workspace = basename(cwd);
