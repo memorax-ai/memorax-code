@@ -198,6 +198,7 @@ function isolatedEnv(endpoint) {
     MEMORAX_CODE_MEMORAX_API_KEY: apiKey,
     MEMORAX_CODE_MEMORAX_USER_ID: "installed-cli-user",
     MEMORAX_CODE_MEMORAX_TIMEOUT_MS: "1000",
+    MEMORAX_CODE_MEMORAX_ADD_TIMEOUT_MS: "1000",
     MEMORAX_CODE_AUTO_UPDATE: "false",
     CODEX_HOME: join(home, ".codex"),
     CLAUDE_CONFIG_DIR: join(home, ".claude"),
