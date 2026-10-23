@@ -1560,3 +1560,32 @@ Related documents:
 - [Security policy](SECURITY.md)
 - [Configuration](docs/configuration.md)
 - [Troubleshooting](docs/troubleshooting.md)
+
+## Helpful evaluation flow
+
+The explicit Search CLI is short-lived: `memory/helpful-bridge.ts` transfers
+the real server Search ID, current exact turn and snapshotted K to
+the `/memory/helpful-search` Backend route under the existing Backend
+authentication policy (including the default tokenless loopback mode). The service checks
+the live coordinator key; it never substitutes the latest turn.
+
+Search metadata is owned by existing coordinator turns and transferred to the
+Add buffer before turn consumption. `memory/helpful.ts` owns only types, budget
+counters and pure batch-window construction; it has no cache, timer or transport.
+At flush, complete native N..N+K windows are selected before message flattening
+and Add chunking. Gaps, duplicates, truncation and unknown ordinals skip evaluation.
+Never replace native order with buffer adjacency. Trae lacks a verifiable ordinal;
+Cursor continuations without a distinct native ordinal are also skipped.
+Codex counts a native `turn_context` even when the same turn's `task_started`
+appeared first; repeated context records do not create extra turns.
+The first Add chunk carries the attachment; ordinary Add retries reuse it.
+N+K's assistant response is omitted from the evaluation attachment (normal Add
+retains its own QA). Candidate snapshots are registered by the remote server.
+
+Codex retries only native `assistant_message_missing`, after 100/250/500/1000/
+2000 ms, using captured exact context and one chain per turn (max 256). Other
+failures stop immediately. Shutdown cancels pending Codex timers, waits for active
+reads, then drains Add under the host deadline, including complete evaluation
+windows. Closing releases remaining metadata.
+No restart recovery or standalone worker is introduced.
+

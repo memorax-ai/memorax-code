@@ -10,6 +10,7 @@ export type OpenCodeMessageTurn = Readonly<{
   userTimestamp?: number;
   assistantTimestamp?: number;
   outcome: "completed" | "interrupted";
+  sessionTurnIndex: number;
 }>;
 
 export type OpenCodeMessageTurnFailureReason =
@@ -77,6 +78,11 @@ export function openCodeMessageTurn(
     ok: true,
     turn: {
       sessionId: input.sessionId,
+      sessionTurnIndex: messages.filter((message): message is OpenCodeMessageRecord =>
+        isMessageRecord(message) && message.info.role === "user"
+        && stringField(message.info, "sessionID") === input.sessionId
+        && !hasCompactionPart(message.parts) && !isCompactionContinuation(message, input.sessionId)
+      ).findIndex(message => messageId(message) === input.userMessageId) + 1,
       userMessageId: input.userMessageId,
       assistantMessageId: input.assistantMessageId,
       userPrompt,

@@ -42,10 +42,12 @@ export function codexSessionTurnIndexFromJsonLines(
 
   const observeTurn = (turnId: string | undefined, source: "turn_context" | "task_started"): void => {
     activeTurnId = turnId;
+    // A task_started record may precede this same turn's context. Retain the
+    // native context evidence even when its ordered ID has already been seen.
+    if (turnId && source === "turn_context") turnContextIds.add(turnId);
     if (!turnId || seenTurnIds.has(turnId)) return;
     seenTurnIds.add(turnId);
     orderedTurnIds.push(turnId);
-    if (source === "turn_context") turnContextIds.add(turnId);
   };
 
   for (const line of transcript.split(/\r?\n/)) {

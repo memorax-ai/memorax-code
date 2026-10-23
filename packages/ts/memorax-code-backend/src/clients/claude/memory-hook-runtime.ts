@@ -171,6 +171,7 @@ export function createClaudeMemoryHookRuntime(
           workspaceKind: request.workspaceKind ?? entry?.workspaceKind,
         }),
         userText: transcript.turn.userPrompt,
+        sessionTurnIndex: transcript.turn.sessionTurnIndex,
         assistantText: transcript.turn.assistantReply,
         userTimestamp: transcript.turn.userTimestamp,
         assistantTimestamp: transcript.turn.assistantTimestamp,

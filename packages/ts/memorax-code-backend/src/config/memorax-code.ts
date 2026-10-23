@@ -12,6 +12,7 @@ import {
 } from "../../../memorax-code-adapter-common/src/memorax-defaults.mjs";
 
 export type MemoraxCodeConfig = Readonly<{
+  helpful?: Readonly<{ enabled?: boolean; context_turns_k?: number }>;
   clients?: Readonly<{
     codex?: boolean;
     claude?: boolean;
@@ -168,6 +169,11 @@ export function renderDefaultMemoraxCodeConfig(): string {
     "",
     DEFAULT_JEV_CONFIG_TEXT.trimEnd(),
     "",
+    "# Helpful evaluation uploads QA independently of Add and OSS.",
+    "[helpful]",
+    "enabled = true",
+    "context_turns_k = 2",
+    "",
     "# Automatic writeback sends selected prompts and final answers to MemoraX.",
     "[memory.writeback]",
     "enabled = true # Allow supported client sessions to write memories after replies.",
@@ -290,6 +296,9 @@ function normalizeMemoraxCodeConfig(value: unknown): MemoraxCodeConfig {
   const clients = recordValue(root?.clients);
   const memorax = recordValue(root?.memorax);
   const jev = recordValue(root?.jev);
+  const helpful = recordValue(root?.helpful);
+  if (helpful?.enabled !== undefined && typeof helpful.enabled !== "boolean") throw new Error("helpful.enabled must be boolean");
+  if (helpful?.context_turns_k !== undefined && (!Number.isSafeInteger(helpful.context_turns_k) || Number(helpful.context_turns_k) < 2)) throw new Error("helpful.context_turns_k must be an integer >= 2");
   const memory = recordValue(root?.memory);
   const trace = recordValue(root?.trace);
   const retrieval = recordValue(memory?.retrieval);
@@ -309,6 +318,10 @@ function normalizeMemoraxCodeConfig(value: unknown): MemoraxCodeConfig {
   const traceCursor = recordValue(trace?.cursor);
 
   return (prune({
+    helpful: prune({
+      enabled: booleanField(helpful, "enabled"),
+      context_turns_k: numberField(helpful, "context_turns_k"),
+    }),
     clients: prune({
       codex: booleanField(clients, "codex"),
       claude: booleanField(clients, "claude"),

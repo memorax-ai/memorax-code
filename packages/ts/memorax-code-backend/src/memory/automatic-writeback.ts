@@ -40,6 +40,7 @@ import {
 } from "./payload-redaction.js";
 import type { MemoraxQuotaSnapshot } from "../provider/memorax/quota.js";
 import { parseNativeMessageTimestamp } from "../shared/message-time.js";
+import { helpfulSettings, type HelpfulTurn, type HelpfulEvaluation } from "./helpful.js";
 
 export type AutomaticMemoryWritebackClient = "codex" | "claude-code" | "opencode" | "dsh" | "codebuddy" | "workbuddy" | "trae" | "cursor";
 
@@ -51,6 +52,7 @@ export type AutomaticMemoryWritebackTiming = {
 };
 
 export type AutomaticMemoryWritebackOptions = AutomaticMemoryWritebackTiming & {
+  helpfulTurn?: HelpfulTurn;
   client: AutomaticMemoryWritebackClient;
   sessionKey?: string;
   userText?: string;
@@ -67,6 +69,8 @@ export type AutomaticMemoryWritebackOptions = AutomaticMemoryWritebackTiming & {
 };
 
 type AutomaticMemoryWritebackDecision = {
+  helpfulTurn?: HelpfulTurn;
+  helpfulEvaluations?: HelpfulEvaluation[];
   client: AutomaticMemoryWritebackClient;
   sessionKey: string;
   idempotencyKey: string;
@@ -95,6 +99,7 @@ export type AutomaticMemoryWritebackEnqueue = (
 ) => AutomaticMemoryWritebackEnqueueResult;
 
 export type AutomaticMemoryWritebackRuntime = {
+  clearHelpful(): void;
   enqueue: AutomaticMemoryWritebackEnqueue;
   discardForScopeUpgrade(upgrade: RepositoryMemorySessionScopeUpgrade): number;
   drain(): Promise<void>;
@@ -102,12 +107,14 @@ export type AutomaticMemoryWritebackRuntime = {
 };
 
 export type AutomaticMemoryWritebackRuntimeOptions = {
+  helpfulEnabled?: () => boolean;
   memoraxCodeHome?: string;
   diagnosticLogger?: MemoryDiagnosticLogger;
   queueQuotaNotice?: (config: MemoraxAdapterConfig, quota: MemoraxQuotaSnapshot) => void;
 };
 
 type AutomaticMemoryWritebackState = {
+  helpfulEnabled: () => boolean;
   memoraxCodeHome?: string;
   diagnosticLogger: MemoryDiagnosticLogger;
   queueQuotaNotice?: (config: MemoraxAdapterConfig, quota: MemoraxQuotaSnapshot) => void;
@@ -132,6 +139,7 @@ export function createAutomaticMemoryWritebackRuntime(
   options: AutomaticMemoryWritebackRuntimeOptions = {},
 ): AutomaticMemoryWritebackRuntime {
   const state: AutomaticMemoryWritebackState = {
+    helpfulEnabled: options.helpfulEnabled ?? (() => helpfulSettings(options.memoraxCodeHome).enabled),
     memoraxCodeHome: options.memoraxCodeHome,
     diagnosticLogger: options.diagnosticLogger ?? (() => {}),
     queueQuotaNotice: options.queueQuotaNotice,
@@ -141,6 +149,7 @@ export function createAutomaticMemoryWritebackRuntime(
     inFlight: new Set(),
   };
   return {
+    clearHelpful() { state.writebackBuffer.clearHelpful(); },
     enqueue(options) {
       return enqueueAutomaticMemoryWritebackForRuntime(state, options);
     },
@@ -201,6 +210,7 @@ function enqueueAutomaticMemoryWritebackForRuntime(
         hasPendingWriteback: (idempotencyKey) => hasPendingWriteback(state, idempotencyKey),
         reservePendingWritebacks: (idempotencyKeys) => reservePendingWritebacks(state, idempotencyKeys),
         hashText,
+        helpfulEnabled: state.helpfulEnabled,
       });
       return { accepted: true };
     }
@@ -317,6 +327,12 @@ function automaticMemoryWritebackDecision(
     client: options.client,
     sessionKey,
     idempotencyKey,
+    helpfulTurn: options.helpfulTurn ? {
+      ...options.helpfulTurn,
+      complete: options.helpfulTurn.complete && rawUserText === boundedUserText
+        && rawAssistantText === boundedAssistantText
+        && userText === userRedaction.text && assistantText === assistantRedaction.text,
+    } : undefined,
     messages: [
       {
         role: "user", content: userText,
@@ -411,6 +427,8 @@ async function enqueueAutomaticMemoryWritebackAsync(
           operation: "writeback",
           dispatch: "async_best_effort",
           context: {
+            ...(index === 0 && state.helpfulEnabled() && decision.helpfulEvaluations?.length
+              ? { helpful_evaluations: decision.helpfulEvaluations } : {}),
             idempotencyKey: part.idempotencyKey,
             messages: part.messages,
             contentType: "code",

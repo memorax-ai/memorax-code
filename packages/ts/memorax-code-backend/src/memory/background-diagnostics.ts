@@ -21,6 +21,8 @@ export type BackgroundWritebackContext = {
 // Only confirmed failures are listed. Missing/incomplete assistant output,
 // interruptions, subagents, compaction, duplicates and buffering are normal.
 const REJECTIONS: Record<string, { stage: string; error: string }> = {
+  deferred_assistant_message_missing: { stage: "content-read", error: "The native final answer was still missing after five deferred reads." },
+  deferred_capacity_exhausted: { stage: "content-read", error: "The bounded deferred read capacity is exhausted." },
   transcript_unavailable: { stage: "content-read", error: "The native transcript could not be read." },
   malformed_transcript: { stage: "content-validation", error: "The native transcript contains malformed records." },
   transcript_session_mismatch: { stage: "correlation", error: "The native transcript belongs to a different session." },

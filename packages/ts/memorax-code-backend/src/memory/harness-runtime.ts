@@ -78,6 +78,7 @@ export type HarnessTurnStart = Omit<MemoryTurnStart, "client" | "clientTurnId" |
 // Only client-specific materializers may supply completion content. A terminal
 // Hook signal or a trace record alone does not establish this input.
 export type HarnessTurnCompletion = Readonly<AutomaticMemoryWritebackTiming & {
+  sessionTurnIndex?: number;
   sessionId: string;
   clientTurnId: string;
   metadata?: MemoryTurnState;
@@ -211,6 +212,7 @@ export function createHarnessMemoryRuntime(
       return turnCoordinator.completeMaterializedTurn({
         key: { client: definition.client, sessionId: input.sessionId, clientTurnId: input.clientTurnId },
         metadata: input.metadata,
+        sessionTurnIndex: input.sessionTurnIndex,
         resolveRepositoryMemory: input.resolveRepositoryMemory,
         userText: input.userText,
         assistantText: input.assistantText,

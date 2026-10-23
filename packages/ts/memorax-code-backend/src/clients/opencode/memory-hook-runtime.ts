@@ -160,6 +160,7 @@ export function createOpenCodeMemoryHookRuntime(
         },
       ), options.diagnosticLogger);
       const writeback = await memory.completeTurn({
+        sessionTurnIndex: materialized.turn.sessionTurnIndex,
         sessionId: command.sessionId,
         clientTurnId: command.userMessageId,
         metadata: entry,

@@ -10,8 +10,13 @@ import {
   type RepositoryMemoryScope,
 } from "../repository/scope.js";
 import type { TraceContext } from "../trace/context.js";
+import {
+  buildHelpfulEvaluations, releaseHelpfulSearches,
+  type HelpfulTurn, type HelpfulEvaluation,
+} from "./helpful.js";
 
 export type MemoryWritebackBufferDecision = {
+  helpfulTurn?: HelpfulTurn;
   client: "codex" | "claude-code" | "opencode" | "dsh" | "codebuddy" | "workbuddy" | "trae" | "cursor";
   sessionKey: string;
   idempotencyKey: string;
@@ -25,6 +30,7 @@ export type MemoryWritebackBufferScopeUpgrade = Readonly<{
 }>;
 
 export type MemoryWritebackBufferedDecision = MemoryWritebackBufferDecision & {
+  helpfulEvaluations?: HelpfulEvaluation[];
   dedupeKeys: string[];
   flushReason: string;
   turnCount: number;
@@ -58,6 +64,7 @@ type MemoryWritebackBufferClock = {
 };
 
 export type MemoryWritebackBufferDeps = {
+  helpfulEnabled?: () => boolean;
   debug: (message: string, fields?: Record<string, unknown>) => void;
   flush: (decision: MemoryWritebackBufferedDecision, options: MemoryWritebackBufferedOptions) => void;
   hasPendingWriteback: (idempotencyKey: string) => boolean;
@@ -67,6 +74,7 @@ export type MemoryWritebackBufferDeps = {
 };
 
 export type MemoryWritebackBufferRuntime = {
+  clearHelpful(): void;
   enqueue(
     decision: MemoryWritebackBufferDecision,
     options: MemoryWritebackBufferOptions,
@@ -78,6 +86,7 @@ export type MemoryWritebackBufferRuntime = {
 };
 
 type MemoryWritebackBufferedTurn = {
+  helpfulTurn?: HelpfulTurn;
   idempotencyKey: string;
   messages: WritebackMessage[];
   traceContext?: TraceContext;
@@ -113,6 +122,9 @@ const SYSTEM_CLOCK: MemoryWritebackBufferClock = {
 export function createMemoryWritebackBufferRuntime(): MemoryWritebackBufferRuntime {
   const writebackBuffers = new Map<string, MemoryWritebackBuffer>();
   return {
+    clearHelpful() {
+      for (const buffer of writebackBuffers.values()) releaseBufferHelpful(buffer);
+    },
     enqueue(decision, options, deps) {
       enqueueMemoryWritebackBufferForRuntime(writebackBuffers, decision, options, deps);
     },
@@ -135,6 +147,7 @@ export function createMemoryWritebackBufferRuntime(): MemoryWritebackBufferRunti
     },
     close() {
       for (const buffer of writebackBuffers.values()) {
+        releaseBufferHelpful(buffer);
         if (buffer.timer) buffer.clock.clearTimeout(buffer.timer);
       }
       writebackBuffers.clear();
@@ -151,6 +164,10 @@ function enqueueMemoryWritebackBufferForRuntime(
   const env = options.env ?? process.env;
   const config = memoryWritebackBufferConfig(env);
   if (!options.repositoryScope) return;
+  if (deps.helpfulEnabled && !deps.helpfulEnabled()) {
+    for (const pending of writebackBuffers.values()) releaseBufferHelpful(pending);
+    releaseHelpfulSearches(decision.helpfulTurn?.searches);
+  }
   discardDegradedGitBuffersForUpgrade(
     writebackBuffers,
     {
@@ -194,6 +211,9 @@ function enqueueMemoryWritebackBufferForRuntime(
   }
 
   buffer.turns.push({
+    helpfulTurn: decision.helpfulTurn ? {
+      ...decision.helpfulTurn, searches: decision.helpfulTurn.searches.splice(0),
+    } : undefined,
     idempotencyKey: decision.idempotencyKey,
     messages: decision.messages,
     ...(options.traceContext ? { traceContext: options.traceContext } : {}),
@@ -237,6 +257,7 @@ function discardDegradedGitBuffersForUpgrade(
       || !repositoryMemoryScopeCanUpgradeFromDegradedGit(buffer.repositoryScope, upgrade.currentScope)
     ) continue;
     writebackBuffers.delete(bufferKey);
+    releaseBufferHelpful(buffer);
     if (buffer.timer) buffer.clock.clearTimeout(buffer.timer);
     buffer.deps.debug("memory.automatic_writeback", {
       scheduled: false,
@@ -317,6 +338,11 @@ function flushMemoryWritebackBuffer(
   const sessionKey = buffer.sessionKey;
   const messages = bufferedMessages(buffer);
   const scopeHash = deps.hashText(buffer.repositoryScope.effectiveUserId);
+  const helpfulEvaluations = !deps.helpfulEnabled || deps.helpfulEnabled()
+    ? buildHelpfulEvaluations(buffer.client, sessionKey, buffer.turns,
+      reason => deps.debug("memory.helpful.skipped", { reason }))
+    : [];
+  releaseBufferHelpful(buffer);
   const idempotencyKey = `automatic-buffer:v1:${buffer.client}:${scopeHash}:${sessionKey}:${deps.hashText(messages.map((message) => `${message.role}:${message.content}`).join("\n"))}`;
   const dedupeKeys = [idempotencyKey, ...buffer.turns.map((turn) => turn.idempotencyKey)];
   if (dedupeKeys.some((key) => deps.hasPendingWriteback(key))) return false;
@@ -336,6 +362,7 @@ function flushMemoryWritebackBuffer(
     sessionKey,
     idempotencyKey,
     messages,
+    ...(helpfulEvaluations.length ? { helpfulEvaluations } : {}),
     dedupeKeys,
     flushReason,
     turnCount: buffer.turns.length,
@@ -366,6 +393,10 @@ function memoryWritebackBufferKey(
 
 function bufferedMessages(buffer: MemoryWritebackBuffer): WritebackMessage[] {
   return buffer.turns.flatMap((turn) => turn.messages);
+}
+
+function releaseBufferHelpful(buffer: MemoryWritebackBuffer) {
+  for (const turn of buffer.turns) releaseHelpfulSearches(turn.helpfulTurn?.searches);
 }
 
 function relatedTurnsForBuffer(buffer: MemoryWritebackBuffer): MemoryObservabilityRelatedTurn[] | undefined {

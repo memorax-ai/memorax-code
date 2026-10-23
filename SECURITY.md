@@ -419,3 +419,21 @@ cleanup runs.
 - Add focused regression coverage for changes to authentication, paths,
   lifecycle ownership, Hook schemas, workspace scope, data retention, or
   outbound payloads.
+
+## Helpful evaluation traffic
+
+Helpful defaults to enabled and transmits additional evaluation QA to the
+configured MemoraX service with automatic Add, independent of OSS. Disable
+`[helpful].enabled` to opt out. Search IDs and exact client/session/turn
+correlation pass over the authenticated local CLI→Backend channel. Remote
+requests use the existing MemoraX credential, never the Backend token.
+QA comes only from validated native readers, not trace history or Hook text
+fallbacks. The final window turn sends only user input. Local transcript paths,
+diagnostic records, and credentials are not included in the evidence.
+Evidence text uses the existing Add payload redaction rules before buffering;
+these heuristic rules reduce accidental disclosure but cannot identify every secret.
+No evidence hash or separate evaluation token is introduced. Candidate IDs and
+search-time text snapshots are stored by the server, not supplied with Add.
+Authenticated client QA is not proof of user intent. Add chunking may duplicate
+window QA in the first chunk's optional attachment; raw paths remain local.
+

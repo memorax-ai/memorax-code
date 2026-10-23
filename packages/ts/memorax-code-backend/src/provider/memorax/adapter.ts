@@ -92,6 +92,7 @@ type MemoraxSearchPayload = {
 };
 
 type MemoraxAddPayload = {
+  helpful_evaluations?: unknown[];
   messages: Array<{ role: "user" | "assistant"; content: string; timestamp: number }>;
   user_id: string;
   memory_output_language: "zh" | "en";
@@ -185,6 +186,8 @@ export async function invokeMemoraxMemoryProvider(
         prompt_fragments: promptFragments,
         ...(quota ? { quota } : {}),
         tool_result_payload: {
+          search_id: isRecord(raw) && isRecord(raw.data) && typeof raw.data.search_id === "string"
+            ? raw.data.search_id : undefined,
           answer: contextBlocks.map((block) => block.content).join("\n\n"),
           items,
           contextBlocks,
@@ -397,6 +400,8 @@ function buildMemoraxAddPayload(
   const scopeKind = repositoryMemoryScopeKind(repositoryScope);
   return {
     messages: stamped,
+    ...(Array.isArray(context.helpful_evaluations) && context.helpful_evaluations.length
+      ? { helpful_evaluations: context.helpful_evaluations } : {}),
     user_id: repositoryScope.effectiveUserId,
     memory_output_language: config.memoryOutputLanguage ?? MEMORAX_DEFAULT_MEMORY_OUTPUT_LANGUAGE,
     ...(options.mode ? { mode: options.mode } : {}),

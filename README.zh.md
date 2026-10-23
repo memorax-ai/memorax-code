@@ -1,3 +1,12 @@
+Helpful 评价默认开启：自动 Add flush 时，本地 Backend 随请求上传本批内完整的
+N～N+K QA（K 默认 2，最后一轮仅包含用户输入）。跨批或缺失的窗口跳过，不补传。
+需要开启 Add，但不依赖 OSS；使用已有正文脱敏规则。候选 ID 和搜索时正文快照
+由服务端保存。Helpful 沿用本地 Backend 现有鉴权配置，支持未配置 token 的回环模式。
+Codex 轮次顺序来自原生 turn context，也支持先写 task-start、后写对应 context 的日志。
+可在 `config.toml` 设置
+`[helpful] enabled = false` 关闭。
+详见[配置说明](docs/configuration.md#helpful-evaluation)。
+
 <h1 align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/memorax-code-lockup-dark.svg">

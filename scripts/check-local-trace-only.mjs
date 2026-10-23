@@ -31,6 +31,7 @@ const reviewedNetworkSources = new Set([
   "packages/ts/memorax-code-backend/src/lifecycle/backend/status.ts",
   "packages/ts/memorax-code-backend/src/memory/automatic-writeback.ts",
   "packages/ts/memorax-code-backend/src/memory/cli.ts",
+  "packages/ts/memorax-code-backend/src/memory/helpful-bridge.ts",
   "packages/ts/memorax-code-backend/src/memory/harness-runtime.ts",
   "packages/ts/memorax-code-backend/src/memory/search-guidance.ts",
   "packages/ts/memorax-code-backend/src/memory/writeback-buffer.ts",
@@ -83,6 +84,9 @@ const providerTransportSources = new Set([
 ]);
 
 const reviewedTraceAwareOutboundSources = new Set([
+  // Only exact current-turn correlation is sent to the authenticated local Backend.
+  // QA comes separately from validated native materialization, never trace files.
+  "packages/ts/memorax-code-backend/src/memory/helpful-bridge.ts",
   // Reads the current turn only to resolve workspace scope; memory payload
   // construction remains centralized in provider/memorax/adapter.ts.
   "packages/ts/memorax-code-backend/src/memory/cli.ts",

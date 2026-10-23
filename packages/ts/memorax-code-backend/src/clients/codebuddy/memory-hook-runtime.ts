@@ -83,6 +83,7 @@ export function createCodeBuddyMemoryHookRuntime(options: Options = {}): CodeBud
         metadata: entry,
         resolveRepositoryMemory: async () => repositoryMemory,
         userText: transcript.turn.userPrompt,
+        sessionTurnIndex: transcript.turn.sessionTurnIndex,
         assistantText: transcript.turn.assistantReply,
         userTimestamp: transcript.turn.userTimestamp,
         assistantTimestamp: transcript.turn.assistantTimestamp,

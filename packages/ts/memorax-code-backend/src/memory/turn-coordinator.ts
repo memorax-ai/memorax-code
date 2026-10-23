@@ -15,6 +15,7 @@ import {
 } from "../repository/scope.js";
 import type { TraceContext } from "../trace/context.js";
 import { parseNativeMessageTimestamp } from "../shared/message-time.js";
+import { releaseHelpfulSearches, type HelpfulSearch } from "./helpful.js";
 
 export type MemoryTurnClient = AutomaticMemoryWritebackClient;
 
@@ -37,6 +38,7 @@ export type MemoryTurnStart = MemoryTurnKey & Readonly<{
 }>;
 
 export type MemoryTurnState = Omit<MemoryTurnStart, "repositoryMemory"> & Readonly<{
+  helpfulSearches?: HelpfulSearch[];
   repositoryScope?: RepositoryMemoryScope;
   repositoryScopeError?: string;
   repositoryScopeReason?: "config_missing" | RepositoryMemoryScopeFailureReason;
@@ -59,6 +61,7 @@ export type MemoryTurnWritebackResult =
   };
 
 export type MemoryTurnCompletion = Readonly<AutomaticMemoryWritebackTiming & {
+  sessionTurnIndex?: number;
   key: MemoryTurnKey;
   metadata?: MemoryTurnState;
   resolveRepositoryMemory: () => Promise<ConfiguredRepositoryMemoryResult>;
@@ -69,6 +72,7 @@ export type MemoryTurnCompletion = Readonly<AutomaticMemoryWritebackTiming & {
 }>;
 
 export type MemoryMaterializedTurn = Readonly<{
+  sessionTurnIndex?: number;
   key: MemoryTurnKey;
   repositoryScope: RepositoryMemoryScope;
   userText: string;
@@ -80,6 +84,7 @@ export type MemoryTurnDiscardReason = "interrupted" | "rolled_back" | "supersede
 export type MemoryTurnCoordinatorOptions = {
   automaticWriteback: AutomaticMemoryWritebackEnqueue;
   onTurnMaterialized?: (turn: MemoryMaterializedTurn) => void;
+  onTurnStarted?: (turn: MemoryTurnState) => void;
   onTurnDiscarded?: (key: MemoryTurnKey, reason: MemoryTurnDiscardReason) => void;
   now?: () => number;
   ttlMs?: number;
@@ -100,6 +105,7 @@ export type MemoryTurnCoordinator = {
   pruneExpired(): void;
   size(client?: MemoryTurnClient): number;
   close(): void;
+  clearHelpful(): void;
 };
 
 const DEFAULT_TTL_MS = 5 * 60 * 1000;
@@ -117,7 +123,9 @@ export function createMemoryTurnCoordinator(options: MemoryTurnCoordinatorOption
 
   return {
     recordTurnStart(input) {
+      const previous = turns.get(turnKey(input));
       const state: MemoryTurnState = {
+        helpfulSearches: previous?.helpfulSearches ?? [],
         client: input.client,
         sessionId: input.sessionId,
         clientTurnId: input.clientTurnId,
@@ -140,6 +148,7 @@ export function createMemoryTurnCoordinator(options: MemoryTurnCoordinatorOption
           : {}),
       };
       turns.set(turnKey(state), state);
+      try { options.onTurnStarted?.(state); } catch { /* Optional observers cannot reject a turn. */ }
       evictOldest(turns, maxEntries);
       return state;
     },
@@ -160,6 +169,7 @@ export function createMemoryTurnCoordinator(options: MemoryTurnCoordinatorOption
         case "interrupted":
         case "rolled_back":
         case "superseded": {
+          releaseHelpfulSearches(turns.get(turnKey(key))?.helpfulSearches);
           const discarded = turns.delete(turnKey(key));
           try {
             options.onTurnDiscarded?.(key, reason);
@@ -209,6 +219,7 @@ export function createMemoryTurnCoordinator(options: MemoryTurnCoordinatorOption
       try {
         options.onTurnMaterialized?.({
           key: input.key, repositoryScope, userText: input.userText,
+          sessionTurnIndex: input.sessionTurnIndex ?? input.metadata?.sessionTurnIndex,
           assistantText: input.searchAssistantText ?? input.assistantText,
         });
       } catch {
@@ -220,6 +231,12 @@ export function createMemoryTurnCoordinator(options: MemoryTurnCoordinatorOption
         ...input.writeback,
         userText: input.userText,
         assistantText: input.assistantText,
+        helpfulTurn: {
+          turnId: input.key.clientTurnId,
+          index: input.sessionTurnIndex ?? input.metadata?.sessionTurnIndex,
+          complete: true,
+          searches: input.metadata?.helpfulSearches ?? [],
+        },
         // Metadata.createdAt is a start observation, not native message time.
         // Keep that distinction even when a legacy record has no timestamp.
         userTimestamp: userTimestamp
@@ -250,7 +267,11 @@ export function createMemoryTurnCoordinator(options: MemoryTurnCoordinatorOption
     },
     close() {
       clearInterval(timer);
+      for (const turn of turns.values()) releaseHelpfulSearches(turn.helpfulSearches);
       turns.clear();
+    },
+    clearHelpful() {
+      for (const turn of turns.values()) releaseHelpfulSearches(turn.helpfulSearches);
     },
   };
 }
@@ -280,13 +301,17 @@ function turnMetadataDisposition(
   // Scope resolution can yield while the same Turn key is re-registered.
   // Consume only the completion's original snapshot, preserving replacement state.
   if (!consume || !completion.metadata || current !== completion.metadata) return "retained";
+  releaseHelpfulSearches(current.helpfulSearches);
   turns.delete(key);
   return "consumed";
 }
 
 function cleanupExpired(turns: Map<string, MemoryTurnState>, nowMs: number, ttlMs: number): void {
   for (const [key, turn] of turns.entries()) {
-    if (nowMs - turn.createdAt > ttlMs) turns.delete(key);
+    if (nowMs - turn.createdAt > ttlMs) {
+      releaseHelpfulSearches(turn.helpfulSearches);
+      turns.delete(key);
+    }
   }
 }
 
@@ -294,6 +319,7 @@ function evictOldest(turns: Map<string, MemoryTurnState>, maxEntries: number): v
   while (turns.size > maxEntries) {
     const oldest = turns.keys().next().value;
     if (typeof oldest !== "string") return;
+    releaseHelpfulSearches(turns.get(oldest)?.helpfulSearches);
     turns.delete(oldest);
   }
 }

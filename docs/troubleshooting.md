@@ -1039,3 +1039,25 @@ Never attach API keys, Backend tokens, environment files, complete client
 configuration, private transcripts, raw trace files, or unreviewed local
 paths. Redact usernames, workspace paths, remote URLs, and content before
 sharing.
+
+## Helpful and deferred Codex final replies
+
+`deferred: true` with `assistant_message_missing` means a Codex final record was
+not yet materialized. Five bounded rereads wait 100/250/500/1000/2000 ms; they
+retain exact session/turn/scope, never follow the latest turn. Exhaustion emits
+a local `deferred_assistant_message_missing` writeback diagnostic when writeback
+diagnostics are enabled. Stopping Backend cancels outstanding reads.
+
+Helpful requires automatic Add but is independent of OSS. A successful Search may still have no
+evaluation if asynchronous candidate registration failed, the native window
+crossed an Add batch, was incomplete/truncated, lacked a reliable ordinal,
+metadata/attachment capacity was exceeded, Add failed, or either process exited.
+Server-side missing snapshots, unavailable candidates and a full pool also skip evaluation.
+These are possible boundaries, not diagnoses without evidence. HTTP 202 means
+Add accepted; absent feedback and NULL do not mean negative feedback. The client
+does not send independent evaluation requests, poll, or backfill history.
+With a Search on every turn, eight-turn batches and K=2 skip 2/8 Searches at
+batch boundaries (25% under those assumptions, not a measured deployment rate).
+Use actual Search IDs as the denominator and content-free skip diagnostics;
+do not infer a reason from absent feedback alone.
+

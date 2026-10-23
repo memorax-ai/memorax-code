@@ -47,6 +47,29 @@ test("Codex session turn index fails closed for session and turn mismatches", ()
   }), { ok: false, reason: "turn_not_found" });
 });
 
+test("task_started before turn_context still establishes a native user-turn ordinal", () => {
+  const transcript = jsonLines([
+    sessionMeta("session-1"),
+    taskStarted("turn-1"),
+    turnContext("turn-1"),
+    taskComplete("turn-1"),
+    taskStarted("background-task"),
+    toolCall("background-call"),
+    taskComplete("background-task"),
+    taskStarted("turn-2"),
+    turnContext("turn-2"),
+    turnContext("turn-2"),
+  ]);
+  for (const [turnId, sessionTurnIndex] of [["turn-1", 1], ["turn-2", 2]]) {
+    assert.deepEqual(codexSessionTurnIndexFromJsonLines(transcript, {
+      sessionId: "session-1", turnId,
+    }), { ok: true, sessionTurnIndex });
+  }
+  assert.deepEqual(codexSessionTurnIndexFromJsonLines(transcript, {
+    sessionId: "session-1", turnId: "background-task",
+  }), { ok: false, reason: "turn_not_found" });
+});
+
 test("Codex session turn index reports an unavailable transcript without throwing", async () => {
   const result = await readCodexSessionTurnIndex({
     transcriptPath: "/path/that/does/not/exist.jsonl",

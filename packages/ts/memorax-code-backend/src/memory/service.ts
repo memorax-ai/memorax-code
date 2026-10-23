@@ -1,4 +1,9 @@
 import { createAutomaticMemoryWritebackRuntime } from "./automatic-writeback.js";
+import { createHelpfulBudget, helpfulSettings } from "./helpful.js";
+import { isRecord } from "../shared/record.js";
+import { memoraxConfigFromEnv } from "../provider/memorax/config.js";
+import { loadMemoraxCodeConfig, defaultMemoraxCodeHome } from "../config/memorax-code.js";
+import type { MemoryTurnKey } from "./turn-coordinator.js";
 import { recordWritebackRejection } from "./background-diagnostics.js";
 import {
   createCodexMemoryHookRuntime,
@@ -52,6 +57,7 @@ export type MemoryService = {
   recordTurnStart(command: TurnStartCommand): Promise<MemoryHookTurnStartResult>;
   evaluateSearchGuidance: MemorySearchGuidanceRuntime["evaluate"];
   searchGuidanceStatus(): { enabled: boolean };
+  registerHelpfulSearch(body: unknown): { accepted: boolean };
   recordPreCompact(command: CursorPreCompactCommand): Promise<CursorMemoryHookPreCompactResult>;
   writebackTurn(command: WritebackCommand): Promise<MemoryHookWritebackResult>;
   drain(): Promise<void>;
@@ -60,12 +66,23 @@ export type MemoryService = {
 
 export function createMemoryService(options: MemoryServiceOptions = {}): MemoryService {
   const searchGuidance = createMemorySearchGuidanceRuntime(options);
+  const helpfulHome = options.memoraxCodeHome ?? defaultMemoraxCodeHome(options.env);
+  const helpfulBudget = createHelpfulBudget();
+  const helpfulEnabled = () => {
+    const enabled = helpfulSettings(helpfulHome).enabled;
+    if (!enabled) {
+      turnCoordinator.clearHelpful();
+      automaticWriteback.clearHelpful();
+    }
+    return enabled;
+  };
   const pendingQuotaNotice = createPendingQuotaNoticeRuntime({
     claimQuotaNotice: options.claimQuotaNotice,
     diagnosticLogger: options.diagnosticLogger,
     env: options.env,
   });
   const automaticWriteback = createAutomaticMemoryWritebackRuntime({
+    helpfulEnabled,
     memoraxCodeHome: options.memoraxCodeHome,
     diagnosticLogger: options.diagnosticLogger,
     queueQuotaNotice: pendingQuotaNotice.queue,
@@ -75,8 +92,16 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
   });
   const turnCoordinator = createMemoryTurnCoordinator({
     automaticWriteback: automaticWriteback.enqueue,
-    onTurnMaterialized: searchGuidance.completeTurn,
-    onTurnDiscarded: searchGuidance.discardTurn,
+    onTurnStarted() {
+      helpfulEnabled();
+    },
+    onTurnMaterialized(turn) {
+      searchGuidance.completeTurn(turn);
+      helpfulEnabled();
+    },
+    onTurnDiscarded(key, reason) {
+      searchGuidance.discardTurn(key, reason);
+    },
     now: options.now,
     ttlMs: options.ttlMs,
     maxEntries: options.maxEntries,
@@ -140,7 +165,7 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
   });
   async function observeWriteback(command: WritebackCommand, pending: Promise<MemoryHookWritebackResult>): Promise<MemoryHookWritebackResult> {
     const result = await pending;
-    if (!result.scheduled) {
+    if (!result.scheduled && !("deferred" in result && result.deferred)) {
       recordWritebackRejection(result.reason, {
         memoraxCodeHome: options.memoraxCodeHome,
         env: options.env,
@@ -156,6 +181,29 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
   }
   let closed = false;
   return {
+    registerHelpfulSearch(body) {
+      if (!isRecord(body)
+        || body.version !== 1
+        || typeof body.client !== "string"
+        || typeof body.sessionId !== "string"
+        || typeof body.clientTurnId !== "string") {
+        return { accepted: false };
+      }
+      const turn = turnCoordinator.getTurn(body as MemoryTurnKey);
+      const config = memoraxConfigFromEnv(options.env, loadMemoraxCodeConfig(helpfulHome));
+      if (closed || !config.ok || !helpfulEnabled() || !turn?.repositoryScope || !turn.helpfulSearches) {
+        return { accepted: false };
+      }
+      if (turn.helpfulSearches.some(search => search.search_id === body.search_id)) {
+        return { accepted: false };
+      }
+      const search = helpfulBudget.reserve(body.search_id, body.context_turns_k);
+      if (!search) {
+        return { accepted: false };
+      }
+      turn.helpfulSearches.push(search);
+      return { accepted: true };
+    },
     evaluateSearchGuidance: searchGuidance.evaluate,
     searchGuidanceStatus() {
       return { enabled: searchGuidance.isEnabled() };
@@ -207,6 +255,7 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
       return unsupportedMemoryHookCommand(command);
     },
     async drain() {
+      await codexHook.drain();
       await automaticWriteback.drain();
     },
     close() {

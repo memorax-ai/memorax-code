@@ -541,7 +541,7 @@ test("memory service records confirmed completion failures without changing Hook
       const command = { version: 1, client: "codex", sessionId, turnId, transcriptPath,
         cwd: scenario.wrongWorkspace ? join(root, "missing-workspace") : workspace };
       const result = await service.writebackTurn({ ...command, lastAssistantMessage: "Private answer marker." });
-      assert.deepEqual(result, { ok: true, scheduled: false, reason: scenario.reason });
+      assert.deepEqual(result, { ok: true, scheduled: false, reason: scenario.reason, ...(scenario.incomplete ? { deferred: true } : {}) });
       await service.drain();
       assert.equal(requests.length, 0);
       if (scenario.blocked) {

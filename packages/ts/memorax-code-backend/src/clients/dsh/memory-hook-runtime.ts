@@ -140,6 +140,7 @@ export function createDshMemoryHookRuntime(
       });
 
       const writeback = await harness.completeTurn({
+        sessionTurnIndex: materialized.turn.turn,
         sessionId: command.sessionId,
         clientTurnId: String(command.turn),
         metadata: entry,
