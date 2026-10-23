@@ -1,6 +1,138 @@
-# MemoraX Code Coding Memory Add
+# MemoraX Code Coding and Work Memory Add
 
-Use these instructions only to add reusable coding knowledge through `memorax-cli`. Invoke the skill as `$memorax-code` in Codex or `/memorax-code` in Claude Code. In OpenCode, ask the agent to use the `memorax-code` skill by name. Do not route memory operations through the lifecycle-only `memorax-code` CLI. Do not use this authority for personal procedures, interaction preferences, generated repository facts, or one-off task details.
+Use these instructions to add reusable coding knowledge or user-requested work dialogue and full document snapshots through `memorax-cli`. Invoke the skill as `$memorax-code` in Codex or `/memorax-code` in Claude Code. In OpenCode, ask the agent to use the `memorax-code` skill by name. Do not route memory operations through the lifecycle-only `memorax-code` CLI. Do not use this authority for personal procedures, interaction preferences, generated repository facts, or one-off task details.
+
+## Work Memory Add
+
+Select the content type from the source being saved, not from the client name
+or search results. In any client, use `--content-type work --mode default`
+for grounded office requirements, discussions, and decisions. Use
+`--content-type code --mode pre_summarized` for reusable coding lessons. The
+service applies Chat rules to work or dialogue; do not wrap work facts in a
+`CODE_AGENT_MEMORY` card or promote an unresolved request into a completed fact.
+The coding eligibility and card guidance below applies only to coding memory.
+
+```bash
+memorax-cli add --content-type work --mode default \
+  --memory 'The user requested the travel reimbursement approval threshold; the policy still needs verification.' \
+  --type episodic --reason 'Preserve the office requirement requested by the user.'
+```
+
+Use `--content-type auto --mode default` when MemoraX should classify an
+ordinary completed discussion as code or work. Auto and work accept only default
+mode. Omitted content type defaults to auto/default in every client. Do not add a
+coding card or code extraction instructions to auto/work content.
+
+### Binary document imports
+
+Use this workflow whenever the user sends a supported PDF, DOCX, XLSX or PPTX.
+Sending an eligible file triggers document Add, including a bare attachment
+without any accompanying text. Do not ask its purpose or require a summary,
+analysis, question, or "save to MemoraX" instruction before importing it. Process
+each eligible file in a multi-file submission independently. Apply these
+boundaries before uploading:
+
+- The original file must be readable, nonempty, in a supported format and no
+  larger than 150 MiB. Skip unsupported or invalid files with a clear reason;
+  continue processing the other eligible files.
+- If the user says not to save, or requests temporary-only use, do not Add the
+  document or route its contents through dialogue Add. Use available local
+  reading tools; explain any limitation without silently importing it.
+- Credential files supplied for configuration, including AccessKey exports,
+  secrets and `.env` files, are not memory documents. Never import their contents.
+- Import the files the user actually sends, not files merely selected or visible
+  in an editor, nor files found by scanning the workspace.
+
+Briefly tell the user that the document will be imported into MemoraX for parsing
+and later retrieval, then proceed without another confirmation. Use the original
+file bytes, up to 150 MiB. If the host has not exposed a readable local file,
+ask for access to the file; do not invent a path or upload scraped tool output.
+
+Before a new upload, check the current task's known receipts. Reuse a succeeded
+receipt only when it belongs to the same account/workspace scope and the same
+unchanged file, verified from the original upload or a matching SHA-256. A
+filename alone is not identity evidence. For a known pending task, query its
+existing task ID instead of uploading again. Do not claim cross-session
+deduplication: the plugin has no persistent file-to-document identity cache.
+
+For a first import with no previous task or document identity, allocate a new
+opaque document UUID and a separate input UUID with a UUID generator, and use
+`expected_revision=0`. This allocates a new identity; it does not infer an
+existing document ID from a filename. Preserve the IDs and receipt in the task
+context. For an update or retry, use the confirmed identity and revision rules
+below; missing update identity requires clarification, not a new document.
+
+Pass those actual IDs in place of the illustrative values below:
+
+```bash
+memorax-cli add --document-file './policy.pdf' --document-id 'policy' \
+  --input-id '12345678-1234-4234-8234-123456789abc' --expected-revision 0 --json
+```
+
+When the current answer depends on this document, wait for its successful import
+before searching. Use the task ID returned by Add, not the placeholder below:
+
+```bash
+memorax-cli add-status --task-id 'TASK_ID' --wait --wait-timeout-ms 300000 --json
+```
+
+After `succeeded`, read [memorax-search.md](memorax-search.md) and search with
+`--sources document --document-id` using the confirmed document ID. Form the
+query from the requested summary, analysis or question, and answer from the
+returned evidence. Partial retrieved chunks do not establish full-document
+coverage; state missing evidence rather than inventing the rest. On failure or
+wait timeout, report the actual state and preserve the task ID; do not claim
+the document is searchable. For bare attachments or storage-only requests,
+return the accepted task receipts without waiting by default; do not invent a
+question or run Search until the user requests content from the documents.
+
+This sends the original bytes for server-side parsing. Keep `--memory-file` for
+complete UTF-8 text snapshots. Binary upload does not require `--type` or `--reason`.
+For multiple files use `--document-manifest` with a JSON array; each entry contains
+`path`, `document_id`, `input_id`, `expected_revision` and optional `sha256`.
+Paths are relative to the manifest; every input ID must be unique. Each entry
+has an independent result, so preserve successful receipts when another fails.
+
+A new snapshot needs a fresh input UUID and the last confirmed revision (`0`
+for creation). Never guess revisions. An unchanged user-authorized retry must
+reuse the exact file, input ID, revision, scope, output language and optional
+checksum. Upload uses the input ID as its request idempotency key. Do not retry
+an uncertain submission automatically or generate a replacement ID for it.
+`pending: true` only confirms submission; `queued`, `parsing`, and `indexing`
+are unfinished. Only `succeeded` confirms the returned revision. `failed` and
+`submission_unknown` are not successful ingestion. Optional `summary_state`
+does not replace ingestion status. `--wait` polls the existing task and never
+reuploads; on wait timeout keep the task ID and resume status checks later.
+
+### Full document snapshots
+
+For an explicitly requested document import or replacement, send a complete
+UTF-8 text file with caller-supplied stable identity and revision:
+
+```bash
+memorax-cli add --content-type document --memory-file './policy.txt' \
+  --document-id 'policy' --input-id '12345678-1234-4234-8234-123456789abc' \
+  --expected-revision 0
+```
+
+Use a fresh UUID for a new snapshot and the last confirmed document revision
+(`0` when creating it). The file's full text is preserved, including BOM,
+whitespace and line endings, up to 2,000,000 Unicode characters. This path does
+not need `--type` or `--reason` and bypasses the ordinary memory size limit.
+Never summarize, trim, prefix, truncate, or wrap the document in a coding card.
+Do not infer IDs or revisions, parse binary files, scrape tool output, watch
+files, or simulate indexing by sending document text as dialogue. Empty text
+requires explicit `--allow-empty` and user intent to clear that document.
+
+A user-authorized retry of the identical snapshot must reuse the exact input
+ID, expected revision, text, scope, and output language. Do not automatically
+retry after an uncertain result. No local version cache is maintained. A receipt
+with `pending: true` acknowledges submission and exposes `task_id`; it does not
+confirm completed extraction or the new revision. Completed synchronous results
+preserve structured `events`; use their document ID/revision if present. Never
+guess a revision from asynchronous task status or human-readable memory text.
+The scope, quoting, failure, and quota rules below apply to all Add routes. On
+Windows PowerShell use `memorax-cli.cmd`.
 
 ## Eligible Knowledge
 
@@ -29,13 +161,13 @@ Run from the active task workspace. Pass the memory and reason directly. Put eve
 Windows PowerShell:
 
 ```powershell
-memorax-cli.cmd add --memory 'Concise reusable memory.' --type procedural --reason 'Capture reusable coding memory.'
+memorax-cli.cmd add --memory 'Concise reusable memory.' --content-type code --mode pre_summarized --type procedural --reason 'Capture reusable coding memory.'
 ```
 
 macOS and Linux:
 
 ```bash
-memorax-cli add \
+memorax-cli add --content-type code --mode pre_summarized \
   --memory 'Concise reusable memory.' \
   --type procedural \
   --reason 'Capture reusable coding memory.'
@@ -65,7 +197,7 @@ Keep the card under 1,100 characters when practical. It must guide future invest
 Pass a completed multi-line card as one single-quoted `--memory` argument. On Windows PowerShell, the command must start with `memorax-cli.cmd add`; on macOS and Linux, use the form shown below.
 
 ```bash
-memorax-cli add \
+memorax-cli add --content-type code --mode pre_summarized \
   --memory 'CODE_AGENT_MEMORY
 repo: owner/name
 scope: module/path::symbol

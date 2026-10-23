@@ -6,6 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import {
   assertNoSensitivePayload, check, createNativeHarness, fixtureKey, fixtureModel, fixtureProvider, fixtureUser, waitFor,
 } from "./opencode-native-support.mjs";
+import { assertAutomaticWritebackPayload } from "../codex/codex-native-content-check.mjs";
 
 // V1 permission/session APIs, exercised against the installed native client.
 // OpenCode permissions are application policy, not an operating-system sandbox.
@@ -244,8 +245,7 @@ async function verifyWriteback({ sessionId, user, terminal, completed }) {
     && body.metadata.memorax_code_base_user_id === fixtureUser
     && body.metadata.memorax_code_workspace === basename(harness.workspace)
     && body.metadata.memorax_code_memory_scope === "workspace-name.v1", "PERMISSION_WRITEBACK_SCOPE_MISMATCH");
-  check(Array.isArray(body.messages) && body.messages.length >= 2 && body.messages[0].role === "user"
-    && body.messages[1].role === "assistant", "PERMISSION_WRITEBACK_MESSAGES_MISMATCH");
+  assertAutomaticWritebackPayload(body);
   const userText = visibleText(user), assistantText = visibleText(terminal);
   check(userText && body.messages[0].content.includes(userText), "PERMISSION_NATIVE_USER_CONTENT_INCOMPLETE");
   check(assistantText && body.messages[1].content.includes(assistantText), "PERMISSION_NATIVE_ASSISTANT_CONTENT_INCOMPLETE");
@@ -254,7 +254,7 @@ async function verifyWriteback({ sessionId, user, terminal, completed }) {
   check(body.metadata.memorax_code_timestamp_sources?.slice(0, 2).every((source) => source === "native")
     && body.metadata.memorax_code_timestamp_sources.length === body.messages.length, "PERMISSION_TIME_AUTHORITY_MISMATCH");
   const hash = (text) => createHash("sha256").update(text).digest("hex").slice(0, 16);
-  check(body.metadata.idempotency_key === `automatic:opencode:${hash(body.user_id)}:${sessionId}:${hash(body.messages[0].content)}:${hash(body.messages[1].content)}`,
+  check(body.metadata.idempotency_key === `automatic:opencode:${hash(body.user_id)}:${sessionId}:${hash(body.messages[0].content)}:${hash(body.messages[1].content)}:auto`,
     "PERMISSION_WRITEBACK_IDEMPOTENCY_MISMATCH");
   const serialized = JSON.stringify(body);
   for (const test of cases.filter((test) => test.id !== current.test.id)) {

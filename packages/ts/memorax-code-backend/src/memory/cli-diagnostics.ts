@@ -26,7 +26,7 @@ const LOCAL_MESSAGES: Record<string, string> = {
   MEMORY_CLI_INTERNAL: "The memory command failed unexpectedly.",
 };
 
-export function diagnoseMemoryCliFailure<T extends MemoryCliFailureDetails & { action: "memory.search" | "memory.add" }>(
+export function diagnoseMemoryCliFailure<T extends MemoryCliFailureDetails & { action: "memory.search" | "memory.add" | "memory.add-status" }>(
   failure: T,
   home: string,
   traceContext?: TraceContext,
@@ -36,7 +36,9 @@ export function diagnoseMemoryCliFailure<T extends MemoryCliFailureDetails & { a
   const stage = failure.stage ?? (failure.errorKind === "response" ? "response" : failure.errorKind ? "request" : "input");
   const remote = stage === "request" || stage === "response" || stage === "internal";
   const impact = remote
-    ? failure.action === "memory.add"
+    ? failure.action === "memory.add-status"
+      ? "Document task completion could not be confirmed."
+      : failure.action === "memory.add"
       ? "MemoraX Add acceptance could not be confirmed."
       : "No Search result was returned."
     : "The request was not sent to MemoraX.";

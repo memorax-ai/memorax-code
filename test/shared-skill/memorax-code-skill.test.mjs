@@ -68,6 +68,11 @@ test("memorax-code references keep authority and operation boundaries explicit",
   const repoUpdate = readSkillFile("references/repo-update.md");
 
   assert.match(memoraxSearch, /memorax-cli search --query '/);
+  assert.match(readSkillFile("SKILL.md"), /### Work Memory/);
+  assert.match(memoraxSearch, /--sources document/);
+  assert.match(memoraxSearch, /--sources dialogue/);
+  assert.match(memoraxSearch, /--document-id 'expense-policy'/);
+  assert.match(memoraxSearch, /do not\s+retry without the restriction/);
   assert.match(memoraxSearch, /`workspace_scope_mismatch` or `workspace_scope_unavailable`/);
   assert.match(memoraxSearch, /Do not change the CLI working directory and retry/);
   assert.match(memoraxSearch, /`workspaceScopeFallbackReason: git_metadata_invalid`/);
@@ -81,7 +86,7 @@ test("memorax-code references keep authority and operation boundaries explicit",
   assert.match(memoraxAdd, /`workspaceScopeFallbackReason: git_metadata_invalid`/);
   assert.match(memoraxAdd, /successful Add returns `quotaNotice`/);
   assert.match(memoraxAdd, /Never run `memorax-code account --show-mark-id` for the user/);
-  assert.doesNotMatch(memoraxAdd, /--memory-file/);
+  assert.doesNotMatch(memoraxAdd.split("## Eligible Knowledge")[1], /--memory-file/);
   assert.match(repoRead, /Current implementation claims and code edits still require live-code verification/);
   assert.match(repoBuild, /scripts\/repo-memory\.mjs collect/);
   assert.match(repoUpdate, /scripts\/repo-memory\.mjs detect-updates/);

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { after, test } from "node:test";
 import { mkdtemp, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -10,6 +11,7 @@ after(() => rm(writebackHome, { recursive: true, force: true }));
 
 const WRITEBACK_ENV = {
   MEMORAX_CODE_HOME: writebackHome,
+  MEMORAX_CODE_MEMORAX_ADD_CONTENT_TYPE: "code",
   MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
   MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "false",
   MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
@@ -861,3 +863,113 @@ async function readDiagnostics(home) {
   return await Promise.all(names.filter((name) => name.endsWith(".json"))
     .map(async (name) => JSON.parse(await readFile(join(directory, name), "utf8"))));
 }
+
+test("automatic work dialogue uses chat routing without code chunks and freezes buffered routes", async () => {
+  const requests = [];
+  const runtime = createAutomaticMemoryWritebackRuntime();
+  const base = {
+    client: "workbuddy", sessionKey: "work-routing", repositoryScope: REPOSITORY_SCOPE,
+    userText: "What is the expense approval threshold?", assistantText: "I will check the policy.",
+    fetchImpl: memoraxFetch(requests),
+    env: { ...WRITEBACK_ENV, MEMORAX_CODE_MEMORAX_ADD_CONTENT_TYPE: "dialogue", MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "true",
+      MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_TURNS: "10", MEMORAX_CODE_MEMORY_WRITEBACK_CHUNK_MAX_CHARS: "10" },
+  };
+  try {
+    assert.deepEqual(runtime.enqueue(base), { accepted: true });
+    // The same text under a different route must neither merge nor deduplicate.
+    assert.deepEqual(runtime.enqueue({ ...base, env: { ...base.env, MEMORAX_CODE_MEMORAX_ADD_CONTENT_TYPE: "code" } }), { accepted: true });
+    await runtime.drain();
+    const dialogue = requests.filter(({ body }) => body.content_type === "dialogue");
+    const code = requests.filter(({ body }) => body.content_type === "code");
+    assert.equal(dialogue.length, 1);
+    assert.ok(code.length > 0);
+    assert.equal(dialogue[0].body.mode, "default");
+    assert.equal(dialogue[0].body.chunk, undefined);
+    assert.deepEqual(dialogue[0].body.messages.map(({ content }) => content), [base.userText, base.assistantText]);
+    assert.ok(code.every(({ body }) => body.mode === "default"));
+  } finally { runtime.close(); }
+});
+
+test("automatic routing honors dialogue configuration for coding clients and rejects document configuration", async () => {
+  const requests = [];
+  const runtime = createAutomaticMemoryWritebackRuntime();
+  const base = { client: "codex", sessionKey: "configured-work", repositoryScope: REPOSITORY_SCOPE,
+    userText: "Discuss expense approval.", assistantText: "Approval is pending.", fetchImpl: memoraxFetch(requests) };
+  try {
+    assert.deepEqual(runtime.enqueue({ ...base, env: { ...WRITEBACK_ENV, MEMORAX_CODE_MEMORAX_ADD_CONTENT_TYPE: "dialogue" } }), { accepted: true });
+    assert.deepEqual(runtime.enqueue({ ...base, env: { ...WRITEBACK_ENV, MEMORAX_CODE_MEMORAX_ADD_CONTENT_TYPE: "document" } }), { accepted: false, reason: "decision_error" });
+    await runtime.drain();
+    assert.equal(requests[0].body.content_type, "dialogue");
+    assert.equal(requests.length, 1);
+  } finally { runtime.close(); }
+});
+
+
+test("automatic code writes preserve legacy deduplication keys in immediate and buffered dispatch", async () => {
+  const hash = (value) => createHash("sha256").update(value).digest("hex").slice(0, 16);
+  for (const buffered of [false, true]) {
+    const requests = [];
+    const runtime = createAutomaticMemoryWritebackRuntime();
+    try {
+      const options = { client: "codex", sessionKey: "legacy-code", repositoryScope: REPOSITORY_SCOPE,
+        userText: "Fix the parser", assistantText: "The parser is fixed", fetchImpl: memoraxFetch(requests),
+        env: { ...WRITEBACK_ENV, MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: String(buffered) } };
+      assert.deepEqual(runtime.enqueue(options), { accepted: true });
+      assert.deepEqual(runtime.enqueue(options), { accepted: true });
+      await runtime.drain();
+      assert.equal(requests.length, 1);
+      const prefix = `${buffered ? "automatic-buffer:v1" : "automatic"}:codex:${hash(REPOSITORY_SCOPE.effectiveUserId)}:legacy-code:`;
+      const digest = buffered ? hash("user:Fix the parser\nassistant:The parser is fixed") : `${hash(options.userText)}:${hash(options.assistantText)}`;
+      assert.equal(requests[0].body.metadata.idempotency_key, prefix + digest);
+      assert.equal(requests[0].body.content_type, "code");
+      assert.equal(requests[0].body.mode, "default");
+    } finally { runtime.close(); }
+  }
+});
+
+for (const client of ["codex", "workbuddy", "qoder"]) {
+  test(`auto and work dispatch each completed ${client} turn independently without code chunks`, async () => {
+    for (const route of [undefined, "auto", "work"]) {
+      const requests = [];
+      const runtime = createAutomaticMemoryWritebackRuntime();
+      try {
+        for (const turn of ["one", "two"]) {
+          assert.deepEqual(runtime.enqueue({ client, sessionKey: "auto-session",
+            userText: `Discuss ${turn}`, assistantText: `Answer ${turn}`, repositoryScope: REPOSITORY_SCOPE,
+            env: { ...WRITEBACK_ENV, MEMORAX_CODE_MEMORAX_ADD_CONTENT_TYPE: route,
+              MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "true", MEMORAX_CODE_MEMORY_WRITEBACK_CHUNK_MAX_CHARS: "5" },
+            fetchImpl: memoraxFetch(requests),
+          }), { accepted: true });
+        }
+        await runtime.drain();
+        assert.equal(requests.length, 2);
+        for (const { body } of requests) {
+          assert.equal(body.content_type, route ?? "auto");
+          assert.equal(body.mode, "default");
+          assert.equal(body.chunk, undefined);
+          assert.equal(body.code_extraction_instructions, undefined);
+          assert.equal(body.messages.length, 2);
+          assert.ok(body.messages.every((message) => Number.isFinite(message.timestamp)));
+          assert.equal(body.session_id, "auto-session");
+          assert.equal(body.metadata.source, "memorax-code");
+        }
+      } finally { runtime.close(); }
+    }
+  });
+}
+
+test("auto and work reject oversized completed turns before clipping or dispatch", async () => {
+  for (const route of ["auto", "work"]) {
+    const requests = [];
+    const runtime = createAutomaticMemoryWritebackRuntime();
+    try {
+      assert.deepEqual(runtime.enqueue({ client: "codex", sessionKey: "oversized",
+        userText: "Long user text", assistantText: "answer", repositoryScope: REPOSITORY_SCOPE,
+        env: { ...WRITEBACK_ENV, MEMORAX_CODE_MEMORAX_ADD_CONTENT_TYPE: route,
+          MEMORAX_CODE_MEMORY_WRITEBACK_MAX_MESSAGE_CHARS: "10" }, fetchImpl: memoraxFetch(requests),
+      }), { accepted: false, reason: "message_too_long" });
+      await runtime.drain();
+      assert.equal(requests.length, 0);
+    } finally { runtime.close(); }
+  }
+});

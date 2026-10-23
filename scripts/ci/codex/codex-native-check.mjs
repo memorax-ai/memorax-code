@@ -5,8 +5,8 @@ import { mkdir, readFile, readdir, realpath, stat } from "node:fs/promises";
 import { basename, delimiter, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { check, createNativeHarness, fixtureKey, fixtureModel, fixtureUser, searchResult, sendResponses, stopNativeProcessTree, waitFor } from "./codex-native-support.mjs";
-import { assertCompleteText, assertNoForeignContent, assertSearchResult, assertSkillReferenceContract,
-  assertWritebackMessages, expectedSearchAnswer, redactExpectedFixtureText, selectNativeTurnContent } from "./codex-native-content-check.mjs";
+import { assertAutomaticWritebackPayload, assertCompleteText, assertNoForeignContent, assertSearchResult, assertSkillReferenceContract,
+  expectedSearchAnswer, redactExpectedFixtureText, selectNativeTurnContent } from "./codex-native-content-check.mjs";
 
 const report = { status: "FAIL", scope: "native_codex_installed_plugin_mock_memorax", platform: process.platform,
   paidModelRequests: 0, modelQualityEvaluated: false, checks: [],
@@ -108,7 +108,7 @@ try {
     const memory = "The native Skill preserves parser validation before interpretation.";
     const reason = "Keep the verified parser validation lesson.";
     const args = operation === "search" ? ["search", "--query", query, "--json"]
-      : ["add", "--memory", memory, "--type", "procedural", "--reason", reason, "--json"];
+      : ["add", "--content-type", "code", "--mode", "pre_summarized", "--memory", memory, "--type", "procedural", "--reason", reason, "--json"];
     const command = shellCommand([executable, ...args]);
     const before = harness.memoryRequests.length;
     const prompt = `$${skillName} Use coding memory ${operation} for the parser validation lesson.`;
@@ -140,7 +140,7 @@ try {
     ] });
     const request = harness.memoryRequests[before];
     // CODEX_THREAD_ID binds native scope. Without a CLI session override, Add uses the documented CLI session.
-    verifyExplicitRequest(request, { operation, value: operation === "search" ? query : memory, reason, sessionId: "memorax-cli" });
+    verifyExplicitRequest(request, { operation, value: operation === "search" ? query : memory, reason, contentType: "code", sessionId: "memorax-cli" });
     report.checks.push(`scripted Skill ${operation}: loaded router, validated installed reference executable, ran that executable on PATH and validated CLI result`);
   }
 
@@ -223,18 +223,18 @@ async function turn({ prompt, answer, sessionId, cwd = harness.workspace, expect
   const automatic = harness.memoryRequests.slice(beforeMemory).filter((request) => request.body.metadata?.idempotency_key?.startsWith("automatic:codex:"));
   check(automatic.length === 1, "EXPECTED_ONE_AUTOMATIC_ADD_PER_NATIVE_TURN");
   const body = automatic[0].body;
-  assertWritebackMessages(body.messages);
+  assertAutomaticWritebackPayload(body);
   check(body.session_id === nativeSession && body.metadata.memorax_code_session_id === nativeSession, "NATIVE_WRITEBACK_SESSION_MISMATCH");
   check(body.user_id === `${fixtureUser}@${basename(cwd)}` && body.metadata.memorax_code_workspace === basename(cwd)
     && body.metadata.memorax_code_memory_scope === "workspace-name.v1", "NATIVE_WRITEBACK_SCOPE_MISMATCH");
   const hash = (text) => createHash("sha256").update(text).digest("hex").slice(0, 16);
-  check(body.metadata.idempotency_key === `automatic:codex:${hash(body.user_id)}:${nativeSession}:${hash(body.messages[0].content)}:${hash(body.messages[1].content)}`,
+  check(body.metadata.idempotency_key === `automatic:codex:${hash(body.user_id)}:${nativeSession}:${hash(body.messages[0].content)}:${hash(body.messages[1].content)}:auto`,
     "NATIVE_WRITEBACK_IDEMPOTENCY_MISMATCH");
   expectedTurns.push({ sessionId: nativeSession, prompt, expectedPrompt, answer, cwd, body, kind });
   return nativeSession;
 }
 
-function verifyExplicitRequest(request, { operation, value, reason, sessionId }) {
+function verifyExplicitRequest(request, { operation, value, reason, sessionId, contentType = "auto" }) {
   check(request.method === "POST" && request.path === `/v1/memories/${operation}`
     && request.authorization === `Token ${fixtureKey}`, "EXPLICIT_MEMORY_TRANSPORT_MISMATCH");
   const body = request.body;
@@ -243,6 +243,8 @@ function verifyExplicitRequest(request, { operation, value, reason, sessionId })
     check(body.query === value && !Object.hasOwn(body, "session_id") && !Object.hasOwn(body, "metadata"), "EXPLICIT_SEARCH_PAYLOAD_MISMATCH");
     return;
   }
+  check(body.content_type === contentType && body.mode === (contentType === "code" ? "pre_summarized" : "default")
+    && body.async_mode === true && !Object.hasOwn(body, "chunk"), "EXPLICIT_ADD_ROUTE_MISMATCH");
   check(body.session_id === sessionId && body.metadata?.memorax_code_session_id === sessionId,
     "EXPLICIT_ADD_SESSION_MISMATCH");
   check(body.metadata.memorax_code_base_user_id === fixtureUser
@@ -252,7 +254,7 @@ function verifyExplicitRequest(request, { operation, value, reason, sessionId })
   check(JSON.stringify(body.messages?.map(({ role, content }) => ({ role, content })))
     === JSON.stringify([{ role: "user", content: value }]), "EXPLICIT_ADD_CONTENT_MISMATCH");
   const hash = createHash("sha256").update(`procedural\n${reason}\n${value}`).digest("hex").slice(0, 16);
-  check(body.metadata.idempotency_key === `memory-cli:${sessionId}:${hash}`
+  check(body.metadata.idempotency_key === `memory-cli:${sessionId}:${hash}${contentType === "code" ? "" : `:${contentType}`}`
     && body.metadata.source_detail === "memorax_code_memory_cli" && body.metadata.memory_type === "procedural"
     && body.metadata.memorax_code_memory_reason === reason, "EXPLICIT_ADD_METADATA_MISMATCH");
 }

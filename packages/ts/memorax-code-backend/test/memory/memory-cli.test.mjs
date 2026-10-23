@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { createServer } from "node:http";
 import { execFile } from "node:child_process";
 import fsPromises, { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
@@ -132,6 +133,97 @@ test("memory CLI searches within a readable non-Git workspace scope", async () =
   assert.equal(search.ok, true);
   assert.equal(requests.length, 1);
   assert.equal(requests[0].user_id, "user-1@notes");
+});
+
+test("memory CLI forwards work source restrictions without changing legacy searches", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-cli-work-search-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const workspace = join(root, "office");
+  await mkdir(workspace);
+  const env = {
+    MEMORAX_CODE_HOME: join(root, "state"),
+    MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+    MEMORAX_CODE_MEMORAX_API_KEY: "test-secret",
+    MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+  };
+  const cases = [
+    [[], {}],
+    [["--sources", "document"], { sources: ["document"], output_mode: "facts" }],
+    [["--sources", "dialogue"], { sources: ["dialogue"], output_mode: "facts" }],
+    [["--sources", "dialogue,document"], { sources: ["dialogue", "document"], output_mode: "facts" }],
+    [["--sources", "document", "--document-id", "expense-policy", "--document-id", "travel,policy"],
+      { sources: ["document"], document_ids: ["expense-policy", "travel,policy"], output_mode: "facts" }],
+  ];
+  for (const [flags, scope] of cases) {
+    const requests = [];
+    const result = await runMemoryCli(["search", "--query", "approval threshold", ...flags], {
+      cwd: workspace, env,
+      fetchImpl: async (url, init) => {
+        requests.push({ url: String(url), body: JSON.parse(init.body) });
+        return Response.json({ success: true, data: { data: [{
+          id: "policy-fact", memory: "Approval required over CNY 5000.", content_type: "document",
+        }] } });
+      },
+    });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.match(result.answer, /Approval required over CNY 5000/);
+    assert.deepEqual(requests, [{
+      url: "http://memorax.test/v1/memories/search",
+      body: { query: "approval threshold", user_id: "user-1@office", top_k: 6, k_dense: 6, k_sparse: 6, ...scope },
+    }]);
+  }
+});
+
+test("memory CLI rejects invalid work scopes without issuing a search", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-cli-invalid-work-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const env = {
+    MEMORAX_CODE_HOME: join(root, "state"),
+    MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+    MEMORAX_CODE_MEMORAX_API_KEY: "test-secret",
+    MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+  };
+  const invalid = [
+    ["--sources"], ["--sources", ""], ["--sources", "code"],
+    ["--sources", "document,"], ["--sources", "document,document"],
+    ["--sources", "document", "--sources", "dialogue"], ["--sources=document"],
+    ["--document-id"], ["--document-id", ""], ["--document-id", "expense-policy"],
+    ["--sources", "dialogue", "--document-id", "expense-policy"],
+    ["--sources", "dialogue,document", "--document-id", "expense-policy"],
+    ["--sources", "document", "--document-id", "--limit", "3"],
+    ["--sources", "document", ...Array.from({ length: 101 }, (_, index) => ["--document-id", `doc-${index}`]).flat()],
+  ];
+  for (const flags of invalid) {
+    let called = false;
+    const result = await runMemoryCli(["search", "--query", "approval threshold", ...flags], {
+      cwd: root, env,
+      fetchImpl: async () => { called = true; throw new Error("must not fetch"); },
+    });
+    assert.equal(result.ok, false, JSON.stringify(flags));
+    assert.equal(result.errorCode, "MEMORY_INPUT_INVALID", JSON.stringify(result));
+    assert.equal(called, false);
+  }
+});
+
+test("memory CLI does not broaden source restrictions after server rejection", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-cli-unsupported-work-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  let requests = 0;
+  const result = await runMemoryCli(["search", "--query", "policy", "--sources", "document"], {
+    cwd: root,
+    env: {
+      MEMORAX_CODE_HOME: join(root, "state"),
+      MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+      MEMORAX_CODE_MEMORAX_API_KEY: "test-secret",
+      MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+    },
+    fetchImpl: async () => {
+      requests += 1;
+      return Response.json({ detail: "sources unsupported" }, { status: 422 });
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(requests, 1);
 });
 
 test("memory CLI preserves non-Git turn scope across trace settings", async (t) => {
@@ -1004,6 +1096,71 @@ test("memory CLI search binds to the current WorkBuddy trace and workspace", asy
   assert.equal(events[0].trace.session_id, sessionId);
   assert.equal(events[0].trace.turn_id, "workbuddy-turn");
   assert.equal(events[0].trace.context_origin, "current-turn-file");
+  const addArgs = ["add", "--memory", "The expense approval request is pending.", "--type", "episodic", "--reason", "Save office requirement"];
+  assert.equal((await runMemoryCli(addArgs, { cwd: nestedCwd, env, fetchImpl })).ok, true);
+  assert.equal(requests[1].content_type, "auto");
+  assert.equal(requests[1].mode, "default");
+  assert.equal((await runMemoryCli([...addArgs, "--content-type", "code"], { cwd: nestedCwd, env, fetchImpl })).ok, true);
+  assert.equal(requests[2].content_type, "code");
+  assert.equal(requests[2].mode, "pre_summarized");
+  const { MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT, MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID, ...nativeEnv } = env;
+  assert.equal((await runMemoryCli(addArgs, {
+    cwd: nestedCwd, env: { ...nativeEnv, CODEBUDDY_SESSION_ID: sessionId }, fetchImpl,
+  })).ok, true);
+  assert.equal(requests[3].content_type, "auto", "manual defaults must remain automatic for native WorkBuddy bindings");
+});
+
+test("memory CLI Add preserves validated explicit WorkBuddy identity during cwd fallback", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-cli-workbuddy-fallback-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const workspace = join(root, "workspace");
+  await mkdir(workspace);
+  const env = {
+    MEMORAX_CODE_HOME: root,
+    MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+    MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+    MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+    MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT: "workbuddy",
+    MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID: "fallback-session",
+  };
+  const requests = [];
+  const options = {
+    cwd: workspace, env,
+    fetchImpl: async (_url, init) => {
+      requests.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({ success: true, data: { task_id: "add-task", status: "queued" } }));
+    },
+  };
+  const args = ["add", "--memory", "Approval is required.", "--type", "episodic", "--reason", "Save requirement"];
+  for (const scenario of ["missing", "stale"]) {
+    if (scenario === "stale") {
+      await writeCurrentTraceTurn(traceContextFromCodeBuddyHookBody({
+        client: "workbuddy", session_id: "fallback-session", turn_id: "expired-turn",
+        cwd: join(root, "old-workspace"),
+      }), { client: "workbuddy", memoraxCodeHome: root, now: () => new Date(0) });
+    }
+    const result = await runMemoryCli(args, options);
+    assert.equal(result.ok, true, scenario);
+    assert.equal(result.effectiveUserId, "user-1@workspace", scenario);
+    assert.equal(requests.at(-1).content_type, "auto", scenario);
+    assert.equal(requests.at(-1).mode, "default", scenario);
+    await assert.rejects(readFile(clientTracePaths("workbuddy", root).eventsJsonl("fallback-session"), "utf8"));
+  }
+  for (const overrides of [
+    { MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID: undefined },
+    { MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT: "unknown" },
+    { MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT: undefined, MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID: undefined, CODEBUDDY_SESSION_ID: "missing-native" },
+  ]) {
+    assert.equal((await runMemoryCli(args, { ...options, env: { ...env, ...overrides } })).ok, true);
+    assert.equal(requests.at(-1).content_type, "auto");
+  }
+  for (const override of [
+    { args: [...args, "--content-type", "code"], env },
+    { args, env: { ...env, MEMORAX_CODE_MEMORAX_ADD_CONTENT_TYPE: "code" } },
+  ]) {
+    assert.equal((await runMemoryCli(override.args, { ...options, env: override.env })).ok, true);
+    assert.equal(requests.at(-1).content_type, "code");
+  }
 });
 
 test("memory CLI keeps same-ID client bindings separate from an inherited Codex thread", async (t) => {
@@ -1369,8 +1526,8 @@ test("memory CLI add writes a short memory through MemoraX", async () => {
     assert.equal(requests[0].authorization, "Token secret");
     assert.equal(requests[0].body.user_id, "user-1@memorax-code");
     assert.equal(requests[0].body.session_id, "session-manual");
-    assert.equal(requests[0].body.content_type, "code");
-    assert.equal(requests[0].body.mode, "pre_summarized");
+    assert.equal(requests[0].body.content_type, "auto");
+    assert.equal(requests[0].body.mode, "default");
     assert.equal(requests[0].body.memory_output_language, "en");
     assert.deepEqual(requests[0].body.messages.map((message) => ({
       role: message.role,
@@ -1529,3 +1686,179 @@ async function createLinkedWorktreeMetadata(workspace, commonDir, name) {
   await writeFile(join(adminDir, "commondir"), "../..\n", "utf8");
   await writeFile(join(workspace, ".git"), `gitdir: ${adminDir}\n`, "utf8");
 }
+
+
+test("memory CLI defaults to auto while preserving explicit code mode and idempotency", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-cli-routing-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const home = join(root, "home");
+  await mkdir(home);
+  const requests = [];
+  const options = { cwd: root, env: {
+    MEMORAX_CODE_HOME: home, MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+    MEMORAX_CODE_MEMORAX_API_KEY: "secret", MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+  }, fetchImpl: async (_url, init) => {
+    requests.push(JSON.parse(init.body));
+    return new Response(JSON.stringify({ success: true, data: { task_id: "routing", status: "queued" } }));
+  } };
+  const args = ["add", "--memory", "Verified fact", "--type", "semantic", "--reason", "Retain evidence", "--session-id", "routing-session"];
+  const legacyKey = `memory-cli:routing-session:${createHash("sha256").update("semantic\nRetain evidence\nVerified fact").digest("hex").slice(0, 16)}`;
+  for (const config of ["", '[memory.add]\ncontent_type = "code"\nmode = "default"\n']) {
+    await writeFile(join(home, "config.toml"), config);
+    const result = await runMemoryCli(args, options);
+    assert.equal(result.ok, true, result.error);
+    assert.equal(requests.at(-1).content_type, config ? "code" : "auto");
+    assert.equal(requests.at(-1).mode, config ? "pre_summarized" : "default");
+    assert.equal(requests.at(-1).metadata.idempotency_key, config ? legacyKey : `${legacyKey}:auto`);
+  }
+  await writeFile(join(home, "config.toml"), '[memory.add]\ncontent_type = "dialogue"\n');
+  assert.equal((await runMemoryCli(args, options)).ok, true);
+  assert.equal(requests.at(-1).content_type, "dialogue");
+  assert.equal(requests.at(-1).mode, "default");
+  assert.equal(requests.at(-1).metadata.idempotency_key, `${legacyKey}:dialogue`);
+  const envOverride = { ...options, env: { ...options.env, MEMORAX_CODE_MEMORAX_ADD_CONTENT_TYPE: "code" } };
+  assert.equal((await runMemoryCli(args, envOverride)).ok, true);
+  assert.equal(requests.at(-1).content_type, "code");
+  assert.equal((await runMemoryCli([...args, "--content-type", "dialogue"], envOverride)).ok, true);
+  assert.equal(requests.at(-1).content_type, "dialogue");
+  const count = requests.length;
+  for (const invalid of [
+    ["--content-type", "document"], ["--content-type", "unknown"],
+    ["--content-type", "dialogue", "--mode", "pre_summarized"],
+  ]) assert.equal((await runMemoryCli([...args, ...invalid], options)).ok, false);
+  assert.equal(requests.length, count);
+});
+
+test("memory CLI explicit auto and work use default mode with pending receipts", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-cli-auto-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const requests = [];
+  const options = { cwd: root, env: { MEMORAX_CODE_HOME: join(root, "home"),
+    MEMORAX_CODE_MEMORAX_API_KEY: "secret", MEMORAX_CODE_MEMORAX_USER_ID: "user-1" },
+    fetchImpl: async (_url, init) => { requests.push(JSON.parse(init.body));
+      return Response.json({ success: true, data: { task_id: "pending-task", status: "accepted" } }); } };
+  const base = ["add", "--memory", "Verified discussion", "--type", "semantic", "--reason", "Evidence"];
+  for (const type of ["auto", "work"]) {
+    const result = await runMemoryCli([...base, "--content-type", type], options);
+    assert.equal(result.ok, true, result.error);
+    assert.equal(result.receipt.pending, true);
+    assert.equal(result.receipt.task_id, "pending-task");
+    assert.equal(requests.at(-1).content_type, type);
+    assert.equal(requests.at(-1).mode, "default");
+    for (const mode of ["raw", "pre_summarized"]) assert.equal((await runMemoryCli([...base, "--content-type", type, "--mode", mode], options)).ok, false);
+  }
+  assert.equal(requests.length, 2);
+});
+
+test("memory CLI document preserves full UTF-8 snapshot and identical retry bodies", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-cli-document-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const file = join(root, "snapshot.txt");
+  const content = `\uFEFF  Policy\r\n${"文😀".repeat(2000)}\r\n  `;
+  await writeFile(file, content);
+  const requests = [];
+  const receipt = { document_id: "policy:v1", revision: 3, status: "updated" };
+  const options = { cwd: root, env: { MEMORAX_CODE_HOME: join(root, "home"),
+    MEMORAX_CODE_MEMORAX_API_KEY: "secret", MEMORAX_CODE_MEMORAX_USER_ID: "user-1" },
+    fetchImpl: async (_url, init) => { requests.push(init.body);
+      return Response.json({ success: true, data: { status: "completed", data: [receipt] } }); } };
+  const args = ["add", "--content-type", "document", "--memory-file", file, "--document-id", "policy:v1",
+    "--input-id", "12345678-1234-4234-8234-123456789abc", "--expected-revision", "2"];
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const result = await runMemoryCli(args, options);
+    assert.equal(result.ok, true, result.error);
+    assert.equal(result.receipt.pending, false);
+    assert.deepEqual(result.receipt.events, [receipt]);
+  }
+  assert.equal(requests[0], requests[1]);
+  const body = JSON.parse(requests[0]);
+  assert.deepEqual(Object.keys(body).sort(), ["async_mode", "content_type", "documents", "memory_output_language", "mode", "user_id"]);
+  assert.equal(body.user_id, `user-1@${root.split(/[\\/]/).at(-1)}`);
+  assert.deepEqual(body.documents, [{ document_id: "policy:v1", input_id: "12345678-1234-4234-8234-123456789abc", expected_revision: 2, content }]);
+  assert.equal(Buffer.from(body.documents[0].content).equals(await readFile(file)), true);
+  for (const invalid of [
+    args.filter((_value, index) => index !== 7 && index !== 8),
+    [...args, "--memory", "mixed"], [...args, "--document-id", "duplicate"],
+    [...args, "--allow-empty", "false"],
+    args.map((value) => value === "2" ? "1.5" : value),
+    args.map((value) => value === "12345678-1234-4234-8234-123456789abc" ? "bad-uuid" : value),
+  ]) assert.equal((await runMemoryCli(invalid, options)).ok, false);
+  assert.equal(requests.length, 2);
+  await writeFile(file, "");
+  assert.equal((await runMemoryCli(args, options)).ok, false);
+  assert.equal((await runMemoryCli([...args, "--allow-empty"], options)).ok, true);
+  assert.equal(JSON.parse(requests.at(-1)).documents[0].allow_empty, true);
+  assert.equal(JSON.parse(requests.at(-1)).documents[0].content, "");
+});
+
+test("memory CLI document rejects invalid UTF-8 and unauthorized workspace before dispatch", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-cli-document-invalid-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const file = join(root, "snapshot.txt");
+  await writeFile(file, Buffer.from([0xc3, 0x28]));
+  let requests = 0;
+  const options = { cwd: root, env: { MEMORAX_CODE_HOME: join(root, "home"),
+    MEMORAX_CODE_MEMORAX_API_KEY: "secret", MEMORAX_CODE_MEMORAX_USER_ID: "user-1" },
+    fetchImpl: async () => { requests++; return Response.json({ success: true }); } };
+  const args = ["add", "--content-type", "document", "--memory-file", file, "--document-id", "policy",
+    "--input-id", "12345678-1234-4234-8234-123456789abc", "--expected-revision", "0", "--json"];
+  const invalid = await runMemoryCli(args, options);
+  assert.equal(invalid.ok, false);
+  assert.match(invalid.error, /UTF-8/);
+  await writeFile(file, "Valid document");
+  const unscoped = await runMemoryCli(args, { ...options, cwd: join(root, "missing-workspace") });
+  assert.equal(unscoped.ok, false);
+  assert.equal(requests, 0);
+});
+
+test("memory CLI bounds document file reads and accepts the complete UTF-8 byte limit", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-cli-document-file-bound-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const file = join(root, "snapshot.txt");
+  const content = "😀".repeat(2_000_000);
+  const requests = [];
+  const options = { cwd: root, env: { MEMORAX_CODE_HOME: join(root, "home"),
+    MEMORAX_CODE_MEMORAX_API_KEY: "secret", MEMORAX_CODE_MEMORAX_USER_ID: "user-1" },
+    fetchImpl: async (_url, init) => { requests.push(JSON.parse(init.body));
+      return Response.json({ success: true, data: { task_id: "bounded", status: "accepted" } }); } };
+  const args = ["add", "--content-type", "document", "--memory-file", file, "--document-id", "policy",
+    "--input-id", "12345678-1234-4234-8234-123456789abc", "--expected-revision", "0"];
+  await writeFile(file, `${content}x`);
+  const oversized = await runMemoryCli(args, options);
+  assert.equal(oversized.ok, false);
+  assert.match(oversized.error, /8000000 bytes/);
+  const directory = await runMemoryCli(args.map((value) => value === file ? root : value), options);
+  assert.equal(directory.ok, false);
+  assert.match(directory.error, /regular file/);
+  if (process.platform !== "win32") {
+    const fifo = join(root, "snapshot.fifo");
+    await execFileAsync("mkfifo", [fifo]);
+    const special = await runMemoryCli(args.map((value) => value === file ? fifo : value), options);
+    assert.equal(special.ok, false);
+    assert.match(special.error, /regular file/);
+  }
+  assert.equal(requests.length, 0);
+  await writeFile(file, content);
+  const accepted = await runMemoryCli(args, options);
+  assert.equal(accepted.ok, true, accepted.error);
+  assert.equal(Buffer.byteLength(requests[0].documents[0].content), 8_000_000);
+  assert.equal(requests[0].documents[0].content, content);
+
+  // Grow the real file after its opened-handle stat to exercise the read bound,
+  // independently of either size preflight check.
+  await writeFile(file, "initial");
+  const probe = await fsPromises.open(file, "r");
+  const prototype = Object.getPrototypeOf(probe);
+  const originalStat = prototype.stat;
+  await probe.close();
+  const statMock = t.mock.method(prototype, "stat", async function (...args) {
+    const info = await originalStat.apply(this, args);
+    await fsPromises.truncate(file, 8_000_001);
+    return info;
+  });
+  const grown = await runMemoryCli(args, options);
+  statMock.mock.restore();
+  assert.equal(grown.ok, false);
+  assert.match(grown.error, /8000000 bytes/);
+  assert.equal(requests.length, 1);
+});

@@ -690,10 +690,28 @@ flowchart LR
 `memorax-cli` enters through Backend `src/memorax-cli.ts` and
 `src/memory/cli.ts`. It does not traverse Hook HTTP or the `MemoryService`
 composition, but it reuses the repository-scope, MemoraX-provider, and
-local-trace components. Manual Add additionally validates user-supplied
-`--reason` metadata. The direct entrypoint is not permission to fall back to
+local-trace components. Ordinary manual Add additionally validates user-supplied
+`--reason` metadata. Explicit document Add validates one full UTF-8 snapshot with
+caller-supplied document ID, input UUID and expected revision; it preserves the
+text and sends no message or volatile timestamp metadata. Binary document Add
+uses `memory/document-input.ts` for explicit local file/manifest validation and
+file-backed snapshots. `provider/memorax/documents.ts` owns multipart upload,
+request idempotency, scoped status response validation and safe receipts; its
+HTTP boundary remains `provider/memorax/http.ts`. CLI orchestration polls only
+an existing task and never retransmits. File paths and retained trace records
+are not provider payload authority. The direct entrypoint is not permission to fall back to
 unscoped provider calls or to reconstruct identity from unrelated process
 state.
+
+The shared Skill routes every eligible PDF, DOCX, XLSX or PPTX sent by the user
+to document Add, including bare attachments without accompanying text. No
+separate processing or storage instruction is required. The agent announces
+the import, reuses a verified same-file receipt when available, and returns
+accepted task receipts without waiting by default. When the user asks a question
+or requests analysis, it waits for successful ingestion before document-scoped
+Search. Explicit no-save/temporary-only requests and credential files are
+excluded; merely visible editor files are not uploads. This is agent instruction routing through the
+existing CLI, not an attachment-watching Hook or a server-side intent classifier.
 
 For failed explicit Search/Add operations, `memory/cli-diagnostics.ts` owns
 failure classification, impact, recovery guidance, and safe diagnostic fields.
@@ -766,6 +784,23 @@ that recover do not produce terminal failure records.
   point. Interrupted Turns can instead discard metadata with an explicit reason.
   Unbuffered dispatch starts during enqueue. Buffering defers dispatch until a
   flush; turn or size limits can trigger that flush during enqueue.
+- Automatic Add defaults to `auto` for all clients. MemoraX classifies one
+  completed turn as code or work; configured `code`, `dialogue`, or `work` bypass
+  classification. The local provider performs no content classification.
+  Auto and work dispatch each turn separately without code chunking and reject
+  oversized content rather than clipping it. Explicit code and dialogue retain
+  their existing buffers; code alone uses the code chunk protocol.
+  Manual Add preserves its existing client defaults and accepts explicit
+  auto/work with default mode. It retains a validated client binding when
+  missing or stale current-turn state requires cwd scope, without fabricating
+  turn attribution. The shared native CodeBuddy session variable requires a
+  unique validated current turn to distinguish CodeBuddy from WorkBuddy.
+  Explicit document Add sends a single full snapshot with stable identity and
+  revision through the same validated workspace scope. Provider payloads separate
+  documents from messages and reject mixtures. Document request bodies contain
+  no volatile timestamps or session metadata, so unchanged retries are identical.
+  MemoraX owns extraction prompts: work/dialogue use Chat rules, documents use
+  Document rules, and code retains Code processing.
 - Buffering and chunking belong to the memory capability; rollout, transcript,
   DSH event-interval, and SDK message parsing remains client-specific.
 - Native materializers pass the selected QA timestamps through the shared
@@ -834,7 +869,10 @@ that recover do not produce terminal failure records.
   client and session before buffering under the Git scope. It does not migrate
   or flush those turns across namespaces.
 - The Backend records the initial Add response but does not poll asynchronous
-  Add task status after that response.
+  Add task status after that response. Accepted/queued receipts remain pending and
+  expose the task ID; synchronous completed receipts preserve structured events,
+  including document revisions. Add has an independent timeout to accommodate
+  server classification without changing Search deadlines.
 
 ### 3.5 Repo Memory coordination
 

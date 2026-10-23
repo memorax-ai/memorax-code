@@ -261,14 +261,17 @@ the current repository.
 > relevant memory in the background and guides agents to search when useful.
 > Local activity and status are retained as content-controlled trace and reconciliation records under `MEMORAX_CODE_HOME`.
 
-## Four Clear Memory Boundaries
+## Five Clear Memory Boundaries
 
 | Memory | The question it answers | Examples |
 | --- | --- | --- |
 | **Coding&nbsp;Memory** | What engineering lessons should carry into the next task? | Verified fixes, failed approaches, design rationale, pitfalls, and regression checks |
+| **Work&nbsp;Memory** | What workplace facts and requirements should guide this task? | Office documents, policies, and dialogue recalled with `--sources document`, `dialogue`, or `dialogue,document` |
 | **Repo&nbsp;Memory** | What should an agent know about this repository? | Architecture maps, module ownership, entry points, and commit/PR/MR/issue evidence |
 | **Personal&nbsp;Memory** | How should the agent communicate and collaborate with you? | User Profile preferences such as language, tone, explanation depth, and result format |
 | **Procedure&nbsp;Memory** | How should this kind of task be carried out? | Reusable steps, checklists, prerequisites, exceptions, and validation gates |
+
+For Work Memory search and document filters, see the [Search guide](packages/ts/memorax-code-codex-adapter/skills/memorax-code/references/memorax-search.md). Explicit PDF, DOCX, XLSX and PPTX imports use `memorax-cli add --document-file` with a document ID, input UUID and known revision. `add-status` confirms ingestion completion; acceptance alone remains pending. Ordinary manual Add defaults to automatic classification; reusable coding lessons can explicitly select code/pre_summarized. See [upload and status configuration](docs/configuration.md#binary-document-uploads-and-task-status).
 
 Personal Memory and Procedure Memory are global to the user under
 `$MEMORAX_CODE_HOME/personal-memory/` (default `~/.memorax-code/personal-memory/`): User Profile
@@ -294,10 +297,10 @@ unclear.
 
 | Capability | What it does |
 | --- | --- |
-| **Background memory writeback** | Extracts reusable knowledge from completed turns and writes it to Coding Memory in the background. |
+| **Background memory writeback** | Extracts reusable knowledge from completed turns and writes it in the background. All clients use an explicitly configured content type first; otherwise they default to `auto`, letting MemoraX classify the complete interaction before extraction. |
 | **Preference continuity** | Records User Profile preferences and injects them into future tasks on a configured cadence. |
 | **Procedure reuse** | Records reusable task procedures and reminds future agents to apply them. |
-| **Visible memory impact** | In Codex, Claude Code, CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, Trae, Cursor, and Qoder, opens the final answer with a brief natural-language note when an explicit Coding Memory Search or a Repo, Procedure, or Profile Memory available to the current turn materially guided the task. |
+| **Visible memory impact** | In Codex, Claude Code, CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, Trae, Cursor, and Qoder, opens the final answer with a brief natural-language note when an explicit Coding Memory or Work Memory Search or a Repo, Procedure, or Profile Memory available to the current turn materially guided the task. |
 | **Background Repo Memory maintenance** | Maintains one shared baseline from the locally known default branch. Any worktree can trigger a build or policy-driven update; all branches reuse the map and verify current source without per-worktree builds. Existing local bundles are preserved. Trae remains Skill-only; Cursor and Qoder use their native background subagents. |
 | **Active memory control** | Lets you search and add memory through the bundled MemoraX Code skill or the CLI. |
 | **Client integration** | Integrates with Codex, Claude Code, CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, Trae, Cursor, and Qoder for Skill-driven Search, local reminders, and automatic writeback. Automatic quota reminders are currently available in Codex, Claude Code, CodeBuddy CLI, WorkBuddy, OpenCode, and Trae. |

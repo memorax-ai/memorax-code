@@ -402,7 +402,7 @@ test("Skill shell steps bind the isolated endpoint, state and session with macOS
     assert.deepEqual(command.environment, { ...env, MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT: "cursor",
       MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID: "session" });
     assert.deepEqual(command.args, [platform === "win32" ? "memorax-cli.cmd" : "memorax-cli", ...(operation === "search"
-      ? ["search", "--query", "query", "--json"] : ["add", "--memory", "memory", "--type", "procedural", "--reason", "reason", "--json"])]);
+      ? ["search", "--query", "query", "--json"] : ["add", "--content-type", "code", "--mode", "pre_summarized", "--memory", "memory", "--type", "procedural", "--reason", "reason", "--json"])]);
     assert.equal(shell.networkAccess, platform === "darwin" ? true : undefined);
     assert.equal(shell.workingDirectory, "/owned/workspace");
   }

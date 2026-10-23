@@ -367,6 +367,7 @@ test("memory service discards fallback writeback when turn start upgrades the se
       MEMORAX_CODE_CODEX_TRACE_ENABLED: "false",
       MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
       MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "true",
+      MEMORAX_CODE_MEMORAX_ADD_CONTENT_TYPE: "code",
       MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_TURNS: "8",
       MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_AGE_MS: "600000",
       MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",

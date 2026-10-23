@@ -831,6 +831,18 @@ separate runtime, CLI, or SDK installation is required.
 
 ## Retrieval
 
+For already indexed work memory, use `memorax-cli search --query 'expense approval policy' --sources document`.
+`--sources` accepts `document`, `dialogue`, or `dialogue,document`. With
+`--sources document`, optionally repeat `--document-id 'expense-policy'` to
+restrict retrieval to known document IDs (at most 100). The CLI sends top-level
+`sources` and `document_ids` fields and selects `output_mode: facts` for scoped
+searches. Without these flags, the existing Search request is unchanged.
+Visible document results include the supplied document ID and revision; JSON
+items preserve their original metadata, including document chunk indices.
+This requires a server supporting source-scoped retrieval and documents indexed
+under the same effective user ID and API-key project. An unsupported server
+returns an error; the CLI does not retry with a broader search. Document ingestion remains in the MemoraX backend.
+
 Search is available through the shared Skill or direct `memorax-cli search`.
 Hooks do not issue Search requests. The fields below belong in the
 `[memory.retrieval]` TOML table and control explicit Search.
@@ -882,6 +894,8 @@ environment switch can disable both, as described below.
 | Field | Environment override | Fallback |
 | --- | --- | --- |
 | `memory.add.content_type` | `MEMORAX_CODE_MEMORAX_ADD_CONTENT_TYPE` | command-dependent |
+| `memory.add.upload_timeout_ms` | `MEMORAX_CODE_MEMORAX_UPLOAD_TIMEOUT_MS` | `300000` ms; binary uploads only, range `1000..3600000` |
+| `memory.add.timeout_ms` | `MEMORAX_CODE_MEMORAX_ADD_TIMEOUT_MS` | `15000` ms; independent of Search |
 | `memory.add.mode` | `MEMORAX_CODE_MEMORAX_ADD_MODE` | command-dependent |
 | `memory.add.output_language` | `MEMORAX_CODE_MEMORY_OUTPUT_LANGUAGE` | `zh` |
 | `memory.cli.add_enabled` | `MEMORAX_CODE_MEMORY_CLI_ADD_ENABLED` | `true` |
@@ -892,7 +906,115 @@ not a model-controlled request option; every automatic and explicit add sends
 the resolved value to MemoraX. Invalid values fail closed instead of silently
 selecting another language. The setting affects newly generated content;
 `raw` input and client-supplied `pre_summarized` text are not translated.
-Command arguments override the other add defaults.
+Command arguments override the other Add defaults. Automatic writeback uses
+`mode: default` and resolves `content_type` from the environment override, then
+`memory.add.content_type`, then `auto` for every client. With `auto`, MemoraX
+classifies each completed turn as code or work before extraction. `work` uses
+Chat extraction; explicit `code` and `dialogue` keep their existing routes.
+Auto and work send each completed turn separately, without buffering multiple
+turns or code chunk metadata. They preserve existing redaction rules and reject
+messages exceeding `max_message_chars` instead of clipping them for classification.
+Explicit code and dialogue retain their buffering behavior; only code uses
+code chunks. Automatic conversation writeback rejects `document` because it
+requires an explicit full snapshot.
+
+Explicit Add resolves `--content-type` before configuration. With neither,
+it selects `auto`/`default` in every client. Unless `--mode` is supplied, code uses `pre_summarized` and
+other types use `default`, independently of `memory.add.mode`. `auto`, `work`,
+and `document` require `default` mode. Use `--content-type work` for grounded
+work discussion, `--content-type auto` to let MemoraX classify it, or
+`--content-type code --mode pre_summarized` for a reusable coding lesson.
+Ordinary Add still requires `--type` and `--reason` and observes the CLI memory
+size limit. Search behavior and its timeout are unchanged.
+
+Document Add sends one full UTF-8 text snapshot through MemoraX's existing
+revision-aware ingestion path:
+
+```bash
+memorax-cli add --content-type document --memory-file ./policy.txt \
+  --document-id policy --input-id 12345678-1234-4234-8234-123456789abc \
+  --expected-revision 0
+```
+
+Supply the stable document ID, a UUID input ID, and the known nonnegative
+revision (`0` for creation). Document text retains BOM, line endings, and outer
+whitespace. Input must be a regular file, read with an 8,000,000-byte ceiling
+that also rejects growth beyond the limit. The document limit is 2,000,000
+Unicode characters, independent of the ordinary 2,000-character CLI limit; `--type` and `--reason` are unnecessary.
+Invalid UTF-8, mixed inline content, duplicate flags, or missing identity and
+revision fail before dispatch. Empty or whitespace-only snapshots require
+`--allow-empty` to authorize clearing the document. The CLI does not parse
+binary documents, infer identities/revisions, watch files, or maintain a revision
+cache. A retry of an unchanged snapshot must reuse the same input ID and revision;
+its request body remains identical. A new snapshot needs a new input ID and the
+last confirmed revision. Never infer a revision from task status text.
+
+An accepted or queued receipt has `pending: true` and includes the backend
+`task_id` when available; submission does not confirm extraction completion.
+A synchronous completed receipt has `pending: false` and preserves the returned
+`events`, including structured document IDs and revisions. The text-snapshot CLI does not poll task status. `--sources document` continues
+to search already indexed facts.
+
+### Binary document uploads and task status
+
+For an explicitly requested PDF, DOCX, XLSX or PPTX import, upload the original
+file for server-side parsing. Files must be nonempty regular files no larger
+than 150 MiB. The client streams a file-backed snapshot and never uploads its
+local path, trace, or diagnostic records. File mutation after preparation fails
+the request instead of silently changing the snapshot.
+
+```bash
+memorax-cli add --document-file ./policy.pdf --document-id policy \
+  --input-id 12345678-1234-4234-8234-123456789abc --expected-revision 0 --json
+memorax-cli add-status --task-id TASK_ID --wait --wait-timeout-ms 300000 --json
+```
+
+`--document-file` sends multipart `file` bytes and a JSON `request` to the same
+Add endpoint. The request includes the bound effective user ID, explicit document
+ID, UUID input ID, expected revision, output language, `content_type: document`
+and `async_mode: true`. Optional `--sha256` supplies a lowercase 64-character
+SHA-256 value for server validation. `x-request-id` is the input ID, including
+when the user explicitly retries the identical submission. This route is separate
+from `--memory-file`, which keeps its existing UTF-8 text meaning. No binary
+parsing, attachment scanning, document-ID guessing or revision cache runs locally.
+
+An accepted receipt remains `pending: true`. Status requests use the same bound
+workspace and effective user ID. The states are `queued`, `parsing`, `indexing`,
+`succeeded`, `failed`, and `submission_unknown`. Only `succeeded` confirms the
+returned document revision. An optional summary state is reported independently.
+`--wait` on upload or status polls the existing task at a 1000 ms interval by
+default; `--poll-interval-ms` overrides it. The default wait budget is 300000 ms.
+A wait deadline returns the pending receipt with `waitTimedOut: true`; it does
+not cancel the remote task. Network failures retain the latest known receipt.
+Neither upload nor waiting automatically retransmits a file. For uncertain
+submission, keep the original input ID, revision and file, and verify acceptance
+before authorizing a retry. Never replace the input ID to bypass uncertainty.
+
+For multiple files, `--document-manifest uploads.json` accepts a JSON array of
+1 to 100 entries, each with explicit identity. Paths are relative to the manifest:
+
+```json
+[
+  {"path":"policy.pdf","document_id":"policy","input_id":"12345678-1234-4234-8234-123456789abc","expected_revision":0},
+  {"path":"budget.xlsx","document_id":"budget","input_id":"22345678-1234-4234-8234-123456789abc","expected_revision":0}
+]
+```
+
+Entries submit independently and return ordered `results`. One failure does not
+stop other files or erase their receipts; the command exits unsuccessfully if
+any entry failed. Each input ID must be unique within the manifest. A new version
+needs a new input ID and the last confirmed revision; an unchanged retry reuses
+all original fields. The default production endpoint remains unchanged. For an
+isolated demo integration, set `MEMORAX_CODE_MEMORAX_ENDPOINT=http://demo.memorax.net`
+in the test process environment for Add, status, and Search. Confirm the override
+without contacting the service:
+
+```bash
+MEMORAX_CODE_MEMORAX_ENDPOINT=http://demo.memorax.net memorax-cli status --config-only --json
+```
+
+Keep the demo credentials and `MEMORAX_CODE_HOME` in the isolated test environment;
+do not overwrite the normal production configuration.
 
 ### Disabling memory writes
 
