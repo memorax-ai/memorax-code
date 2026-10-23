@@ -82,12 +82,13 @@ export async function runNativeMemoryCheck({ client, args }) {
     const markerScript = workbuddy ? `require("node:fs").writeFileSync(${JSON.stringify(markerFile)},${JSON.stringify(toolCanary)});` : "";
     const sessionScript = `${markerScript}console.log(${JSON.stringify(toolCanary)});console.log("NATIVE_SESSION="+JSON.stringify({native:process.env.CODEBUDDY_SESSION_ID,client:process.env.MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT,trace:process.env.MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID,memory:process.env.MEMORAX_CODE_MEMORY_CLI_SESSION_ID}));`;
     const sessionCommand = shellCommand([process.execPath.replaceAll("\\", "/"), "-e", sessionScript]);
+    let sessionTool;
     await turn({ sessionId: first, prompt: "Continue the parser discussion after checking the isolated native session.",
       answer: resumedAnswer, kind: "resume-tool", args: ["--allowedTools", "Bash"], steps: [
-        (body) => ({ toolCalls: [toolCall(body, "Bash", { command: sessionCommand,
+        (body) => ({ toolCalls: [sessionTool = toolCall(body, "Bash", { command: sessionCommand,
           description: "Inspect the isolated native session", timeout: 15000 }, "native-session-marker")] }),
         async (body) => {
-          const output = selectNativeBashStdout(toolResult(body, "native-session-marker"), sessionCommand);
+          const output = selectNativeBashStdout(toolResult(body, "native-session-marker"), sessionCommand, { client, body, call: sessionTool });
           check(output.includes(toolCanary), "NATIVE_TOOL_MARKER_MISSING");
           const match = output.match(/NATIVE_SESSION=(\{[^\r\n]+\})/);
           check(match, "NATIVE_SESSION_ENV_MISSING");
@@ -140,6 +141,7 @@ export async function runNativeMemoryCheck({ client, args }) {
       const args = operation === "search" ? ["search", "--query", query, "--json"]
         : ["add", "--content-type", "code", "--mode", "pre_summarized", "--memory", memory, "--type", "procedural", "--reason", reason, "--json"];
       const command = shellCommand([executable, ...args]);
+      let memoryTool;
       const before = harness.memoryRequests.length;
       const answer = operation === "search" ? `Recalled Coding Memory: ${searchResult}` : "Native Skill Add accepted.";
       await turn({ sessionId: first, prompt: `Use the memorax-code skill to ${operation} the parser validation lesson.`,
@@ -151,20 +153,20 @@ export async function runNativeMemoryCheck({ client, args }) {
           },
           (body) => {
             assertNativeReadText(toolResult(body, `read-${operation}`), referenceText);
-            return { toolCalls: [toolCall(body, "Bash", { command,
+            return { toolCalls: [memoryTool = toolCall(body, "Bash", { command,
               description: `Run the installed Coding Memory ${operation} command`, timeout: 15000 }, `memory-${operation}`)] };
           },
           (body) => {
             let output;
             try {
               output = toolResult(body, `memory-${operation}`);
-              const result = JSON.parse(selectNativeBashStdout(output, command).trim());
+              const result = JSON.parse(selectNativeBashStdout(output, command, { client, body, call: memoryTool }).trim());
               if (operation === "search") assertSearchResult(result, { query, memory: searchResult });
               else check(result.ok === true && result.action === "memory.add" && result.receipt?.accepted === true,
                 "NATIVE_SKILL_ADD_RESULT_MISMATCH");
               assertScopeResult(result);
             } catch (error) {
-              report.skillBashDiagnostic = { operation, ...summarizeNativeSkillBashResult(output, command) };
+              report.skillBashDiagnostic = { operation, ...summarizeNativeSkillBashResult(output, command, { client }) };
               throw error;
             }
             return { text: answer };
@@ -422,9 +424,12 @@ export function assertNativeHookCorrelation(events, { client, sessionId, prompt 
 }
 
 // Diagnostic hints only; acceptance still requires the exact successful Bash envelope.
-export function summarizeNativeSkillBashResult(output, command) {
+export function summarizeNativeSkillBashResult(output, command, { client } = {}) {
   const text = typeof output === "string" ? output.slice(0, 64 * 1024) : "";
-  const envelope = /^Command: [^\n]*\nStdout: ([\s\S]*?)\nStderr: ([\s\S]*?)\nExit Code: ([^\r\n]*)\nSignal: ([^\r\n]*)$/.exec(text);
+  const pattern = client === "codebuddy" && text.startsWith("Stdout: ")
+    ? /^Stdout: ([\s\S]*?)\nStderr: ([\s\S]*?)\nExit Code: ([^\r\n]*)\nSignal: ([^\r\n]*)$/
+    : /^Command: [^\n]*\nStdout: ([\s\S]*?)\nStderr: ([\s\S]*?)\nExit Code: ([^\r\n]*)\nSignal: ([^\r\n]*)$/;
+  const envelope = pattern.exec(text);
   const stderr = envelope?.[2], exit = envelope?.[3], signal = envelope?.[4];
   const errors = stderr ?? text;
   let result;
@@ -434,7 +439,7 @@ export function summarizeNativeSkillBashResult(output, command) {
   return {
     resultPresent: typeof output === "string",
     resultTruncated: typeof output === "string" && output.length > text.length,
-    expectedCommandMatched: text.startsWith(`Command: ${command}\nStdout: `),
+    commandEchoMatched: text.startsWith(`Command: ${command}\nStdout: `),
     structuredEnvelopeMatched: Boolean(envelope),
     stderr: stderr === undefined ? "missing" : stderr === "(empty)" ? "empty" : "nonempty",
     exitCode: exit === undefined ? "missing" : exit === "0" ? "zero" : /^\d+$/.test(exit) ? "nonzero" : "other",
