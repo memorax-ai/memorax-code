@@ -3,7 +3,7 @@ name: memorax-code
 description: >-
   Use this skill as the single router for persistent coding, repository-local,
   and user-global personal memory. Invoke it whenever a request may involve
-  prior-work knowledge, indexed office documents, business policies, prior
+  prior-work knowledge, supplied or indexed office documents, business policies, prior
   office discussions, repository memory, reusable procedures or rules,
   durable profile or interaction preferences, or information worth retaining
   beyond the current task. This applies without memory wording, including
@@ -38,14 +38,22 @@ Use MemoraX Code coding memory for reusable engineering knowledge learned across
 
 ### Work Memory
 
+When the user sends a supported PDF, DOCX, XLSX or PPTX, including a bare
+attachment with no accompanying request, read
+[references/memorax-add.md](references/memorax-add.md) for the document import
+workflow first and submit document Add. No summary, analysis, question, or
+separate storage instruction is required. Respect explicit no-save requests
+and credential-file exclusions. Process each eligible file the user sends;
+do not scan the workspace or import files merely visible in an editor.
+
 Use work memory to recall already indexed office documents, business policies,
 or prior office discussions. Read [references/memorax-search.md](references/memorax-search.md)
 and select document or dialogue sources as described there. A user's question
 about a policy is not evidence of the policy itself. These searches use the same
 workspace scope and CLI rules as coding memory; searches do not import documents.
-To save work dialogue or an explicitly requested full document snapshot, read
+To save work dialogue or import a document under the workflow above, read
 [references/memorax-add.md](references/memorax-add.md) and select the matching
-content type. Work dialogue uses Chat extraction; explicit document snapshots use Document extraction with stable identity and
+content type. Work dialogue uses Chat extraction; document snapshots use Document extraction with stable identity and
 revision. Do not encode business evidence as a coding lesson.
 
 ### Repo Memory

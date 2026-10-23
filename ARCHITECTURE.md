@@ -703,6 +703,16 @@ are not provider payload authority. The direct entrypoint is not permission to f
 unscoped provider calls or to reconstruct identity from unrelated process
 state.
 
+The shared Skill routes every eligible PDF, DOCX, XLSX or PPTX sent by the user
+to document Add, including bare attachments without accompanying text. No
+separate processing or storage instruction is required. The agent announces
+the import, reuses a verified same-file receipt when available, and returns
+accepted task receipts without waiting by default. When the user asks a question
+or requests analysis, it waits for successful ingestion before document-scoped
+Search. Explicit no-save/temporary-only requests and credential files are
+excluded; merely visible editor files are not uploads. This is agent instruction routing through the
+existing CLI, not an attachment-watching Hook or a server-side intent classifier.
+
 For failed explicit Search/Add operations, `memory/cli-diagnostics.ts` owns
 failure classification, impact, recovery guidance, and safe diagnostic fields.
 The provider normalizes transport and response failures without exposing raw

@@ -25,18 +25,68 @@ coding card or code extraction instructions to auto/work content.
 
 ### Binary document imports
 
-Only when the user requests a file import, use the original PDF, DOCX, XLSX or
-PPTX file, up to 150 MiB, with caller-supplied document identity and revision:
+Use this workflow whenever the user sends a supported PDF, DOCX, XLSX or PPTX.
+Sending an eligible file triggers document Add, including a bare attachment
+without any accompanying text. Do not ask its purpose or require a summary,
+analysis, question, or "save to MemoraX" instruction before importing it. Process
+each eligible file in a multi-file submission independently. Apply these
+boundaries before uploading:
+
+- The original file must be readable, nonempty, in a supported format and no
+  larger than 150 MiB. Skip unsupported or invalid files with a clear reason;
+  continue processing the other eligible files.
+- If the user says not to save, or requests temporary-only use, do not Add the
+  document or route its contents through dialogue Add. Use available local
+  reading tools; explain any limitation without silently importing it.
+- Credential files supplied for configuration, including AccessKey exports,
+  secrets and `.env` files, are not memory documents. Never import their contents.
+- Import the files the user actually sends, not files merely selected or visible
+  in an editor, nor files found by scanning the workspace.
+
+Briefly tell the user that the document will be imported into MemoraX for parsing
+and later retrieval, then proceed without another confirmation. Use the original
+file bytes, up to 150 MiB. If the host has not exposed a readable local file,
+ask for access to the file; do not invent a path or upload scraped tool output.
+
+Before a new upload, check the current task's known receipts. Reuse a succeeded
+receipt only when it belongs to the same account/workspace scope and the same
+unchanged file, verified from the original upload or a matching SHA-256. A
+filename alone is not identity evidence. For a known pending task, query its
+existing task ID instead of uploading again. Do not claim cross-session
+deduplication: the plugin has no persistent file-to-document identity cache.
+
+For a first import with no previous task or document identity, allocate a new
+opaque document UUID and a separate input UUID with a UUID generator, and use
+`expected_revision=0`. This allocates a new identity; it does not infer an
+existing document ID from a filename. Preserve the IDs and receipt in the task
+context. For an update or retry, use the confirmed identity and revision rules
+below; missing update identity requires clarification, not a new document.
+
+Pass those actual IDs in place of the illustrative values below:
 
 ```bash
 memorax-cli add --document-file './policy.pdf' --document-id 'policy' \
   --input-id '12345678-1234-4234-8234-123456789abc' --expected-revision 0 --json
+```
+
+When the current answer depends on this document, wait for its successful import
+before searching. Use the task ID returned by Add, not the placeholder below:
+
+```bash
 memorax-cli add-status --task-id 'TASK_ID' --wait --wait-timeout-ms 300000 --json
 ```
 
-This sends the original bytes for server-side parsing. Do not scrape tool
-outputs, infer document identity from filenames, automatically scan attachments,
-or treat a selected file as permission to import it. Keep `--memory-file` for
+After `succeeded`, read [memorax-search.md](memorax-search.md) and search with
+`--sources document --document-id` using the confirmed document ID. Form the
+query from the requested summary, analysis or question, and answer from the
+returned evidence. Partial retrieved chunks do not establish full-document
+coverage; state missing evidence rather than inventing the rest. On failure or
+wait timeout, report the actual state and preserve the task ID; do not claim
+the document is searchable. For bare attachments or storage-only requests,
+return the accepted task receipts without waiting by default; do not invent a
+question or run Search until the user requests content from the documents.
+
+This sends the original bytes for server-side parsing. Keep `--memory-file` for
 complete UTF-8 text snapshots. Binary upload does not require `--type` or `--reason`.
 For multiple files use `--document-manifest` with a JSON array; each entry contains
 `path`, `document_id`, `input_id`, `expected_revision` and optional `sha256`.

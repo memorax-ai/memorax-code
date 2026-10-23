@@ -18,6 +18,14 @@ If the selected platform command is not on `PATH`, or memory is disabled, unconf
 
 ## Work Memory Search
 
+Whenever the user sends a supported PDF, DOCX, XLSX or PPTX, first follow the
+document workflow in [memorax-add.md](memorax-add.md), even for a bare attachment.
+If the user also asks a question, requests a summary or analysis, reuse a
+verified successful import or wait for the existing/new task to succeed before
+searching that document. A bare attachment triggers Add, not a speculative
+Search. Search alone does not import an attachment. Temporary-only and
+credential-file exclusions still apply.
+
 Choose the source from the evidence needed to answer the request, not from where the request appeared. A chat asking for a reimbursement policy needs document facts; it does not need dialogue search merely because the requirement was stated in chat.
 
 - Use `--sources document` for indexed policies, business documents, and other document facts.
