@@ -59,6 +59,55 @@ test("search guidance rejects mismatched native references and a changed account
   assert.equal(requests.length, 1);
 });
 
+test("Claude guidance keeps repeated wire prompt IDs separate by their registered occurrence", async (t) => {
+  const { runtime, requests } = await fixture(t);
+  const firstKey = { client: "claude-code", sessionId: "claude-session", clientTurnId: `claude-start:${"a".repeat(64)}` };
+  const secondKey = { ...firstKey, clientTurnId: `claude-start:${"b".repeat(64)}` };
+  const native = { transcriptPath: "/fixture/claude-session.jsonl", workspaceKind: "projectless" };
+  const body = { version: 1, client: "claude-code", sessionId: firstKey.sessionId, promptId: "reused-prompt-id",
+    prompt: "Continue with the next check.", ...native };
+  runtime.registerTurn({ ...firstKey, ...native, createdAt: 1, repositoryScope: scope }, body.prompt);
+  assert.equal((await runtime.evaluate({ ...body, claudeTurnKey: firstKey.clientTurnId }, firstKey)).ok, true);
+  runtime.completeTurn({ key: firstKey, repositoryScope: scope, userText: body.prompt, assistantText: "The first check passed." });
+  runtime.registerTurn({ ...secondKey, ...native, createdAt: 2, repositoryScope: scope }, body.prompt);
+  assert.deepEqual(await runtime.evaluate({ ...body, claudeTurnKey: firstKey.clientTurnId }, firstKey), {
+    ok: false, reason: "context_unavailable",
+  });
+  assert.deepEqual(await runtime.evaluate(body), { ok: false, reason: "context_unavailable" });
+  assert.equal(requests.length, 1);
+  assert.equal((await runtime.evaluate({ ...body, claudeTurnKey: secondKey.clientTurnId }, secondKey)).ok, true);
+  assert.deepEqual(requests[1].state, { current_prompt: body.prompt,
+    previous_turn: { user: body.prompt, assistant: "The first check passed." } });
+  assert.equal(JSON.stringify(requests).includes("claude-start:"), false);
+});
+
+test("resolved Claude guidance keys cannot bypass client, session, prompt or transcript checks", async (t) => {
+  const { runtime, requests } = await fixture(t);
+  const key = { client: "claude-code", sessionId: "claude-session", clientTurnId: `claude-start:${"a".repeat(64)}` };
+  const body = { version: 1, client: "claude-code", sessionId: key.sessionId, promptId: "wire-id", claudeTurnKey: key.clientTurnId,
+    prompt: "Check the native boundary.", transcriptPath: "/fixture/claude-session.jsonl", workspaceKind: "projectless" };
+  runtime.registerTurn({ ...key, transcriptPath: body.transcriptPath, workspaceKind: body.workspaceKind,
+    createdAt: 1, repositoryScope: scope }, body.prompt);
+  for (const [commandOverrides, keyOverrides] of [
+    [{}, { client: "codex" }], [{}, { sessionId: "another-session" }],
+    [{ claudeTurnKey: `claude-start:${"b".repeat(64)}` }, {}], [{ claudeTurnKey: undefined }, {}],
+    [{ prompt: "Different prompt" }, {}], [{ transcriptPath: "/other/transcript.jsonl" }, {}],
+    [{ workspaceKind: "repository" }, {}], [{ cwd: "/other/workspace" }, {}],
+  ]) {
+    assert.deepEqual(await runtime.evaluate({ ...body, ...commandOverrides }, { ...key, ...keyOverrides }), {
+      ok: false, reason: "context_unavailable",
+    });
+  }
+  const cursorKey = { client: "cursor", sessionId: "fixture-session", clientTurnId: "cursor-turn" };
+  runtime.registerTurn(turn(cursorKey.clientTurnId), body.prompt);
+  assert.deepEqual(await runtime.evaluate(command(cursorKey.clientTurnId, body.prompt), cursorKey), {
+    ok: false, reason: "context_unavailable",
+  });
+  assert.equal(requests.length, 0);
+  assert.equal((await runtime.evaluate(body, key)).ok, true);
+  assert.equal(requests.length, 1);
+});
+
 test("guidance requires registered optional native references before evaluation or cached-result delivery", async (t) => {
   for (const scenario of [
     { field: "cwd", body: { client: "opencode", sessionId: "session", userMessageId: "turn", cwd: "/fixture/workspace" } },

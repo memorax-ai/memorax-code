@@ -54,9 +54,9 @@ function contextRun(context, parts) {
   return run({ action: message(field(1, message(field(1, fixture().userBytes), field(2, context))),
     ...(parts === undefined ? [] : [field(17, parts)])) });
 }
-function execResult(number, detail, { variant = 1, id = 9, execId = userMessageId, extra = Buffer.alloc(0) } = {}) {
+function execResult(number, detail, { variant = 1, id = 9, execId = userMessageId, extra = Buffer.alloc(0), execExtra = Buffer.alloc(0) } = {}) {
   return decodeAgentClientMessage(field(2, message(scalar(1, id), field(15, execId),
-    field(number, message(field(variant, detail), extra)))));
+    field(number, message(field(variant, detail), extra)), execExtra)));
 }
 function execution(step, input = run()) {
   return createToolExecution(input, step, { id: 9, toolCallId: userMessageId });
@@ -243,6 +243,33 @@ test("RequestContext is correlated and remains outside visible and persisted too
   assert.deepEqual([tool.startedMessage, completed.stepBytes, completed.completedMessage], [undefined, undefined, undefined]);
   expectError(() => completeToolExecution(tool, { ...decoded, id: 8 }), "CURSOR_APP_EXEC_IDENTITY");
   expectError(() => completeToolExecution(tool, execResult(10, field(1, "private-canary"), { variant: 2 })), "CURSOR_APP_EXEC_REJECTED");
+});
+
+test("Exec retains native Hook context without adding it to visible or persisted tool results", () => {
+  const hooks = [{ hookEventName: "sessionStart", content: "Private synthetic session Hook\n中文" },
+    { hookEventName: "beforeSubmitPrompt", content: "Private synthetic prompt Hook" }];
+  const execExtra = message(...hooks.map(({ hookEventName, content }) =>
+    field(45, message(field(1, hookEventName), field(2, content)))));
+  for (const [step, number, detail] of [
+    [{ kind: "requestContext" }, 10, field(1, Buffer.alloc(0))],
+    [{ kind: "read", path: "/synthetic/skill.md" }, 7, message(field(1, "/synthetic/skill.md"), field(2, "Skill body"))],
+    [shellStep, 2, message(field(1, shellStep.command), field(2, shellStep.workingDirectory))],
+  ]) {
+    const decoded = execResult(number, detail, { execExtra });
+    assert.deepEqual(decoded.hookAdditionalContexts, hooks);
+    const completed = completeToolExecution(execution(step), decoded);
+    assert.equal(JSON.stringify(completed.result).includes("Private synthetic"), false);
+    assert.equal(completed.stepBytes?.includes(Buffer.from("Private synthetic")) ?? false, false);
+  }
+  assert.equal(execResult(10, field(1, Buffer.alloc(0))).hookAdditionalContexts, undefined);
+  for (const invalid of [field(1, "sessionStart"),
+    message(field(1, "sessionStart"), field(1, "duplicate"), field(2, "private"))]) {
+    expectError(() => execResult(10, field(1, Buffer.alloc(0)), { execExtra: field(45, invalid) }), "CURSOR_APP_PROTO_FIELD");
+  }
+  expectError(() => execResult(10, field(1, Buffer.alloc(0)), { execExtra: scalar(45, 1) }), "CURSOR_APP_PROTO_FIELD");
+  expectError(() => execResult(10, field(1, Buffer.alloc(0)), {
+    execExtra: field(45, message(field(1, "sessionStart"), field(2, Buffer.from([0xc3, 0x28])))),
+  }), "CURSOR_APP_PROTO_UTF8");
 });
 
 test("Read persists exact native content and tool identity in the completed graph", () => {

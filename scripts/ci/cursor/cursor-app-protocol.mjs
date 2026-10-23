@@ -240,7 +240,7 @@ function execClient(body) {
   if (!id) fail("CURSOR_APP_EXEC_IDENTITY");
   if ([...exec.keys()].some((number) => ![1, 2, 7, 10, 15, 28, 39, 45].includes(number))) fail("CURSOR_APP_CLIENT_MESSAGE_UNSUPPORTED");
   unsigned(exec, 39, 0x7fff_ffff);
-  hookContexts(exec, 45);
+  const hookAdditionalContexts = hookContexts(exec, 45);
   const messages = [2, 7, 10, 28].filter((number) => exec.has(number));
   if (messages.length !== 1) fail("CURSOR_APP_PROTO_FIELD");
   const kind = messages[0] === 7 ? "read" : messages[0] === 10 ? "requestContext" : messages[0] === 28 ? "task" : "shell";
@@ -255,7 +255,8 @@ function execClient(body) {
   const success = fields(single(result, selected[0], 2));
   const sandboxPolicy = kind === "shell" ? diagnosticSandboxPolicy(result) : undefined;
   const identity = { type: "execResult", id, kind, ...(exec.has(15) ? { execId: text(exec, 15) } : {}),
-    ...(sandboxPolicy === undefined ? {} : { sandboxPolicy }) };
+    ...(sandboxPolicy === undefined ? {} : { sandboxPolicy }),
+    ...(hookAdditionalContexts.length ? { hookAdditionalContexts } : {}) };
   if (kind === "shell" && selected[0] === 4) {
     if ([...success.keys()].some((number) => ![1, 2, 3, 4].includes(number))) fail("CURSOR_APP_CLIENT_MESSAGE_UNSUPPORTED");
     optionalText(success, 3);

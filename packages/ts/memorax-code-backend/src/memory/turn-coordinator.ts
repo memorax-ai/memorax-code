@@ -6,6 +6,7 @@ import type {
   AutomaticMemoryWritebackTiming,
 } from "./automatic-writeback.js";
 import type { ConfiguredRepositoryMemoryResult } from "./repository-session.js";
+import type { CodingSessionSourceTurn } from "../coding-sessions/coding-turn.js";
 import {
   repositoryMemoryScopeCanBindGeneralWorkspace,
   repositoryMemoryScopeCanUpgradeFromDegradedGit,
@@ -67,8 +68,11 @@ export type MemoryTurnCompletion = Readonly<AutomaticMemoryWritebackTiming & {
   resolveRepositoryMemory: () => Promise<ConfiguredRepositoryMemoryResult>;
   userText: string;
   assistantText: string;
+  // Claude's native user UUID is resolved after its start observation key.
+  nativeTurnId?: string;
+  codingTurn?: CodingSessionSourceTurn;
   searchAssistantText?: string;
-  writeback: Omit<AutomaticMemoryWritebackOptions, "userText" | "assistantText" | "repositoryScope">;
+  writeback: Omit<AutomaticMemoryWritebackOptions, "userText" | "assistantText" | "repositoryScope" | "codingTurn">;
 }>;
 
 export type MemoryMaterializedTurn = Readonly<{
@@ -227,27 +231,40 @@ export function createMemoryTurnCoordinator(options: MemoryTurnCoordinatorOption
       }
       const userTimestamp = parseNativeMessageTimestamp(input.userTimestamp);
       const assistantTimestamp = parseNativeMessageTimestamp(input.assistantTimestamp);
-      const acceptance = options.automaticWriteback({
-        ...input.writeback,
-        userText: input.userText,
-        assistantText: input.assistantText,
-        helpfulTurn: {
-          turnId: input.key.clientTurnId,
-          index: input.sessionTurnIndex ?? input.metadata?.sessionTurnIndex,
-          complete: true,
-          searches: input.metadata?.helpfulSearches ?? [],
-        },
-        // Metadata.createdAt is a start observation, not native message time.
-        // Keep that distinction even when a legacy record has no timestamp.
-        userTimestamp: userTimestamp
-          ?? parseNativeMessageTimestamp(input.metadata?.createdAt) ?? observedAt,
-        assistantTimestamp: assistantTimestamp ?? observedAt,
-        userTimestampSource: userTimestamp === undefined
-          ? "observed" : input.userTimestampSource ?? "native",
-        assistantTimestampSource: assistantTimestamp === undefined
-          ? "observed" : input.assistantTimestampSource ?? "native",
-        repositoryScope,
-      });
+      let acceptance: ReturnType<AutomaticMemoryWritebackEnqueue>;
+      try {
+        acceptance = options.automaticWriteback({
+          ...input.writeback,
+          userText: input.userText,
+          assistantText: input.assistantText,
+          helpfulTurn: {
+            // Claude's start-observation key is local correlation authority.
+            // Remote evidence identifies the materialized native user record.
+            turnId: input.key.client === "claude-code"
+              ? input.nativeTurnId ?? "" : input.key.clientTurnId,
+            index: input.sessionTurnIndex ?? input.metadata?.sessionTurnIndex,
+            complete: input.key.client !== "claude-code" || Boolean(input.nativeTurnId),
+            searches: input.metadata?.helpfulSearches ?? [],
+          },
+          ...(input.codingTurn?.client === input.key.client
+            && input.codingTurn.sessionId === input.key.sessionId
+            && input.codingTurn.turnId === (input.key.client === "claude-code"
+              ? input.nativeTurnId ?? input.key.clientTurnId : input.key.clientTurnId)
+            ? { codingTurn: input.codingTurn } : {}),
+          // Metadata.createdAt is a start observation, not native message time.
+          // Keep that distinction even when a legacy record has no timestamp.
+          userTimestamp: userTimestamp
+            ?? parseNativeMessageTimestamp(input.metadata?.createdAt) ?? observedAt,
+          assistantTimestamp: assistantTimestamp ?? observedAt,
+          userTimestampSource: userTimestamp === undefined
+            ? "observed" : input.userTimestampSource ?? "native",
+          assistantTimestampSource: assistantTimestamp === undefined
+            ? "observed" : input.assistantTimestampSource ?? "native",
+          repositoryScope,
+        });
+      } catch {
+        acceptance = { accepted: false, reason: "decision_error" };
+      }
       if (!acceptance.accepted) {
         return reject(acceptance.reason);
       }

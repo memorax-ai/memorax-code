@@ -1274,8 +1274,12 @@ Native Shell commands require their matching Run approval. On macOS the Skill
 commands request network access to the local fixture, and the worker finish
 command requests full command permissions; these are not loopback-only sandbox
 policies. Cleanup targets only owned live processes. Windows first requests
-native quit, then falls back only for the held live App child. Unconfirmed cleanup
-fails and retains isolated state for runner teardown.
+native quit, then falls back only for the held live App child. Windows process
+audits share a 60-second budget, with at most 30 seconds per query and one retry
+for a query timeout. Every successful snapshot still checks all returned
+processes; only a complete snapshot without owned processes passes. Other query
+errors and exhausted budgets fail. Unconfirmed cleanup fails and retains
+isolated state for runner teardown.
 
 #### Reproduction and Reports
 
@@ -1284,8 +1288,9 @@ Docker daemon:
 
 ```bash
 node --test scripts/ci/cursor/cursor-app-*.test.mjs scripts/ci/cursor/cursor-lifecycle*.test.mjs
+memorax_candidate_tarball="$(node -p "require('./dist/npm/main-pack.json')[0].filename")"
 node scripts/ci/cursor/cursor-app-container-check.mjs \
-  dist/npm/tarballs/memorax-memorax-code-0.1.19.tgz \
+  "dist/npm/tarballs/$memorax_candidate_tarball" \
   "$memorax_dev_root/cursor-app-report"
 ```
 
@@ -1300,6 +1305,31 @@ allow only fixed error/status enums, bounded counts and marker booleans; raw
 App/installer logs, command output, transcripts, database files, Hook traces,
 credentials, PIDs and private paths are excluded. Diagnostics never replace the
 original failure or relax acceptance.
+
+Skill Hook checks read initial, fresh, dynamic, user-message and completed Exec
+contexts from the current native run and its referenced, completed same-session
+history. Failure reports project only presence and session-marker match booleans
+for each source and retain the first failed Skill Hook snapshot across transport
+retries. Native Hook diagnostics count complete marker-owned execution
+blocks and their first filtering reason: JSON parsing, event, session or generation
+mismatch. A zero block count does not prove that a Hook never executed; incomplete
+or unrecognized log frames are outside this projection.
+
+Repo Memory delegation reads the same five context sources from the current
+request only; it never reuses a ticket from history. Duplicate delegations must
+agree. Failures retain the first rejected parent request for Hook and Backend
+diagnostics, plus a fixed rejection reason and bounded per-source presence and
+marker counts. Delegation prompts, invocations and capabilities stay private.
+
+Linux and macOS wait for native user Hook configuration to load for the current App
+launch before opening a new session, then require a successful marker-owned
+`sessionStart` for that session before its first submission. These bounded
+checks diagnose missing startup prerequisites; they do not make Cursor
+configuration reload and prompt submission atomic. Reports retain bounded
+relative Hook timing, including the first Repo Memory submission attempt, and
+Windows process-audit summaries on success and failure, so passing cells can
+serve as controls. Native requests and Backend registration
+remain independently observed; the fixture never supplies a missing Turn start.
 
 Real login, hosted models, OS credential-store isolation, native Continue/Retry/
 Edit, Backend restart, preauthorized tools, running-tool interruption,

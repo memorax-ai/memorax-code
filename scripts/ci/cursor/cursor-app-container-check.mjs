@@ -10,7 +10,10 @@ import { baselineRelease, validateLinuxRelease } from "./cursor-app-release.mjs"
 import { projectCursorAppDiagnostics, projectCursorAppLaunchDiagnostics,
   projectCursorAppBackendDiagnostics,
   projectCursorAppShellDiagnostics, projectCursorAppStopDiagnostics, projectCursorAppWindowsStopDiagnostics } from "./cursor-app-diagnostics.mjs";
-import { projectCursorAppHookDiagnostics } from "./cursor-app-hook-diagnostics.mjs";
+import { projectCursorAppHookDiagnostics, projectCursorAppHookTiming } from "./cursor-app-hook-diagnostics.mjs";
+import { projectCursorAppSkillHookContext } from "./cursor-app-hook-context.mjs";
+import { projectCursorRepoMemoryDelegation } from "./cursor-app-repo-memory-check.mjs";
+import { projectWindowsProcessAuditDiagnostics } from "./cursor-app-windows-runtime.mjs";
 
 const exec = promisify(execFile);
 const scripts = dirname(fileURLToPath(import.meta.url));
@@ -23,7 +26,7 @@ const label = "memorax.cursor-app-ci";
 const codePattern = /^CURSOR_(?:APP|MOCK|AGENT|CONTAINER)_[A-Z0-9_]{1,100}$/;
 const stages = new Set(["preflight", "candidate-install", "app-start", "native-submit", "agent-transport",
   "native-persistence", "automatic-add", "workspace-switch", "app-restart", "session-open", "pending-shell-interruption",
-  "repo-memory-worker", "cleanup", "complete"]);
+  "repo-memory-worker", "hook-config-ready", "hook-session-ready", "cleanup", "complete"]);
 const completedEvidence = ["agentTransport", "nativeHooks", "exactAutomaticAdd", "sameSessionFollowup", "sessionIsolation", "workspaceIsolation", "appResume",
   "skillSearch", "skillAdd", "shellDenied", "pendingShellInterrupted", "sameSessionRecovered", "repoMemoryWorker", "cleanup"];
 const completedCounts = {
@@ -129,10 +132,20 @@ export function projectNativeReport(input, { expectedVersion = provenance.cursor
   if (input.memoryRequestCount !== undefined) report.memoryRequestCount = count(input.memoryRequestCount);
   if (input.diagnostics !== undefined) report.diagnostics = projectCursorAppDiagnostics(input.diagnostics);
   if (input.status === "FAIL" && input.nativeHooks !== undefined) report.nativeHooks = projectCursorAppHookDiagnostics(input.nativeHooks);
+  if (["linux", "darwin"].includes(platform) && input.hookTimings !== undefined) {
+    report.hookTimings = (Array.isArray(input.hookTimings) ? input.hookTimings.slice(0, 32) : []).map(projectCursorAppHookTiming);
+  }
+  if (input.status === "FAIL" && input.skillHookContext !== undefined) report.skillHookContext = projectCursorAppSkillHookContext(input.skillHookContext);
+  if (input.status === "FAIL" && input.repoMemoryDelegation !== undefined) report.repoMemoryDelegation = projectCursorRepoMemoryDelegation(input.repoMemoryDelegation);
   if (input.status === "FAIL" && input.backendDiagnostics !== undefined) report.backendDiagnostics = projectCursorAppBackendDiagnostics(input.backendDiagnostics);
   if (input.appLaunch !== undefined) report.appLaunch = projectCursorAppLaunchDiagnostics(input.appLaunch);
   if (input.status === "FAIL" && input.candidateStop !== undefined) report.candidateStop = projectCursorAppStopDiagnostics(input.candidateStop);
   if (input.status === "FAIL" && input.shellResult !== undefined) report.shellResult = projectCursorAppShellDiagnostics(input.shellResult);
+  if (platform === "win32" && input.windowsProcessAudits !== undefined) {
+    report.windowsProcessAudits = (Array.isArray(input.windowsProcessAudits) ? input.windowsProcessAudits.slice(0, 5) : [])
+      .map((item) => ({ stage: ["workspace-switch", "app-restart", "repo-memory-worker", "cleanup"].includes(item?.stage) ? item.stage : "other",
+        ...projectWindowsProcessAuditDiagnostics(item) }));
+  }
   if (input.status === "FAIL" && platform === "win32" && input.windowsAppStop !== undefined) {
     report.windowsAppStop = projectCursorAppWindowsStopDiagnostics(input.windowsAppStop);
   }
@@ -236,7 +249,7 @@ export async function readReleaseManifest(path) {
 export async function stageCursorAppChecks(directory) {
   for (const [client, names] of [
     ["cursor", ["cursor-app-native-check.mjs", "cursor-app-protocol.mjs", "cursor-app-mock-server.mjs", "cursor-app-native-content-check.mjs",
-      "cursor-app-memory-check.mjs", "cursor-app-repo-memory-check.mjs", "cursor-app-diagnostics.mjs", "cursor-app-hook-diagnostics.mjs"]],
+      "cursor-app-memory-check.mjs", "cursor-app-repo-memory-check.mjs", "cursor-app-diagnostics.mjs", "cursor-app-hook-diagnostics.mjs", "cursor-app-hook-context.mjs"]],
     ["codex", ["codex-native-content-check.mjs"]],
   ]) {
     await mkdir(join(directory, client), { recursive: true });

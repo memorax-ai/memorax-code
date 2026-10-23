@@ -143,6 +143,21 @@ test("memory Hook commands require a versioned known client", () => {
   }
 });
 
+test("Claude guidance correlation keys are optional, canonical, and client qualified", () => {
+  const { start, writeback } = memoryHookCommands().find(({ start }) => start.client === "claude-code");
+  const claudeTurnKey = `claude-start:${"a".repeat(64)}`;
+  const command = { ...start, claudeTurnKey };
+  assert.deepEqual(parseTurnStartCommand(command), { ok: true, command });
+  for (const value of [null, undefined, 42, "", "a".repeat(64), `claude-start:${"A".repeat(64)}`,
+    `claude-start:${"a".repeat(63)}`, ` ${claudeTurnKey}`, `${claudeTurnKey}\n`]) {
+    assert.deepEqual(parseTurnStartCommand({ ...start, claudeTurnKey: value }), INVALID);
+  }
+  assert.deepEqual(parseWritebackCommand({ ...writeback, claudeTurnKey }), INVALID);
+  for (const { start: other } of memoryHookCommands().filter(({ start }) => start.client !== "claude-code")) {
+    assert.deepEqual(parseTurnStartCommand({ ...other, claudeTurnKey }), INVALID);
+  }
+});
+
 for (const commands of memoryHookCommands()) {
   const { client } = commands.start;
   test(`${client} Hook commands preserve valid content and reject foreign or invalid fields`, () => {

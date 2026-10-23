@@ -250,12 +250,14 @@ test("container staging preserves Cursor and Codex relative imports without copy
   await stageCursorAppChecks(root);
   assert.deepEqual((await readdir(root)).sort(), ["codex", "cursor"]);
   assert.deepEqual(await readdir(join(root, "codex")), ["codex-native-content-check.mjs"]);
-  assert.equal((await readdir(join(root, "cursor"))).length, 8);
+  assert.equal((await readdir(join(root, "cursor"))).length, 9);
   const staged = await import(pathToFileURL(join(root, "cursor", "cursor-app-memory-check.mjs")));
   assert.equal(typeof staged.assertCursorAppSkillReference, "function");
   assert.equal(typeof staged.assertCursorAppMemoryOperation, "function");
   const diagnostics = await import(pathToFileURL(join(root, "cursor", "cursor-app-hook-diagnostics.mjs")));
   assert.equal(typeof diagnostics.collectCursorAppHookDiagnostics, "function");
+  const hookContext = await import(pathToFileURL(join(root, "cursor", "cursor-app-hook-context.mjs")));
+  assert.equal(typeof hookContext.collectCursorAppSkillHookContext, "function");
 });
 
 test("seccomp is the pinned Playwright profile with only the documented chroot allowance", async () => {
@@ -325,7 +327,13 @@ test("public reports drop raw data and project failure diagnostics without weake
       ] } };
     input.appLaunch = { spawned: true, exitCode: 1, signal: "private-canary", log: "private-canary",
       markers: { permissionDenied: true } };
-    input.nativeHooks = { readStatus: "present", filesRead: 1, raw: "private-canary", executions: [] };
+    input.nativeHooks = { readStatus: "present", filesRead: 1, raw: "private-canary", executions: [],
+      ownedExecutionBlocks: { beforeSubmitPrompt: 2, private: "private-canary" },
+      filteredExecutionBlocks: { beforeSubmitPrompt: { parse: 1, event: 9000, session: -1, generation: "private-canary", raw: "private-canary" } } };
+    input.skillHookContext = { matched: "private-canary", raw: "private-canary",
+      current: { initial: { present: true, matched: true, content: "private-canary" },
+        exec: { present: "private-canary", matched: true } },
+      history: { user: { present: true, matched: false, sessionId: "private-canary" } } };
     input.backendDiagnostics = { readStatus: "present", records: [
       { operation: "memory.turn-start", reason: "turn_state_unavailable", errorCode: "CURSOR_TURN_STATE_UNAVAILABLE",
         systemCode: "EACCES", error: "private-canary", sessionHash: "private-canary" },
@@ -342,6 +350,12 @@ test("public reports drop raw data and project failure diagnostics without weake
     assert.equal(report.appLaunch.exitCode, 1);
     assert.equal(report.appLaunch.signal, "other");
     assert.equal(report.nativeHooks.readStatus, "present");
+    assert.equal(report.nativeHooks.ownedExecutionBlocks.beforeSubmitPrompt, 2);
+    assert.deepEqual(report.nativeHooks.filteredExecutionBlocks.beforeSubmitPrompt, { parse: 1, event: 0, session: 0, generation: 0 });
+    assert.equal(report.skillHookContext.matched, true);
+    assert.deepEqual(report.skillHookContext.current.initial, { present: true, matched: true });
+    assert.deepEqual(report.skillHookContext.current.exec, { present: false, matched: false });
+    assert.deepEqual(report.skillHookContext.history.user, { present: true, matched: false });
     assert.equal(report.backendDiagnostics.records[0].errorCode, "CURSOR_TURN_STATE_UNAVAILABLE");
     assert.equal(report.candidateStop.timedOut, true);
     assert.deepEqual(report.shellResult, { rejectionKind: 2, approvalClicked: true, exitCode: 127 });
@@ -351,7 +365,96 @@ test("public reports drop raw data and project failure diagnostics without weake
     assert.throws(() => project(input), /CURSOR_CONTAINER_REPORT/);
     delete input.errorCode;
     input.stage = "complete";
-    for (const key of ["candidateStop", "shellResult", "windowsAppStop", "nativeHooks", "backendDiagnostics"]) assert.equal(project(input)[key], undefined);
+    for (const key of ["candidateStop", "shellResult", "windowsAppStop", "nativeHooks", "skillHookContext", "backendDiagnostics"]) assert.equal(project(input)[key], undefined);
+  }
+});
+
+test("Repo Memory delegation failures expose only bounded source diagnostics on every platform", () => {
+  for (const platform of ["linux", "darwin", "win32"]) {
+    const input = { ...nativeReport(), platform, status: "FAIL", stage: "repo-memory-worker",
+      errorCode: "CURSOR_APP_REPO_MEMORY_DELEGATION_INVALID", repoMemoryDelegation: {
+        reason: "marker_missing", prompt: "private-canary", ticket: "private-canary", sources: {
+          initial: { present: true, markerCount: 2, text: "private-canary" },
+          fresh: { present: true, markerCount: 1000, path: "private-canary" },
+          dynamic: { present: "private-canary", markerCount: "private-canary" },
+          user: { present: true, markerCount: 1001 },
+          exec: { present: false, markerCount: -1 },
+          history: { present: true, markerCount: 1, ticket: "private-canary" },
+        },
+      } };
+    const project = () => projectNativeReport(input, { platform });
+    const expected = { reason: "marker_missing", sources: {
+      initial: { present: true, markerCount: 2 }, fresh: { present: true, markerCount: 1000 },
+      dynamic: { present: false, markerCount: 0 }, user: { present: true, markerCount: 0 },
+      exec: { present: false, markerCount: 0 },
+    } };
+    assert.deepEqual(project().repoMemoryDelegation, expected);
+    assert.equal(project().errorCode, input.errorCode);
+    assert.equal(JSON.stringify(project()).includes("private-canary"), false);
+    input.repoMemoryDelegation.reason = "private-canary";
+    assert.equal(project().repoMemoryDelegation.reason, "unknown");
+    for (const markerCount of [NaN, Infinity, 1.5, "2", null, {}, [], Number.MAX_SAFE_INTEGER]) {
+      input.repoMemoryDelegation.sources.initial.markerCount = markerCount;
+      assert.equal(project().repoMemoryDelegation.sources.initial.markerCount, 0);
+    }
+    for (const value of [null, "private-canary", {}, []]) {
+      input.repoMemoryDelegation = value;
+      assert.deepEqual(project().repoMemoryDelegation, { reason: "unknown", sources: Object.fromEntries(
+        ["initial", "fresh", "dynamic", "user", "exec"].map((source) => [source, { present: false, markerCount: 0 }])) });
+      assert.equal(JSON.stringify(project()).includes("private-canary"), false);
+    }
+    input.status = "PASS";
+    assert.throws(project, /CURSOR_CONTAINER_REPORT/);
+    input.stage = "complete";
+    delete input.errorCode;
+    assert.equal(project().repoMemoryDelegation, undefined);
+  }
+});
+
+test("Hook timing and Windows process audits remain bounded and redacted on PASS and FAIL", () => {
+  for (const platform of ["linux", "darwin", "win32"]) {
+    for (const status of ["PASS", "FAIL"]) {
+      const input = { ...nativeReport(), platform, status };
+      input.hookTimings = Array.from({ length: 40 }, () => ({ phase: "turn", appLaunch: 1, runIndex: 0,
+        resumedSession: false, readStatus: "present", currentLogFiles: 1, requiredUserHooksLoaded: true,
+        sessionStartReady: true, counts: { reload: 2, userConfigLoad: 2, beforeSubmitRequest: 1, beforeSubmitExecution: 1 },
+        nativeLogMs: { firstReload: 1, lastReload: 20, lastRequiredUserConfigLoad: 25, lastBeforeSubmitRequest: 31 },
+        observedMs: { sessionStartReady: 28, submit: 30, modelRequest: 40, turnStart: 42 },
+        sessionId: "private-canary", startedAt: "private-canary", raw: "private-canary" }));
+      input.windowsProcessAudits = Array.from({ length: 8 }, () => ({ stage: "workspace-switch", attempts: 2,
+        elapsedMs: 30201, timeoutCount: 1, firstFailure: "timeout", finalStatus: "clear",
+        lastQuery: { elapsedMs: 1, timedOut: false, exitCode: 0, signal: "none", stdoutBytes: 2, stderrBytes: 0,
+          stdout: "private-canary", pid: "private-canary" }, command: "private-canary" }));
+      const report = projectNativeReport(input, { platform });
+      assert.equal(JSON.stringify(report).includes("private-canary"), false);
+      if (["linux", "darwin"].includes(platform)) {
+        assert.equal(report.hookTimings.length, 32);
+        assert.equal(report.hookTimings[0].observedMs.submit, 30);
+        assert.equal(report.hookTimings[0].runIndex, 0);
+      } else assert.equal(report.hookTimings, undefined);
+      if (platform === "win32") {
+        assert.equal(report.windowsProcessAudits.length, 5);
+        assert.equal(report.windowsProcessAudits[0].timeoutCount, 1);
+        assert.equal(report.windowsProcessAudits[0].firstFailure, "timeout");
+        assert.equal(report.windowsProcessAudits[0].finalStatus, "clear");
+      } else assert.equal(report.windowsProcessAudits, undefined);
+    }
+  }
+  const windows = { ...nativeReport(), platform: "win32", windowsProcessAudits: [{ stage: "private-canary" }, null] };
+  const report = projectNativeReport(windows, { platform: "win32" });
+  assert.ok(report.windowsProcessAudits.every((item) => item.stage === "other"));
+  assert.equal(JSON.stringify(report).includes("private-canary"), false);
+  for (const platform of ["linux", "darwin"]) {
+    const input = { ...nativeReport(), platform, hookTimings: "private-canary" };
+    const project = (value) => projectNativeReport(value, { platform });
+    assert.deepEqual(project(input).hookTimings, []);
+    for (const stage of ["hook-config-ready", "hook-session-ready", "repo-memory-worker"]) {
+      input.status = "FAIL"; input.stage = stage;
+      input.errorCode = "CURSOR_APP_HOOK_READINESS_TIMEOUT";
+      assert.equal(project(input).stage, stage);
+    }
+    input.status = "PASS";
+    assert.throws(() => project(input), /CURSOR_CONTAINER_REPORT/);
   }
 });
 

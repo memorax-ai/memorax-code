@@ -7,6 +7,8 @@ import { PassThrough } from "node:stream";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import { collectCursorAppBackendDiagnostics, collectCursorAppShellDiagnostics, collectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
+import { projectCursorAppHookTiming } from "./cursor-app-hook-diagnostics.mjs";
+import { collectCursorAppSkillHookContext } from "./cursor-app-hook-context.mjs";
 
 const source = (await readFile(new URL("./cursor-app-native-check.mjs", import.meta.url), "utf8")).replaceAll("\r\n", "\n");
 const privateCanary = "private-content-path-token-canary";
@@ -14,7 +16,9 @@ function check(value, code) { if (!value) throw Object.assign(new Error(code), {
 function nativeFunction(name, context = {}) {
   const definition = source.match(new RegExp(`(?:async )?function ${name}\\([\\s\\S]*?(?=\\n(?:async )?function )`))?.[0];
   assert.ok(definition, name);
-  return runInNewContext(`(${definition})`, { check, Buffer, basename, dirname, join, once, ...context }, { timeout: 100 });
+  return runInNewContext(`(${definition})`, { check, Buffer, basename, dirname, join, once, collectCursorAppSkillHookContext, projectCursorAppHookTiming,
+    process: { platform: "darwin" }, appLaunch: 0, readyHookSessions: new Map(),
+    beginHookTiming() {}, markHookSubmit() {}, async observeHookTiming() {}, finishHookTiming() {}, async waitForHookReady() {}, ...context }, { timeout: 100 });
 }
 function childProcess() {
   return Object.assign(new EventEmitter(), { pid: 201, exitCode: null, signalCode: null,
@@ -100,13 +104,18 @@ test("candidate commands drain stderr, bound output/time and preserve redacted s
 });
 
 test("failure collection reads existing diagnostics without replacing the original failure", async () => {
-  const body = source.split("  const run = agent?.runs.at(-1);")[1]?.split("\n}\nfinally {")[0];
+  const selector = "  const run = repoMemory?.failedRun ?? agent?.runs.at(-1);";
+  const body = selector + source.split(selector)[1]?.split("\n}\nfinally {")[0];
   assert.ok(body);
   const run = { conversationId: "11111111-1111-1111-1111-111111111111", requestId: "22222222-2222-2222-2222-222222222222" };
   const identity = { sessionId: run.conversationId, turnId: run.requestId };
-  for (const failed of [false, true]) {
-    const report = { errorCode: "CURSOR_APP_ADD_TIMEOUT" };
+  for (const failed of [false, true]) for (const saved of [false, true]) for (const firstFailure of [false, true]) {
+    const snapshot = saved ? collectCursorAppSkillHookContext({ run: { ...run,
+      inputRequestContext: { hooksAdditionalContext: privateCanary } } }) : undefined;
+    const report = { errorCode: "CURSOR_APP_ADD_TIMEOUT", ...(snapshot ? { skillHookContext: snapshot } : {}) };
     await runInNewContext(`(async () => {${body}})()`, { run, report,
+      agent: { runs: firstFailure ? [run, { conversationId: privateCanary, requestId: privateCanary }] : [run] },
+      repoMemory: firstFailure ? { failedRun: run } : undefined, collectCursorAppSkillHookContext,
       env: { MEMORAX_CODE_HOME: "/owned/state" }, userData: "/owned/app-data", collectCursorAppBackendDiagnostics,
       async collectCursorAppDiagnostics(input) { assert.deepEqual({ ...input }, { home: "/owned/state", ...identity }); return {}; },
       async collectCursorAppHookDiagnostics(input) { assert.deepEqual({ ...input }, { home: "/owned/app-data", ...identity }); return { readStatus: "absent" }; },
@@ -118,15 +127,21 @@ test("failure collection reads existing diagnostics without replacing the origin
     });
     assert.equal(report.errorCode, "CURSOR_APP_ADD_TIMEOUT");
     assert.equal(report.backendDiagnostics.readStatus, failed ? "unavailable" : "present");
+    assert.equal(report.skillHookContext.matched, false);
+    if (saved) assert.equal(report.skillHookContext, snapshot);
+    else assert.deepEqual(report.skillHookContext, collectCursorAppSkillHookContext({ run, runs: [run] }));
     assert.equal(JSON.stringify(report).includes(privateCanary), false);
   }
 });
 
 test("App launch preserves the sandbox and isolated arguments with a longer Windows driver deadline", async () => {
   for (const platform of ["linux", "darwin", "win32"]) {
-    const child = childProcess(), waits = [], argumentsSeen = [];
+    const child = childProcess(), waits = [], argumentsSeen = [], readiness = [];
+    const readyHookSessions = new Map([["old-session", 12]]);
     const page = { url: () => "file:///workbench.html", evaluate: async () => true, setDefaultTimeout() {} };
     const start = nativeFunction("startApp", {
+      process: { platform }, readyHookSessions,
+      async waitForHookReady(phase) { readiness.push(phase); },
       macos: platform === "darwin" ? { createDevToolsEndpointReader: () => ({ push() {}, get: () => "ws://127.0.0.1:12346" }) } : undefined,
       windows: platform === "win32" ? {} : undefined,
       appPath: "/owned/app", userData: "/owned/app-data", root: "/owned", workspace: "/owned/workspace",
@@ -141,6 +156,8 @@ test("App launch preserves the sandbox and isolated arguments with a longer Wind
       },
     });
     await start();
+    assert.deepEqual(readiness, ["config"]);
+    assert.equal(readyHookSessions.size, platform === "win32" ? 1 : 0);
     assert.equal(argumentsSeen.includes("--force-disable-user-env"), platform !== "linux");
     assert.ok(argumentsSeen.includes("--use-inmemory-secretstorage"));
     assert.ok(argumentsSeen.includes("--test-backend-url=http://127.0.0.1:12345"));
@@ -298,6 +315,50 @@ test("Skill tools require the exact manually attached body and full installed fi
   }
 });
 
+test("Skill Hook assertion consumes initial, dynamic and completed Exec contexts with exact session binding", () => {
+  const sessionId = "11111111-1111-4111-8111-111111111111", other = "22222222-2222-4222-8222-222222222222";
+  for (const location of ["initial", "dynamic", "exec"]) for (const current of [true, false]) {
+    const content = "MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT=cursor and MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID=" + (current ? sessionId : other);
+    const run = { conversationId: sessionId, prompt: "/memorax-code prompt", requestContextCloseCount: 1, turnRefs: [],
+      requestContext: { hooksAdditionalContext: "" },
+      selectedCursorRules: [{ fullPath: "/owned/skill/SKILL.md", content: "# Skill\n", manuallyAttached: true }] };
+    if (location === "initial") run.inputRequestContext = { hooksAdditionalContext: content };
+    if (location === "dynamic") run.requestContextParts = { dynamicContext: { hooksAdditionalContext: content } };
+    if (location === "exec") run.execHookAdditionalContexts = [{ hookEventName: "sessionStart", content }];
+    const tools = nativeFunction("toolSteps", { process: { platform: "linux" }, skillRoot: "/owned/skill", skillText: "# Skill\n",
+      interruption: undefined, report: {}, agent: { runs: [run] }, turns: [{ sessionId, prompt: run.prompt, operation: "search" }] });
+    if (current) assert.equal(tools(run, []).path, "/owned/skill/SKILL.md");
+    else assert.throws(() => tools(run, []), { code: "CURSOR_APP_SKILL_HOOK_CONTEXT" });
+  }
+});
+
+test("Skill Hook failure preserves the first context snapshot across transport retries", () => {
+  const sessionId = "11111111-1111-4111-8111-111111111111";
+  const first = { conversationId: sessionId, prompt: "/memorax-code prompt", requestContextCloseCount: 1, turnRefs: [],
+    inputRequestContext: { hooksAdditionalContext: privateCanary } };
+  const retry = { ...first, inputRequestContext: undefined, requestContext: { hooksAdditionalContext: "different context" } };
+  const agent = { runs: [first] }, report = {};
+  const tools = nativeFunction("toolSteps", { process: { platform: "linux" }, skillRoot: "/owned/skill", skillText: "# Skill\n",
+    interruption: undefined, agent, report, turns: [{ sessionId, prompt: first.prompt, operation: "search" }] });
+  assert.throws(() => tools(first, []), { code: "CURSOR_APP_SKILL_HOOK_CONTEXT" });
+  const snapshot = report.skillHookContext;
+  assert.equal(snapshot.current.initial.present, true);
+  assert.equal(snapshot.current.fresh.present, false);
+  agent.runs.push(retry);
+  assert.throws(() => tools(retry, []), { code: "CURSOR_APP_SKILL_HOOK_CONTEXT" });
+  assert.equal(report.skillHookContext, snapshot);
+  assert.notDeepEqual(snapshot, collectCursorAppSkillHookContext({ run: retry, runs: agent.runs }));
+  const marker = "MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT=cursor and MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID=" + sessionId;
+  retry.execHookAdditionalContexts = [{ hookEventName: "sessionStart", content: marker }];
+  retry.selectedCursorRules = [{ fullPath: "/owned/skill/SKILL.md", content: "# Skill\n", manuallyAttached: true }];
+  assert.equal(tools(retry, []).path, "/owned/skill/SKILL.md");
+  first.inputRequestContext.hooksAdditionalContext = marker;
+  assert.equal(collectCursorAppSkillHookContext({ run: first, runs: agent.runs }).matched, true);
+  assert.equal(report.skillHookContext, snapshot);
+  assert.equal(snapshot.matched, false);
+  assert.equal(JSON.stringify(snapshot).includes(privateCanary), false);
+});
+
 test("Skill shell steps bind the isolated endpoint, state and session with macOS network permission", () => {
   for (const platform of ["linux", "darwin", "win32"]) for (const operation of ["search", "add"]) {
     const run = { conversationId: "session", prompt: "prompt", requestContextCloseCount: 1 };
@@ -424,4 +485,118 @@ test("preflight rejects unsupported runtimes, Linux root and unowned Windows run
       process: { env: { GITHUB_ACTIONS: actions, RUNNER_OS: "Windows" }, arch: "x64" } });
     if (actions) run(); else assert.throws(run, { code: "CURSOR_APP_WINDOWS_RUNNER" });
   }
+});
+
+test("Linux and macOS readiness use bounded independent gates and preserve failure before submission", async () => {
+  for (const platform of ["linux", "darwin"]) for (const phase of ["config", "session"]) for (const ready of [false, true]) {
+    const calls = [], report = {};
+    const gate = nativeFunction("waitForHookReady", { process: { platform }, report,
+      beginHookTiming(value, id) { calls.push([value, id]); },
+      async observeHookTiming() { return { requiredUserHooksLoaded: ready, sessionStartReady: phase === "session" && ready }; },
+      async waitFor(predicate, code) { calls.push(code); check(await predicate(), code); },
+      finishHookTiming() { calls.push("snapshot"); },
+    });
+    if (ready) await gate(phase, "session");
+    else await assert.rejects(gate(phase, "session"), { code: phase === "config"
+      ? "CURSOR_APP_HOOK_CONFIG_READY_TIMEOUT" : "CURSOR_APP_SESSION_START_READY_TIMEOUT" });
+    assert.equal(report.stage, phase === "config" ? "hook-config-ready" : "hook-session-ready");
+    assert.equal(calls.at(-1), "snapshot");
+    assert.deepEqual(calls[0], [phase, "session"]);
+  }
+  for (const platform of ["win32"]) {
+    await nativeFunction("waitForHookReady", { process: { platform }, beginHookTiming() { assert.fail("unsupported readiness gate"); } })("config");
+  }
+});
+
+test("new sessions wait for their Hook but resumed sessions do not require a new sessionStart", async () => {
+  for (const resumed of [false, true]) {
+    const calls = [], selected = "11111111-1111-4111-8111-111111111111";
+    const open = nativeFunction("openSession", { report: {}, turns: [], agent: { runs: [] }, bounded: (promise) => promise,
+      page: { async evaluate(callback, id) { return id ? undefined : { composerId: selected }; },
+        locator: () => ({ count: async () => 1 }) },
+      async waitFor(predicate) { assert.equal(await predicate(), true); },
+      async waitForHookReady(phase, id) { calls.push([phase, id]); },
+    });
+    assert.equal(await open(resumed ? selected : undefined), selected);
+    assert.deepEqual(calls, resumed ? [] : [["session", selected]]);
+  }
+});
+
+test("Hook timing binds observations to the first native attempt and snapshots contain no identity or path", async () => {
+  const sessionId = "11111111-1111-4111-8111-111111111111", turnId = "22222222-2222-4222-8222-222222222222";
+  const current = { phase: "turn", appLaunch: 1, sessionId, runIndex: 0, observedMs: { submit: 10 } };
+  const first = { conversationId: sessionId, requestId: turnId }, retry = { conversationId: sessionId, requestId: "33333333-3333-4333-8333-333333333333" };
+  const seen = [], readyHookSessions = new Map();
+  const observe = nativeFunction("observeHookTiming", { activeHookTiming: current, appStartedAt: 1000,
+    Date: { now: () => 1020 }, userData: "/owned/app-data", env: { MEMORAX_CODE_HOME: "/owned/state" },
+    agent: { runs: [first, retry] }, readyHookSessions,
+    async collectCursorAppHookTiming(input) {
+      seen.push(input.turnId);
+      return projectCursorAppHookTiming({ readStatus: "present", currentLogFiles: 1, requiredUserHooksLoaded: true, sessionStartReady: true });
+    },
+    async collectCursorAppDiagnostics(input) { assert.equal(input.turnId, turnId); return { trace: { readStatus: "present", turnStartCount: 1 } }; },
+  });
+  const timing = await observe();
+  assert.deepEqual(seen, [turnId]);
+  assert.deepEqual(timing.observedMs, { sessionStartReady: 20, submit: 10, modelRequest: 20, turnStart: 20 });
+  assert.equal(timing.runIndex, 0);
+  const report = {};
+  const finish = nativeFunction("finishHookTiming", { activeHookTiming: current, report });
+  finish(); finish();
+  current.observedMs.submit = 999;
+  assert.equal(report.hookTimings.length, 1);
+  assert.equal(report.hookTimings[0].observedMs.submit, 10);
+  for (const value of [sessionId, turnId, "/owned"]) assert.equal(JSON.stringify(report).includes(value), false);
+});
+
+test("submission observation happens immediately before Enter and does not replay input", async () => {
+  const calls = [];
+  const submit = nativeFunction("submitPrompt", { markHookSubmit() { calls.push("mark"); },
+    page: {}, bounded: (promise) => promise });
+  await submit({ async fill() { calls.push("fill"); }, async press(key) { calls.push(key); } }, { prompt: "synthetic" });
+  assert.deepEqual(calls, ["fill", "mark", "Enter"]);
+});
+
+test("Windows process audit records each bounded result and cleanup cannot replace the earlier failure", async () => {
+  const report = { stage: "workspace-switch", errorCode: "PRIMARY_FAILURE" }, calls = [];
+  const first = { attempts: 2, timeoutCount: 2, finalStatus: "timeout" };
+  const next = { attempts: 1, timeoutCount: 0, finalStatus: "clear" };
+  const audit = nativeFunction("assertProcessesStopped", { report, process: { pid: 9 }, appPath: "/owned/app", packageRoot: "/owned/package",
+    env: { MEMORAX_CODE_HOME: "/owned/state" }, interruption: undefined,
+    windows: { projectWindowsProcessAuditDiagnostics: value => ({ ...value }),
+      async waitForWindowsProcessesExit(options) {
+        calls.push(options);
+        if (calls.length === 1) throw Object.assign(new Error("QUERY_TIMEOUT"), { code: "QUERY_TIMEOUT", windowsProcessAudit: first });
+        return next;
+      } },
+    ownedProcessesRemain() { assert.fail("must not nest the old Windows retry loop"); },
+  });
+  await assert.rejects(audit({ includeBackend: false }), { code: "QUERY_TIMEOUT" });
+  await audit({ stage: "cleanup" });
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].includeBackend, false);
+  assert.equal(calls[1].includeBackend, true);
+  assert.equal(report.windowsProcessAudits.length, 2);
+  assert.equal(report.windowsProcessAudits[0].stage, "workspace-switch");
+  assert.equal(report.windowsProcessAudits[0].finalStatus, "timeout");
+  assert.equal(report.windowsProcessAudits[1].stage, "cleanup");
+  assert.equal(report.errorCode, "PRIMARY_FAILURE");
+});
+
+test("Repo Memory timing observes the first submission before reporting its original failure", async () => {
+  const body = source.split("async function runRepoMemoryWorker() {")[1]?.split("\ntry {")[0];
+  assert.ok(body);
+  const calls = [], agent = { runs: [], errors: [] }, report = { evidence: {} };
+  const failure = "CURSOR_APP_REPO_MEMORY_DELEGATION_INVALID";
+  const worker = runInNewContext("(async function () {" + body + ")", { check, basename, report, agent, turns: [], repoMemory: undefined,
+    async stopApp() {}, async assertProcessesStopped() {}, async prepareRepoMemoryWorkspace() { return { repo: "/owned/repo" }; },
+    async startApp() { calls.push("config-ready"); }, async openSession() { calls.push("session-ready"); return "parent-session"; },
+    page: { locator: () => ({ locator: () => ({}) }) }, repoMemoryFixture: { prompt: "synthetic" },
+    beginHookTiming(phase, sessionId, options) { calls.push([phase, sessionId, options.runIndex]); },
+    async submitPrompt() { calls.push("submit"); agent.runs.push({ requestId: "first" }, { requestId: "retry" }); agent.errors.push(failure); },
+    async observeHookTiming() { calls.push("observe"); },
+    async waitFor(predicate) { await predicate(); },
+  });
+  await assert.rejects(worker(), { code: failure });
+  assert.deepEqual(calls, ["config-ready", "session-ready", ["turn", "parent-session", 0], "submit", "observe"]);
 });

@@ -14,6 +14,7 @@ import {
   buildHelpfulEvaluations, releaseHelpfulSearches,
   type HelpfulTurn, type HelpfulEvaluation,
 } from "./helpful.js";
+import type { PendingCodingSessionTurn } from "../coding-sessions/contracts.js";
 
 export type MemoryWritebackBufferDecision = {
   helpfulTurn?: HelpfulTurn;
@@ -21,7 +22,10 @@ export type MemoryWritebackBufferDecision = {
   sessionKey: string;
   idempotencyKey: string;
   messages: WritebackMessage[];
+  codingTurn?: PendingCodingSessionTurn;
 };
+
+export type MemoryWritebackSourceTurn = Pick<MemoryWritebackBufferDecision, "messages" | "codingTurn">;
 
 export type MemoryWritebackBufferScopeUpgrade = Readonly<{
   client: MemoryWritebackBufferDecision["client"];
@@ -34,6 +38,7 @@ export type MemoryWritebackBufferedDecision = MemoryWritebackBufferDecision & {
   dedupeKeys: string[];
   flushReason: string;
   turnCount: number;
+  sourceTurns: MemoryWritebackSourceTurn[];
 };
 
 export type MemoryWritebackBufferOptions = {
@@ -89,6 +94,7 @@ type MemoryWritebackBufferedTurn = {
   helpfulTurn?: HelpfulTurn;
   idempotencyKey: string;
   messages: WritebackMessage[];
+  codingTurn?: PendingCodingSessionTurn;
   traceContext?: TraceContext;
 };
 
@@ -216,6 +222,7 @@ function enqueueMemoryWritebackBufferForRuntime(
     } : undefined,
     idempotencyKey: decision.idempotencyKey,
     messages: decision.messages,
+    ...(decision.codingTurn ? { codingTurn: decision.codingTurn } : {}),
     ...(options.traceContext ? { traceContext: options.traceContext } : {}),
   });
   buffer.turnKeys.add(decision.idempotencyKey);
@@ -343,7 +350,9 @@ function flushMemoryWritebackBuffer(
       reason => deps.debug("memory.helpful.skipped", { reason }))
     : [];
   releaseBufferHelpful(buffer);
-  const idempotencyKey = `automatic-buffer:v1:${buffer.client}:${scopeHash}:${sessionKey}:${deps.hashText(messages.map((message) => `${message.role}:${message.content}`).join("\n"))}`;
+  const archiveIdentity = buffer.turns.some((turn) => turn.codingTurn)
+    ? `:turns:${deps.hashText(JSON.stringify(buffer.turns.map((turn) => turn.idempotencyKey)))}` : "";
+  const idempotencyKey = `automatic-buffer:v1:${buffer.client}:${scopeHash}:${sessionKey}:${deps.hashText(messages.map((message) => `${message.role}:${message.content}`).join("\n"))}${archiveIdentity}`;
   const dedupeKeys = [idempotencyKey, ...buffer.turns.map((turn) => turn.idempotencyKey)];
   if (dedupeKeys.some((key) => deps.hasPendingWriteback(key))) return false;
   deps.reservePendingWritebacks(dedupeKeys);
@@ -366,6 +375,7 @@ function flushMemoryWritebackBuffer(
     dedupeKeys,
     flushReason,
     turnCount: buffer.turns.length,
+    sourceTurns: buffer.turns.map(({ messages, codingTurn }) => ({ messages, ...(codingTurn ? { codingTurn } : {}) })),
   }, {
     sessionKey,
     env: buffer.env,

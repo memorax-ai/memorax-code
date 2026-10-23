@@ -6,6 +6,56 @@ behavior.
 
 ## Unreleased
 
+## [0.1.20] - 2026-10-12
+
+### Added
+
+- Added a shared Repo Memory baseline for linked Git worktrees using the same
+  MemoraX Code home. Branches and dirty worktrees reuse one validated mainline
+  snapshot while agents continue to verify relevant current source files.
+
+### Changed
+
+- Changed automatic Repo Memory builds and updates to use the locally known
+  `origin/HEAD` commit. The default update policy now requires new mainline
+  commits and at least 72 hours since the last successful publication.
+  Explicit policy and interval settings remain in effect.
+- Requested medium reasoning for background Repo Memory builds and updates
+  in Codex, Claude Code, and CodeBuddy/WorkBuddy. OpenCode selects medium only
+  when the background model exposes that variant. Model selection and
+  foreground settings remain unchanged.
+
+### Fixed
+
+- Restored Codex automatic writeback when assistant responses carry a provider
+  turn ID that differs from the local rollout turn, while retaining strict
+  user-message correlation.
+- Preserved CodeBuddy and WorkBuddy multiline prompts in automatic writeback
+  when native Hooks remove line breaks, using unique native transcript matches.
+- Prevented CodeBuddy and WorkBuddy Repo Memory workers from inheriting the
+  foreground client's listening endpoint.
+- Fixed Cursor Hook input handling for split UTF-8 characters and Windows
+  PowerShell BOMs, and recognized Windows workspace URI paths.
+- Supported deep Windows paths when preparing Repo Memory source snapshots.
+- Retained distinct connection permission errors in MemoraX request diagnostics.
+
+### Upgrade notes
+
+Shared Repo Memory lives under
+`$MEMORAX_CODE_HOME/repo-memory-bases/<repository-key>/`. Existing local
+`.repo_memory` bundles are preserved and remain a read fallback until a shared
+baseline exists. Independent clones do not share a baseline merely because
+remote URLs match. Update all client integrations together; older runtimes
+retain their previous local maintenance behavior.
+
+Automatic maintenance requires a resolvable local `refs/remotes/origin/HEAD`.
+It does not fetch or guess the default branch. Fetch or pull through your
+normal Git workflow to make new mainline commits available. Explicit local
+Build and Update operations remain local and do not publish a shared baseline.
+Background Repo Memory jobs in Claude Code and CodeBuddy/WorkBuddy require a
+native runtime that supports `--effort`.
+See [Repo Memory configuration](docs/configuration.md#skill-reminder-and-repository-maintenance).
+
 ## [0.1.19] - 2026-09-28
 
 ### Added
@@ -432,6 +482,7 @@ Later upgrades do not require this workaround.
 - Required a non-empty MemoraX user ID and API key during interactive setup,
   with clearer registration guidance.
 
+[0.1.20]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.20
 [0.1.19]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.19
 [0.1.18]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.18
 [0.1.17]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.17

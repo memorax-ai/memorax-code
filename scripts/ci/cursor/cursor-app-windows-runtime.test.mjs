@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
+import { execFile, spawnSync } from "node:child_process";
+import { EventEmitter } from "node:events";
+import { promisify } from "node:util";
 import test from "node:test";
-import { auditWindowsProcesses, hasOwnedWindowsProcesses, stopWindowsApp, windowsRuntimePaths, windowsShellCommand } from "./cursor-app-windows-runtime.mjs";
+import { auditWindowsProcesses, hasOwnedWindowsProcesses, projectWindowsProcessAuditDiagnostics,
+  stopWindowsApp, waitForWindowsProcessesExit, windowsRuntimePaths, windowsShellCommand } from "./cursor-app-windows-runtime.mjs";
 
 const paths = { root: "C:\\owned test", appPath: "C:\\owned app\\Cursor.exe",
   packageRoot: "C:\\candidate\\node_modules\\@memorax\\memorax-code", nodePath: "C:\\node\\node.exe" };
@@ -51,10 +54,12 @@ test("Windows cleanup audits only owned paths and never kills discovered PIDs", 
     assert.equal(hasOwnedWindowsProcesses(rows, { ...options, includeBackend }), expected);
     assert.equal(await auditWindowsProcesses({ ...options, includeBackend }, async (file, args, settings) => {
       assert.match(file, /\\System32\\WindowsPowerShell\\v1\.0\\powershell\.exe$/);
-      assert.ok(args.at(-1).includes("Get-CimInstance Win32_Process"));
+      assert.ok(args.at(-1).includes("Get-CimInstance Win32_Process -Property ProcessId,ExecutablePath,CommandLine"));
+      assert.ok(args.at(-1).includes("ConvertTo-Json -InputObject @("));
+      assert.doesNotMatch(args.at(-1), /-Filter|-Query|Where-Object/);
       assert.doesNotMatch(args.at(-1), /Stop-Process|taskkill/);
       assert.equal(settings.env, options.env);
-      assert.equal(settings.timeout, 30000);
+      assert.equal(settings.timeout, 0);
       return { stdout: JSON.stringify(rows) };
     }), expected);
   }
@@ -74,9 +79,9 @@ test("Windows process-query diagnostics keep only fixed failure codes", async ()
   const options = { appPath: paths.appPath, packageRoot: paths.packageRoot, stateHome: "C:\\owned state",
     selfPid: 123, env: windowsRuntimePaths(paths).env };
   for (const [fields, suffix] of [
-    [{ code: "ETIMEDOUT" }, "QUERY_TIMEOUT"],
-    [{ killed: true, signal: "SIGTERM" }, "QUERY_TIMEOUT"],
-    [{ code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", killed: true }, "QUERY_FAILED"],
+    [{ code: "ETIMEDOUT" }, "QUERY_FAILED"],
+    [{ killed: true, signal: "SIGTERM" }, "QUERY_FAILED"],
+    [{ code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", killed: true }, "QUERY_OUTPUT_OVERFLOW"],
     [{ code: "ENOENT" }, "QUERY_FAILED"],
     [{ code: 1, stderr: "private-canary CommandNotFoundException private-canary" }, "QUERY_COMMAND_NOT_FOUND"],
     [{ code: 1, stderr: "private-canary Microsoft.Management.Infrastructure.CimException private-canary" }, "QUERY_CIM_FAILED"],
@@ -86,6 +91,257 @@ test("Windows process-query diagnostics keep only fixed failure codes", async ()
       throw Object.assign(new Error("private-canary"), { stdout: "private-canary", ...fields });
     }), { code: "CURSOR_APP_WINDOWS_PROCESS_" + suffix, message: "CURSOR_APP_WINDOWS_PROCESS_" + suffix });
   }
+});
+
+const auditOptions = { appPath: paths.appPath, packageRoot: paths.packageRoot, stateHome: "C:\\owned state",
+  selfPid: 123, env: windowsRuntimePaths(paths).env };
+const ownedRows = [{ ProcessId: 124, CommandLine: '"C:\\owned app\\Cursor.exe" --type=renderer', ExecutablePath: paths.appPath }];
+
+function auditScenario(t, steps) {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const state = { time: 0, calls: 0, sleeps: [], kills: 0 };
+  const execute = () => {
+    const step = steps[state.calls++];
+    assert.ok(step, "unexpected process query");
+    if (step.timeout) {
+      const child = new EventEmitter();
+      child.exitCode = null; child.signalCode = null;
+      let reject;
+      const pending = new Promise((resolve, fail) => { reject = fail; });
+      pending.child = child;
+      child.kill = (signal) => {
+        state.kills++;
+        child.signalCode = signal;
+        reject(Object.assign(new Error("private-canary"), { killed: true, signal, stdout: "private-canary" }));
+        queueMicrotask(() => child.emit("close", null, signal));
+      };
+      queueMicrotask(() => {
+        const before = state.kills;
+        state.time += step.timeout - 1; t.mock.timers.tick(step.timeout - 1);
+        assert.equal(state.kills, before, "query must retain its remaining deadline");
+        state.time++; t.mock.timers.tick(1);
+        assert.equal(state.kills, before + 1, "query must stop at its deadline");
+      });
+      return pending;
+    }
+    state.time += step.elapsed ?? 0;
+    return step.error ? Promise.reject(Object.assign(new Error("private-canary"), step.error))
+      : Promise.resolve({ stdout: step.stdout ?? JSON.stringify(step.owned ? ownedRows : []), stderr: "" });
+  };
+  return { state, run: () => waitForWindowsProcessesExit(auditOptions, { execute, now: () => state.time,
+    sleep: async (ms) => { state.sleeps.push(ms); state.time += ms; t.mock.timers.tick(ms); } }) };
+}
+
+test("Windows process exit accepts only a complete clear snapshot and retains successful audit metrics", async (t) => {
+  const { run, state } = auditScenario(t, [{ owned: true, elapsed: 12 }, { elapsed: 8 }]);
+  const result = await run();
+  assert.equal(state.calls, 2);
+  assert.deepEqual(state.sleeps, [200]);
+  assert.deepEqual(result, { attempts: 2, elapsedMs: 220, timeoutCount: 0, firstFailure: "none", finalStatus: "clear",
+    lastQuery: { elapsedMs: 8, timedOut: false, exitCode: 0, signal: "none", stdoutBytes: 2, stderrBytes: 0 } });
+});
+
+test("Windows process exit retries one confirmed timeout and retains its history on success", async (t) => {
+  const { run, state } = auditScenario(t, [{ timeout: 30000 }, { owned: true, elapsed: 20 }, { elapsed: 10 }]);
+  const result = await run();
+  assert.equal(state.calls, 3);
+  assert.deepEqual(state.sleeps, [200, 200]);
+  assert.equal(result.firstFailure, "timeout");
+  assert.equal(result.timeoutCount, 1);
+  assert.equal(result.finalStatus, "clear");
+  assert.equal(result.elapsedMs, 30430);
+  assert.equal(result.lastQuery.timedOut, false);
+  assert.doesNotMatch(JSON.stringify(result), /private-canary|ProcessId|CommandLine|C:\\/);
+});
+
+test("Windows process exit caps the second query by the remaining shared budget", async (t) => {
+  const { run, state } = auditScenario(t, [{ timeout: 30000 }, { timeout: 29800 }]);
+  await assert.rejects(run(), (error) => {
+    assert.equal(error.code, "CURSOR_APP_WINDOWS_PROCESS_QUERY_TIMEOUT");
+    assert.equal(error.windowsProcessAudit.attempts, 2);
+    assert.equal(error.windowsProcessAudit.elapsedMs, 60000);
+    assert.equal(error.windowsProcessAudit.timeoutCount, 2);
+    assert.equal(error.windowsProcessAudit.finalStatus, "timeout");
+    assert.equal(error.windowsProcessAudit.lastQuery.elapsedMs, 29800);
+    assert.equal(error.windowsProcessAudit.lastQuery.signal, "SIGKILL");
+    assert.doesNotMatch(JSON.stringify(error), /private-canary/);
+    return true;
+  });
+  assert.equal(state.calls, 2);
+  assert.deepEqual(state.sleeps, [200]);
+});
+
+test("Windows process exit fails on non-timeout errors without retrying", async (t) => {
+  for (const [step, firstFailure, suffix] of [
+    [{ error: { code: 1, stderr: "private-canary CimException" } }, "cim", "QUERY_CIM_FAILED"],
+    [{ error: { code: 1, stderr: "private-canary CommandNotFoundException" } }, "command-not-found", "QUERY_COMMAND_NOT_FOUND"],
+    [{ error: { code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER", killed: true } }, "overflow", "QUERY_OUTPUT_OVERFLOW"],
+    [{ error: { killed: true, signal: "SIGTERM" } }, "query-failed", "QUERY_FAILED"],
+    [{ error: { code: "ETIMEDOUT" } }, "query-failed", "QUERY_FAILED"],
+    [{ error: { code: "ENOENT" } }, "query-failed", "QUERY_FAILED"],
+    [{ stdout: "private-canary" }, "invalid-json", "JSON_INVALID"],
+    [{ stdout: "null" }, "invalid-rows", "ROWS_INVALID"],
+    [{ stdout: JSON.stringify([...ownedRows, { ProcessId: "private-canary" }]) }, "invalid-rows", "ROWS_INVALID"],
+    [{ stdout: " ".repeat(4 * 1024 * 1024) + "[]" }, "overflow", "QUERY_OUTPUT_OVERFLOW"],
+  ]) await t.test(firstFailure + " " + suffix, async (t) => {
+    const { run, state } = auditScenario(t, [step]);
+    await assert.rejects(run(), (error) => {
+      assert.equal(error.code, "CURSOR_APP_WINDOWS_PROCESS_" + suffix);
+      assert.equal(error.message, error.code);
+      assert.equal(error.windowsProcessAudit.firstFailure, firstFailure);
+      assert.equal(error.windowsProcessAudit.finalStatus, "failed");
+      assert.equal(error.windowsProcessAudit.attempts, 1);
+      assert.equal(error.windowsProcessAudit.timeoutCount, 0);
+      assert.doesNotMatch(JSON.stringify(error), /private-canary|ProcessId|CommandLine/);
+      return true;
+    });
+    assert.equal(state.calls, 1);
+    assert.deepEqual(state.sleeps, []);
+  });
+});
+
+test("Windows process exit does not retry or swallow a CIM failure after a timeout", async (t) => {
+  const { run, state } = auditScenario(t, [{ timeout: 30000 }, { error: { code: 1, stderr: "CimException" } }]);
+  await assert.rejects(run(), (error) => {
+    assert.equal(error.code, "CURSOR_APP_WINDOWS_PROCESS_QUERY_CIM_FAILED");
+    assert.equal(error.windowsProcessAudit.firstFailure, "timeout");
+    assert.equal(error.windowsProcessAudit.finalStatus, "failed");
+    assert.equal(error.windowsProcessAudit.timeoutCount, 1);
+    return true;
+  });
+  assert.equal(state.calls, 2);
+});
+
+test("Windows process exit includes polling delays in the budget and never passes a late snapshot", async (t) => {
+  for (const owned of [false, true]) await t.test(String(owned), async (t) => {
+    const { run, state } = auditScenario(t, [{ owned: true, elapsed: 29000 }, { owned: true, elapsed: 29000 }, { owned, elapsed: 1600 }]);
+    await assert.rejects(run(), (error) => {
+      assert.equal(error.code, "CURSOR_APP_WINDOWS_PROCESS_AUDIT_TIMEOUT");
+      assert.equal(error.windowsProcessAudit.elapsedMs, 60000);
+      assert.equal(error.windowsProcessAudit.finalStatus, "budget");
+      return true;
+    });
+    assert.equal(state.calls, 3);
+    assert.deepEqual(state.sleeps, [200, 200]);
+  });
+});
+
+test("Windows process exit retains the 25-query limit including a timeout retry", async (t) => {
+  for (const withTimeout of [false, true]) await t.test(String(withTimeout), async (t) => {
+    const steps = Array.from({ length: 25 }, () => ({ owned: true }));
+    if (withTimeout) steps[0] = { timeout: 30000 };
+    const { run, state } = auditScenario(t, steps);
+    await assert.rejects(run(), (error) => {
+      assert.equal(error.code, "CURSOR_APP_CLEANUP_DESCENDANTS");
+      assert.equal(error.windowsProcessAudit.attempts, 25);
+      assert.equal(error.windowsProcessAudit.finalStatus, "owned-remains");
+      assert.equal(error.windowsProcessAudit.timeoutCount, Number(withTimeout));
+      return true;
+    });
+    assert.equal(state.calls, 25);
+    assert.equal(state.sleeps.length, 24);
+  });
+});
+
+test("Windows process timeout waits for close before starting its retry", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let calls = 0, time = 0, reject;
+  const child = new EventEmitter();
+  child.kill = () => { reject(Object.assign(new Error("private-canary"), { killed: true })); };
+  const first = new Promise((resolve, fail) => { reject = fail; });
+  first.child = child;
+  const pending = waitForWindowsProcessesExit(auditOptions, { now: () => time,
+    execute: () => ++calls === 1 ? first : Promise.resolve({ stdout: "[]" }),
+    sleep: async (ms) => { time += ms; } });
+  time = 30000; t.mock.timers.tick(30000);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(calls, 1);
+  child.emit("close", null, "SIGKILL");
+  const result = await pending;
+  assert.equal(calls, 2);
+  assert.equal(result.firstFailure, "timeout");
+  assert.equal(result.finalStatus, "clear");
+});
+
+test("Windows process exit bounds an unconfirmed close and failed termination by the shared budget", async (t) => {
+  for (const behavior of ["missing-close", "kill-false", "kill-throws", "cim-before-close"]) await t.test(behavior, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    let calls = 0, time = 0, kills = 0, finished = false, reject;
+    const child = new EventEmitter();
+    child.exitCode = null;
+    child.kill = () => {
+      kills++;
+      if (behavior === "kill-throws") throw new Error("private-canary");
+      if (behavior === "kill-false") return false;
+      reject(Object.assign(new Error("private-canary"), { killed: true }));
+      return true;
+    };
+    const first = new Promise((resolve, fail) => { reject = fail; });
+    first.child = child;
+    const pending = waitForWindowsProcessesExit(auditOptions, { now: () => time,
+      execute: () => { calls++; return first; }, sleep: () => assert.fail("must not retry before close") });
+    const failure = pending.then(() => assert.fail("incomplete query must not pass"), (error) => { finished = true; return error; });
+    if (behavior === "cim-before-close") reject(Object.assign(new Error("private-canary"), { code: 1, stderr: "CimException" }));
+    await new Promise((resolve) => setImmediate(resolve));
+    time = 30000; t.mock.timers.tick(30000);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(finished, false);
+    time = 59999; t.mock.timers.tick(29999);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(finished, false);
+    time = 60000; t.mock.timers.tick(1);
+    const error = await failure;
+    assert.equal(error.code, "CURSOR_APP_WINDOWS_PROCESS_" + (behavior === "kill-throws" ? "QUERY_FAILED"
+      : behavior === "cim-before-close" ? "QUERY_CIM_FAILED" : "QUERY_TIMEOUT"));
+    assert.equal(error.windowsProcessAudit.elapsedMs, 60000);
+    assert.equal(error.windowsProcessAudit.attempts, 1);
+    assert.equal(error.windowsProcessAudit.lastQuery.exitCode, behavior === "cim-before-close" ? 1 : null);
+    assert.equal(calls, 1);
+    assert.equal(kills, behavior === "cim-before-close" ? 0 : 1);
+    assert.doesNotMatch(JSON.stringify(error), /private-canary/);
+  });
+});
+
+test("Windows process exit caps the last poll delay to the remaining budget", async (t) => {
+  const { run, state } = auditScenario(t, [{ owned: true, elapsed: 29000 }, { owned: true, elapsed: 29000 }, { owned: true, elapsed: 1500 }]);
+  await assert.rejects(run(), (error) => {
+    assert.equal(error.code, "CURSOR_APP_WINDOWS_PROCESS_AUDIT_TIMEOUT");
+    assert.equal(error.windowsProcessAudit.elapsedMs, 60000);
+    return true;
+  });
+  assert.equal(state.calls, 3);
+  assert.deepEqual(state.sleeps, [200, 200, 100]);
+});
+
+test("Windows process query deadline kills and closes only its held helper child", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let calls = 0, time = 0, closed = false;
+  const execute = () => {
+    if (++calls > 1) { assert.equal(closed, true); return Promise.resolve({ stdout: "[]" }); }
+    const pending = promisify(execFile)(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { encoding: "utf8" });
+    pending.child.once("close", () => { closed = true; });
+    t.after(() => { if (!closed) pending.child.kill("SIGKILL"); });
+    return pending;
+  };
+  const pending = waitForWindowsProcessesExit(auditOptions, { execute, now: () => time,
+    sleep: async (ms) => { time += ms; } });
+  time = 30000; t.mock.timers.tick(30000);
+  const result = await pending;
+  assert.equal(closed, true);
+  assert.equal(calls, 2);
+  assert.equal(result.timeoutCount, 1);
+  assert.equal(result.finalStatus, "clear");
+});
+
+test("Windows process audit projection rejects extra, oversized, and malformed diagnostic fields", () => {
+  const projected = projectWindowsProcessAuditDiagnostics({ attempts: 26, elapsedMs: Infinity, timeoutCount: 3,
+    firstFailure: { toString: "private-canary" }, finalStatus: "private-canary", command: "private-canary",
+    lastQuery: { elapsedMs: -1, timedOut: "true", exitCode: 0x100000000, signal: "private-canary",
+      stdoutBytes: 4194305, stderrBytes: "12", stdout: "private-canary", rows: ownedRows } });
+  assert.deepEqual(projected, { attempts: 0, elapsedMs: 0, timeoutCount: 0, firstFailure: "query-failed", finalStatus: "failed",
+    lastQuery: { elapsedMs: 0, timedOut: false, exitCode: null, signal: "other", stdoutBytes: 0, stderrBytes: 0 } });
+  assert.deepEqual(projectWindowsProcessAuditDiagnostics(projected), projected);
+  assert.doesNotMatch(JSON.stringify(projected), /private-canary|ProcessId|CommandLine/);
 });
 
 test("Windows App tree cleanup ignores exited children even if their PID is reused", async () => {

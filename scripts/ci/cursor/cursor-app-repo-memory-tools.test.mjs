@@ -4,7 +4,7 @@ import { posix, win32 } from "node:path";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import { assertCursorRepoMemoryRejected, parseCursorRepoMemoryClaim,
-  parseCursorRepoMemoryDelegation } from "./cursor-app-repo-memory-check.mjs";
+  readCursorRepoMemoryDelegation, projectCursorRepoMemoryDelegation } from "./cursor-app-repo-memory-check.mjs";
 import { collectCursorAppShellOutputDiagnostics, projectCursorAppShellDiagnostics } from "./cursor-app-diagnostics.mjs";
 
 const source = await readFile(new URL("./cursor-app-native-check.mjs", import.meta.url), "utf8");
@@ -44,7 +44,7 @@ function fixture(platform = "linux") {
   const run = evaluate(`(${body})`, {
     repoMemory, repoMemoryFixture, repoMemoryDefinition: definition, repoMemoryHelper: helper,
     workspace, env: { MEMORAX_CODE_HOME: stateHome }, process: { platform, execPath: executable },
-    parseCursorRepoMemoryDelegation, parseCursorRepoMemoryClaim, assertCursorRepoMemoryRejected,
+    readCursorRepoMemoryDelegation, projectCursorRepoMemoryDelegation, parseCursorRepoMemoryClaim, assertCursorRepoMemoryRejected,
     report, collectCursorAppShellOutputDiagnostics, projectCursorAppShellDiagnostics,
     shellCommand(args, environment) { commands.push({ args: Array.from(args), env: { ...environment } }); return "encoded-fixture-command"; },
   });
@@ -251,6 +251,7 @@ async function approvalFixture({ composerCount = 1, buttonCount = 1, visible = t
         executeCommand(command, session, options) { opened.push({ command, session, ...options }); },
       } } }, { timeout: 100 });
     } },
+    async observeHookTiming() {},
     async waitFor(callback, code, timeout) {
       assert.equal(code, "CURSOR_APP_REPO_MEMORY_TIMEOUT"); assert.equal(timeout, 90000);
       if (poll) await poll(callback, { state, child, opened, clicked });
@@ -336,4 +337,37 @@ test("Repo Memory persistence requires the strict native snapshot and unique com
   assert.deepEqual(failed.events, []);
   assert.equal(failed.repoMemory.content, undefined);
   assert.equal(failed.report.nativeContentError, undefined);
+});
+
+
+test("Repo Memory native Task reads initial context after refresh and preserves the complete delegation", () => {
+  const f = fixture("darwin");
+  f.parent.inputRequestContext = { hooksAdditionalContext: f.parent.userHookAdditionalContexts[0].content };
+  f.parent.userHookAdditionalContexts = [];
+  f.parent.requestContext = {};
+  const tool = f.run(f.parent, []);
+  assert.equal(tool.kind, "task");
+  assert.equal(tool.prompt, f.delegation.prompt);
+  assert.equal(tool.subagentType, "memorax-repo-memory");
+  assert.equal(tool.background, true);
+  assert.equal(f.repoMemory.request.delegation.prompt, f.delegation.prompt);
+  assert.deepEqual(f.report, {});
+});
+
+test("Repo Memory retains the first rejected parent and its redacted source diagnostic across retries", () => {
+  const f = fixture(), privateCanary = "private-content-path-token-canary";
+  const first = { ...f.parent, requestId: "first-request", requestContext: {}, userHookAdditionalContexts: [],
+    inputRequestContext: { hooksAdditionalContext: privateCanary } };
+  const retry = { ...first, requestId: "retry-request", inputRequestContext: undefined };
+  assert.throws(() => f.run(first, []), { code: "CURSOR_APP_REPO_MEMORY_DELEGATION_INVALID" });
+  const snapshot = structuredClone(f.report.repoMemoryDelegation);
+  assert.throws(() => f.run(retry, []), { code: "CURSOR_APP_REPO_MEMORY_DELEGATION_INVALID" });
+  assert.equal(f.repoMemory.failedRun, first);
+  assert.equal(f.repoMemory.request, undefined);
+  assert.equal(f.report.repoMemoryDelegation.reason, "marker_missing");
+  assert.equal(f.report.repoMemoryDelegation.sources.initial.present, true);
+  assert.deepEqual(f.report.repoMemoryDelegation, snapshot);
+  for (const value of [privateCanary, first.requestId, retry.requestId, first.conversationId]) {
+    assert.equal(JSON.stringify(f.report).includes(value), false);
+  }
 });

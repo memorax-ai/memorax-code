@@ -109,6 +109,7 @@ for (const client of ["codex", "claude-code", "dsh", "opencode", "codebuddy", "w
       metadata.helpfulSearches.push(budget.reserve(randomUUID(), 2));
       const result = await coordinator.completeMaterializedTurn({
         key, metadata, resolveRepositoryMemory: async () => memory,
+        ...(client === "claude-code" ? { nativeTurnId: `native-${i}` } : {}),
         userText: `Useful question ${i}`, assistantText: `Detailed answer ${i}`,
         writeback: { client, sessionKey: "s", env, fetchImpl: async (url, init) => {
           assert.equal(new URL(url).pathname, "/v1/memories/add");

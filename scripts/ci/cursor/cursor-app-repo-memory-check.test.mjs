@@ -7,7 +7,7 @@ import { dirname, join, win32 } from "node:path";
 import test from "node:test";
 import { pathToFileURL } from "node:url";
 import { assertCursorRepoMemoryRejected, parseCursorRepoMemoryClaim, parseCursorRepoMemoryDelegation,
-  verifyCursorRepoMemoryFailure } from "./cursor-app-repo-memory-check.mjs";
+  projectCursorRepoMemoryDelegation, readCursorRepoMemoryDelegation, verifyCursorRepoMemoryFailure } from "./cursor-app-repo-memory-check.mjs";
 
 const marker = "MemoraX Code missing Repo Memory build: launch this native background delegation once, then continue your task:";
 const ticket = "a".repeat(64), token = "b".repeat(64), head = "c".repeat(40);
@@ -76,6 +76,141 @@ test("Repo Memory delegation rejects ambiguity, altered identity, credentials an
   }
   const duplicate = { ...f.delegation, prompt: `${f.delegation.prompt}\n${JSON.stringify(f.invocation("claim", ticket))}` };
   rejected(() => parseCursorRepoMemoryDelegation(`${marker}\n${JSON.stringify(duplicate)}`, f.options), "DELEGATION_INVALID");
+});
+
+function currentContext(source, context) {
+  if (source === "initial") return { inputRequestContext: { hooksAdditionalContext: context } };
+  if (source === "fresh") return { requestContext: { hooksAdditionalContext: context } };
+  if (source === "dynamic") return { requestContextParts: { dynamicContext: { hooksAdditionalContext: context } } };
+  return { [source === "user" ? "userHookAdditionalContexts" : "execHookAdditionalContexts"]: [{ content: context }] };
+}
+function delegationDiagnostic(operation, reason) {
+  let diagnostic;
+  assert.throws(operation, (error) => {
+    assert.equal(error.code, "CURSOR_APP_REPO_MEMORY_DELEGATION_INVALID");
+    assert.equal(error.message, error.code);
+    diagnostic = error.repoMemoryDelegation;
+    assert.equal(diagnostic.reason, reason);
+    assert.deepEqual(diagnostic, projectCursorRepoMemoryDelegation(diagnostic));
+    return true;
+  });
+  return diagnostic;
+}
+
+test("Repo Memory delegation reads each current request context source", () => {
+  const f = fixturePaths("/owned fixture"), expected = parseCursorRepoMemoryDelegation(f.context, f.options);
+  for (const source of ["initial", "fresh", "dynamic", "user", "exec"]) {
+    assert.deepEqual(readCursorRepoMemoryDelegation(currentContext(source, f.context), f.options), expected);
+  }
+});
+
+test("Repo Memory delegation preserves the initial context after a fresh context replaces it", () => {
+  const f = fixturePaths("/owned fixture");
+  const run = { ...currentContext("initial", f.context), ...currentContext("fresh", "Fresh context without the delegation.") };
+  assert.deepEqual(readCursorRepoMemoryDelegation(run, f.options), parseCursorRepoMemoryDelegation(f.context, f.options));
+});
+
+test("Repo Memory delegation accepts equal duplicates and rejects conflicting current sources", () => {
+  const f = fixturePaths("/owned fixture"), sources = ["initial", "fresh", "dynamic", "user", "exec"];
+  const run = Object.assign({}, ...sources.map((source) => currentContext(source, f.context)));
+  assert.deepEqual(readCursorRepoMemoryDelegation(run, f.options), parseCursorRepoMemoryDelegation(f.context, f.options));
+  run.execHookAdditionalContexts.push({ content: f.context.replace(ticket, "e".repeat(64)) });
+  const diagnostic = delegationDiagnostic(() => readCursorRepoMemoryDelegation(run, f.options), "conflict");
+  assert.deepEqual(diagnostic.sources, Object.fromEntries(sources.map((source) => [source,
+    { present: true, markerCount: source === "exec" ? 2 : 1 }])));
+});
+
+test("Repo Memory delegation does not join a marker and JSON across separate context entries", () => {
+  const f = fixturePaths("/owned fixture");
+  for (const run of [
+    { ...currentContext("initial", marker), ...currentContext("fresh", JSON.stringify(f.delegation)) },
+    { userHookAdditionalContexts: [{ content: marker }, { content: JSON.stringify(f.delegation) }] },
+  ]) delegationDiagnostic(() => readCursorRepoMemoryDelegation(run, f.options), "schema");
+});
+
+test("Repo Memory delegation never reuses historical tickets", () => {
+  const f = fixturePaths("/owned fixture"), previous = { ...currentContext("initial", f.context),
+    conversationId: parentSessionId, completed: true, turnBlobId: Buffer.from("previous") };
+  const run = { ...currentContext("fresh", "Current guidance without a delegation."), conversationId: parentSessionId,
+    turnRefs: [previous.turnBlobId], history: [previous], runs: [previous], previous, delegation: f.delegation };
+  const diagnostic = delegationDiagnostic(() => readCursorRepoMemoryDelegation(run, f.options), "marker_missing");
+  assert.deepEqual(diagnostic.sources.fresh, { present: true, markerCount: 0 });
+  assert.deepEqual(diagnostic.sources.initial, { present: false, markerCount: 0 });
+  delegationDiagnostic(() => readCursorRepoMemoryDelegation({ history: [previous], runs: [previous] }, f.options), "context_absent");
+});
+
+test("Repo Memory delegation distinguishes absent context, missing markers, schema and invocation failures", () => {
+  const f = fixturePaths("/owned fixture");
+  for (const context of [undefined, null, ""]) {
+    delegationDiagnostic(() => readCursorRepoMemoryDelegation(currentContext("initial", context), f.options), "context_absent");
+  }
+  for (const context of ["Unrelated Hook guidance.", JSON.stringify(f.delegation), marker + " suffix"]) {
+    delegationDiagnostic(() => readCursorRepoMemoryDelegation(currentContext("initial", context), f.options), "marker_missing");
+  }
+  for (const context of [marker, marker + "\nnot-json", marker + "\n[]", marker + "\n" + marker,
+    f.context.replace('"background":true', '"background":false'),
+    f.context.replace("/generation/skills/memorax-code/references/repo-build.md", "/private-canary")]) {
+    delegationDiagnostic(() => readCursorRepoMemoryDelegation(currentContext("initial", context), f.options), "schema");
+  }
+  for (const change of [
+    (call) => { call.executable += "-foreign"; }, (call) => { call.args[0] += "-foreign"; },
+    (call) => { call.args[3] += "-foreign"; }, (call) => { call.args[5] = "private-job-canary"; },
+    (call) => { call.args[7] = "private-run-canary"; }, (call) => { call.args[9] = "private-ticket-canary"; },
+    (call) => { call.args[5] = [jobId]; }, (call) => { call.args[7] = [runId]; }, (call) => { call.args[9] = [ticket]; },
+    (call) => { call.args.push("--unexpected"); }, (call) => { call.env.PRIVATE_KEY = "private-credential-canary"; },
+  ]) {
+    const call = f.invocation("claim", ticket); change(call);
+    const context = marker + "\n" + JSON.stringify({ ...f.delegation, prompt: JSON.stringify(call) });
+    const diagnostic = delegationDiagnostic(() => readCursorRepoMemoryDelegation(currentContext("user", context), f.options), "invocation");
+    assert.deepEqual(diagnostic.sources.user, { present: true, markerCount: 1 });
+    assert.doesNotMatch(JSON.stringify(diagnostic), /private-|owned fixture|MEMORAX_CODE_HOME/);
+  }
+  delegationDiagnostic(() => readCursorRepoMemoryDelegation(currentContext("initial", f.context),
+    { ...f.options, repo: "relative-private-repository" }), "options");
+});
+
+test("Repo Memory delegation bounds context and rejects invalid content types without coercion", () => {
+  const f = fixturePaths("/owned fixture");
+  const context = f.context + "private-canary".repeat(262144);
+  const diagnostic = delegationDiagnostic(() => readCursorRepoMemoryDelegation(currentContext("exec", context), f.options), "context_too_large");
+  assert.equal(diagnostic.sources.exec.present, true);
+  assert.doesNotMatch(JSON.stringify(diagnostic), /private-|owned fixture/);
+  for (const content of [true, 1, {}, [], { toString() { throw new Error("private-canary"); } }]) {
+    delegationDiagnostic(() => readCursorRepoMemoryDelegation(currentContext("initial", content), f.options), "context_invalid");
+  }
+  for (const run of [{ userHookAdditionalContexts: f.context }, { execHookAdditionalContexts: {} },
+    { userHookAdditionalContexts: [f.context] }, { execHookAdditionalContexts: [null] }]) {
+    delegationDiagnostic(() => readCursorRepoMemoryDelegation(run, f.options), "context_invalid");
+  }
+});
+
+test("Repo Memory delegation bounds aggregate input and marker diagnostics", () => {
+  const f = fixturePaths("/owned fixture");
+  delegationDiagnostic(() => readCursorRepoMemoryDelegation({
+    ...currentContext("initial", "x".repeat(150000)), ...currentContext("fresh", "y".repeat(150000)),
+  }, f.options), "context_too_large");
+  const diagnostic = delegationDiagnostic(() => readCursorRepoMemoryDelegation(currentContext("dynamic", (marker + "\n").repeat(1001)),
+    f.options), "schema");
+  assert.deepEqual(diagnostic.sources.dynamic, { present: true, markerCount: 1000 });
+});
+
+test("Repo Memory delegation diagnostic projection allows only fixed reasons, booleans and bounded integers", () => {
+  const sources = ["initial", "fresh", "dynamic", "user", "exec"];
+  const emptySources = Object.fromEntries(sources.map((source) => [source, { present: false, markerCount: 0 }]));
+  assert.deepEqual(projectCursorRepoMemoryDelegation(), { reason: "unknown", sources: emptySources });
+  for (const reason of ["context_absent", "context_invalid", "context_too_large", "marker_missing", "conflict", "schema", "invocation", "options", "unknown"]) {
+    assert.equal(projectCursorRepoMemoryDelegation({ reason }).reason, reason);
+  }
+  for (const markerCount of [-1, 1.1, 1001, Infinity, NaN, "1", true, { private: "private-count-canary" }]) {
+    const value = projectCursorRepoMemoryDelegation({ reason: "private-reason-canary", sources: {
+      initial: { present: "private-present-canary", markerCount, raw: "private-text-canary" },
+      fresh: { present: true, markerCount }, history: { present: true, markerCount: 1 },
+    }, ticket, context: "private-context-canary" });
+    assert.deepEqual(value, { reason: "unknown", sources: { ...emptySources, fresh: { present: true, markerCount: 0 } } });
+    assert.doesNotMatch(JSON.stringify(value), /private-|history|ticket|raw/);
+  }
+  assert.deepEqual(projectCursorRepoMemoryDelegation({ sources: { user: { present: true, markerCount: 1000 } } }).sources.user,
+    { present: true, markerCount: 1000 });
 });
 
 test("Repo Memory claim and final rejection require matching returned capabilities and exact outcomes", () => {

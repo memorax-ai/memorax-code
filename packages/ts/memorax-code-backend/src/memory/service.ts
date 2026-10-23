@@ -2,8 +2,9 @@ import { createAutomaticMemoryWritebackRuntime } from "./automatic-writeback.js"
 import { createHelpfulBudget, helpfulSettings } from "./helpful.js";
 import { isRecord } from "../shared/record.js";
 import { memoraxConfigFromEnv } from "../provider/memorax/config.js";
-import { loadMemoraxCodeConfig, defaultMemoraxCodeHome } from "../config/memorax-code.js";
+import { codingSessionsEnabled, loadMemoraxCodeConfig, defaultMemoraxCodeHome } from "../config/memorax-code.js";
 import type { MemoryTurnKey } from "./turn-coordinator.js";
+import { readCodingSessionSourceTurn } from "./coding-session-source.js";
 import { recordWritebackRejection } from "./background-diagnostics.js";
 import {
   createCodexMemoryHookRuntime,
@@ -41,7 +42,7 @@ import type {
 
 export type MemoryServiceOptions = Omit<
   CodexMemoryHookRuntimeOptions,
-  "automaticWriteback" | "pendingQuotaNotice" | "repositoryMemorySession" | "turnCoordinator" | "searchGuidance"
+  "automaticWriteback" | "captureCodingTurns" | "pendingQuotaNotice" | "repositoryMemorySession" | "turnCoordinator" | "searchGuidance"
 > & Pick<ClaudeMemoryHookRuntimeOptions, "transcriptReadAttempts" | "transcriptRetryDelayMs">;
 
 type MemoryHookWritebackResult =
@@ -55,7 +56,7 @@ type MemoryHookWritebackResult =
 
 export type MemoryService = {
   recordTurnStart(command: TurnStartCommand): Promise<MemoryHookTurnStartResult>;
-  evaluateSearchGuidance: MemorySearchGuidanceRuntime["evaluate"];
+  evaluateSearchGuidance(command: TurnStartCommand): ReturnType<MemorySearchGuidanceRuntime["evaluate"]>;
   searchGuidanceStatus(): { enabled: boolean };
   registerHelpfulSearch(body: unknown): { accepted: boolean };
   recordPreCompact(command: CursorPreCompactCommand): Promise<CursorMemoryHookPreCompactResult>;
@@ -65,6 +66,8 @@ export type MemoryService = {
 };
 
 export function createMemoryService(options: MemoryServiceOptions = {}): MemoryService {
+  const env = options.env ?? process.env;
+  const memoraxCodeHome = options.memoraxCodeHome ?? env.MEMORAX_CODE_HOME?.trim();
   const searchGuidance = createMemorySearchGuidanceRuntime(options);
   const helpfulHome = options.memoraxCodeHome ?? defaultMemoraxCodeHome(options.env);
   const helpfulBudget = createHelpfulBudget();
@@ -83,12 +86,17 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
   });
   const automaticWriteback = createAutomaticMemoryWritebackRuntime({
     helpfulEnabled,
-    memoraxCodeHome: options.memoraxCodeHome,
+    memoraxCodeHome,
     diagnosticLogger: options.diagnosticLogger,
     queueQuotaNotice: pendingQuotaNotice.queue,
+    readCodingSessionTurn: readCodingSessionSourceTurn,
   });
+  const fileConfig = loadMemoraxCodeConfig(memoraxCodeHome);
+  const captureCodingTurns = codingSessionsEnabled(env, fileConfig);
   const repositoryMemorySession = createRepositoryMemorySessionRuntime({
-    onScopeUpgrade: automaticWriteback.discardForScopeUpgrade,
+    onScopeUpgrade(upgrade) {
+      automaticWriteback.discardForScopeUpgrade(upgrade);
+    },
   });
   const turnCoordinator = createMemoryTurnCoordinator({
     automaticWriteback: automaticWriteback.enqueue,
@@ -109,6 +117,7 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
   });
   const codexHook = createCodexMemoryHookRuntime({
     ...options,
+    captureCodingTurns,
     searchGuidance,
     pendingQuotaNotice,
     repositoryMemorySession,
@@ -116,6 +125,7 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
   });
   const claudeHook = createClaudeMemoryHookRuntime({
     ...options,
+    captureCodingTurns,
     searchGuidance,
     pendingQuotaNotice,
     repositoryMemorySession,
@@ -123,6 +133,7 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
   });
   const openCodeHook = createOpenCodeMemoryHookRuntime({
     ...options,
+    captureCodingTurns,
     searchGuidance,
     pendingQuotaNotice,
     repositoryMemorySession,
@@ -136,6 +147,7 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
   });
   const codeBuddyHook = createCodeBuddyMemoryHookRuntime({
     ...options,
+    captureCodingTurns,
     searchGuidance,
     pendingQuotaNotice,
     repositoryMemorySession,
@@ -143,6 +155,7 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
   });
   const workBuddyHook = createCodeBuddyMemoryHookRuntime({
     ...options,
+    captureCodingTurns,
     searchGuidance,
     client: "workbuddy",
     pendingQuotaNotice,
@@ -204,7 +217,11 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
       turn.helpfulSearches.push(search);
       return { accepted: true };
     },
-    evaluateSearchGuidance: searchGuidance.evaluate,
+    async evaluateSearchGuidance(command) {
+      if (command.client !== "claude-code") return await searchGuidance.evaluate(command);
+      const key = claudeHook.searchGuidanceTurnKey(command);
+      return key ? await searchGuidance.evaluate(command, key) : { ok: false, reason: "context_unavailable" };
+    },
     searchGuidanceStatus() {
       return { enabled: searchGuidance.isEnabled() };
     },

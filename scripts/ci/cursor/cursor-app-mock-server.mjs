@@ -202,6 +202,7 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
       if (pendingExec) {
         if (!pendingExec.closed) return;
         const completed = pendingExec.completed;
+        run.execHookAdditionalContexts.push(...pendingExec.hookAdditionalContexts);
         if (pendingExec.execution.kind === "requestContext") {
           run.requestContext = completed.result;
           run.requestContextBytes = completed.requestContextBytes;
@@ -334,7 +335,7 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
           kvWrites: [], kvWriteCount: 0, kvAckCount: 0, kvReadCount: 0, kvReadResultCount: 0,
           contextKvReadCount: 0, contextKvReadResultCount: 0,
           subagentContextKvReadCount: 0, subagentContextKvReadResultCount: 0,
-          toolResults: [], execRequestCount: 0, execResultCount: 0, execCloseCount: 0,
+          toolResults: [], execHookAdditionalContexts: [], execRequestCount: 0, execResultCount: 0, execCloseCount: 0,
           shellApproval: { toolCallId: undefined, clicked: false },
           requestContextRequestCount: 0, requestContextResultCount: 0, requestContextCloseCount: 0, completed: false, cancelled: false };
         if (message.type === "taskNotification") {
@@ -388,6 +389,7 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
             return;
           }
           pendingExec.completed = completeToolExecution(pendingExec.execution, message);
+          pendingExec.hookAdditionalContexts = message.hookAdditionalContexts ?? [];
           if (pendingExec.execution.kind === "task") {
             const task = tasks.get(pendingExec.execution.toolCallId), agentId = pendingExec.completed.result.agentId;
             if (task.child && task.child.conversationId !== agentId || agentId === run.conversationId

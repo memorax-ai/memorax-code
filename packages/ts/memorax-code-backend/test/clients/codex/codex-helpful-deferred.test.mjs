@@ -13,6 +13,7 @@ test("Codex completion after Hook returns recovers once; next turn cannot replac
   const received = [];
   const runtime = createCodexMemoryHookRuntime({
     memoraxCodeHome: home,
+    captureCodingTurns: true,
     env: { MEMORAX_CODE_HOME: home, MEMORAX_CODE_MEMORAX_API_KEY: "synthetic",
       MEMORAX_CODE_MEMORAX_USER_ID: "synthetic", MEMORAX_CODE_CODEX_TRACE_ENABLED: "false" },
     automaticWriteback: value => { received.push(value); return { accepted: true }; },
@@ -29,6 +30,9 @@ test("Codex completion after Hook returns recovers once; next turn cannot replac
   assert.equal(received.length, 1);
   assert.equal(received[0].userText, "source");
   assert.equal(received[0].assistantText, "late");
+  assert.equal(received[0].codingTurn.turnId, "n");
+  assert.equal(received[0].codingTurn.sessionId, "s");
+  assert.ok(received[0].codingTurn.items.length > 0);
   await runtime.drain();
 });
 

@@ -712,12 +712,14 @@ flowchart TD
 
   Shared["HarnessMemoryRuntime and turn coordinator:<br/>validate metadata and current scope"] -->|"valid"| Runtime
   Shared -->|"rejected"| Result
+  Shared -->|"opted-in completed coding Turn"| Archive
+  Archive["coding-sessions: projection, redaction,<br/>frozen native reference or SDK items"] -->|"optional attachment"| Runtime
   Runtime["automatic writeback:<br/>settings, bounds, redaction and deduplication"] -->|"rejected"| Result
   Runtime -->|"accepted"| Result
   Result["HTTP result: scheduled or skipped"]
 
   Runtime -->|"new accepted content"| Pending
-  Pending["immediate dispatch or buffered flush,<br/>then chunking"] -->|"eligible for dispatch"| Provider
+  Pending["immediate dispatch or QA buffer flush,<br/>native reread and bounded chunking"] -->|"QA plus optional coding_context"| Provider
   Pending -->|"pending fallback scope upgraded"| Discard["discard pending fallback content"]
   Provider["local MemoraX provider:<br/>Add request and normalized result"] --> Remote
   Remote["MemoraX Add API"] -->|"initial response"| Provider
@@ -734,12 +736,132 @@ known failure fields without retaining content or changing buffering, retry,
 metadata consumption, or delivery decisions. Normal skips and transient failures
 that recover do not produce terminal failure records.
 
-- For completed content, local enqueue acceptance is the metadata-consumption
+- For completed content, local QA enqueue acceptance is the metadata-consumption
   point. Interrupted Turns can instead discard metadata with an explicit reason.
+  Optional archive preparation does not create a second enqueue or veto QA
+  acceptance. Rejected or already-accepted work does not schedule an independent
+  archive request. With a valid coding attachment, the native Turn ID also
+  participates in deduplication: equal QA text in two different Turns must not
+  discard either Turn's archive. QA-only writeback retains its text-based rule.
   Unbuffered dispatch starts during enqueue. Buffering defers dispatch until a
   flush; turn or size limits can trigger that flush during enqueue.
 - Buffering and chunking belong to the memory capability; rollout, transcript,
   DSH event-interval, and SDK message parsing remains client-specific.
+- Coding-session selection and redaction belong to `coding-sessions`; the memory
+  capability owns joint QA/attachment scheduling. Codex, Claude Code, OpenCode,
+  CodeBuddy, and WorkBuddy materialize
+  an ordered text/tool `ResponseItem` subset from the same exact native Turn.
+  Codex modern `item_completed.UserMessage` events identify real user input
+  within the matching native Session and Turn. Exact text blocks and record
+  order correlate each event with its preceding `response_item`; those record
+  types do not share message IDs. QA retains the last selected response record,
+  including its timestamp; the archive retains every matched genuine input in
+  native record order. Native response
+  image wrappers are normalized only for input correlation, preserving text
+  blocks and image order; the selected response content is unchanged. Later
+  user-role context injections cannot replace that input. Duplicate native user events
+  are idempotent; conflicting identities, missing matches, and ambiguous matches
+  fail closed. Multiple genuine inputs retain the last selected input for the
+  single QA pair. Without modern user events, only a unique response user
+  candidate is accepted; the existing legacy text fallback remains available
+  when response text is absent, not when modern correlation fails.
+  Codex allowlists native item fields and coalesces exact assistant mirrors
+  one-to-one across response and legacy event records, preserving distinct
+  legacy text and repeated messages from the same source. This includes structured web-search actions and
+  tool-discovery calls/results without imposing function-call identity rules
+  on hosted tools. The other clients convert their own native records.
+  This excludes reasoning and internal metadata and is not a complete Responses
+  API transcript for direct replay. Normalization owns redaction and per-Turn
+  bounds. Archive text blocks are retained regardless of content, including short
+  commands and redaction placeholders; QA content eligibility remains in ordinary
+  writeback. Messages still require supported text blocks; completed archives
+  contain user input and final-answer text without imposing a single pair or
+  first/last positions. Selected JSONL records and SDK records/parts retain
+  their source order; assigning a phase never moves text across tools.
+  Valid JSON tool arguments, custom inputs, outputs, and JSON text inside output
+  wrappers are redacted structurally and serialized back to JSON; unchanged
+  values retain native formatting. Native non-JSON tool text remains text.
+  Normalization owns redaction after native projection. Structured tool text
+  exceeding its text limit or remaining Turn budget is omitted whole with loss
+  metadata, never sliced into partial JSON. Bounds retain user and final-answer
+  messages in place and treat selected calls/results sharing a tool identity as
+  one group; hosted tool-search records without call IDs are bounded together.
+  Neither rule invents missing native partners. Archive mapping preserves selected text blocks and
+  tool strings; structured tool results and native error indicators stay inside string outputs,
+  without changing ordinary QA text materialization. DSH and Trae remain QA-only.
+  Claude resolves QA and optional items from one native snapshot. Repeated UUID
+  records ignore `cwd`, `gitBranch`, `slug`, and auxiliary user `toolUseResult`;
+  visible human record UUIDs identify native Turns and determine their indices.
+  A Hook prompt ID alone must resolve uniquely. When Claude reuses that ID,
+  the Backend correlates the start prompt digest with a frozen transcript-prefix
+  digest and byte boundary. The user record may already exist at start; its
+  terminal record must first appear after the observed boundary. Rewritten
+  prefixes and multiple eligible native users fail closed.
+  Hook text is correlation evidence, never fallback QA content.
+  A bounded in-memory start observation identifies coordinator, guidance, and
+  trace state; its local token is returned to the Claude reminder for guidance
+  correlation and never sent to the memory provider. Native UUIDs identify
+  archive references and completed-writeback deduplication, including concurrent
+  Stops. Processing settlement is independent of enqueue acceptance: a rejected
+  attempt retains metadata for retry without blocking later occurrences of the
+  same Hook prompt ID. Later completions wait only for actual in-flight work,
+  including concurrent attempts and inherited predecessor work. A new occurrence
+  reconciles an unprocessed predecessor within the transcript prefix observed at
+  that start: completed content uses ordinary writeback, confirmed interruption
+  is discarded as interrupted, and otherwise the predecessor is explicitly
+  discarded as superseded. This does not authorize ambiguous native content.
+  Reconciliation against the same transcript reuses that start's captured bytes
+  and lazily parsed complete lines. An ordinary start captures only boundaries
+  and digests until reconciliation needs native records. When Jev is enabled,
+  start validation runs before guidance can use that observation; enabling Jev
+  later does not authorize an unvalidated observation. Repeated validation and
+  selection share the snapshot's parsed records or failure. The snapshot stays
+  local to that start; later Starts, Stops, and archive materialization read
+  native storage again.
+  A late Stop cannot borrow an older final; it still requires a completed native
+  Turn matching the current start and deduplicates by native UUID. Archive rereads
+  select the native UUID within the frozen completion prefix.
+  Tool results use Session, parent lineage, and selected call identity instead. Conflicts reject
+  the Turns they can affect; unresolved ancestry remains fail-closed rather than
+  selecting an earlier completion. Task notifications and system prompts bound
+  parent traversal so their replies cannot replace an earlier interactive QA.
+  Tool results outside the terminal parent chain require a matching selected
+  call and verified ancestry within the same frozen Turn. Optional projection
+  failures omit the attachment after QA has been resolved.
+  The coordinator checks client/session/Turn identity and scope before QA
+  enqueue. When collection is enabled, automatic QA Add can carry an optional
+  `coding_context` attachment; explicit Add and clients without a supported projection
+  remain QA-only. There is no event-only archive request.
+- QA's existing Turn-count, character, inactivity, and shutdown triggers also
+  dispatch its optional archive data. A combined request groups one connection,
+  client, session, and scope. The archive size budget applies only to the
+  serialized UTF-8 JSON `coding_context` object, including its items and metadata;
+  QA and other Add fields retain their existing limits. Oversized archives split
+  at whole-Turn boundaries before QA chunking. A Turn's
+  archive items appear only on the first QA part containing that Turn, never on
+  every overlapping text fragment. A single Turn whose attachment cannot fit
+  retains QA delivery, omits that attachment, and records a content-free local
+  diagnostic. Sorted native Turn metadata partitions the flat item array;
+  stable batch IDs identify attachments across the existing Add retries.
+  Attachment assembly and size checks finish before dispatch. If either throws,
+  writeback records a content-free diagnostic and uses the original QA-only
+  chunking plan; QA validation and provider errors retain their existing behavior.
+- File-backed Codex, Claude Code, CodeBuddy, and WorkBuddy QA buffers hold only
+  frozen native references and prepared-content digests for their attachments,
+  not a second archive body. A reference includes the exact transcript prefix,
+  native identity and order, and completion time. At flush, the owning client
+  reader reconstructs that exact Turn with the same current conversion rules;
+  its redacted digest
+  must still match. Missing, changed, or mismatched source data omits the
+  attachment without changing QA delivery. Native parsing stays client-owned.
+- OpenCode retains its prepared SDK items in the same in-memory QA buffer; it
+  does not guess a native database path. All buffered work and retries are
+  best effort: a crash or exhausted Add retries can lose pending work. There is
+  no independent archive timer, upload queue, durable cursor, or retry loop.
+  Legacy archive cursor files are neither read nor deleted, and old pending
+  event-only uploads are not replayed. The ordinary Add response acknowledges
+  QA acceptance, not OSS storage. The server owns archive storage and object
+  paths. See [the attachment contract](docs/configuration.md#coding-session-collection).
 - Native materializers pass the selected QA timestamps through the shared
   completion contract. The coordinator supplies explicitly labelled observations
   when native times are absent; automatic enqueue freezes any remaining fallback
@@ -1007,6 +1129,7 @@ one directory under `clients/`.
 src/
   app/
   clients/<client>/
+  coding-sessions/
   config/
   entrypoints/
   lifecycle/
@@ -1039,6 +1162,7 @@ entrypoints and compatibility facades. It is not another implementation area.
 | `src/lifecycle/backend` | Managed process, PID/token/connection records, status probing, cleanup, and shutdown requests | Helper contracts do not depend back on the full service implementation |
 | `src/clients/<client>` | Native interpretation, correlation, interruption/recovery, trace adaptation, and lifecycle participation; delegates common memory workflows to the shared harness runtime | Request runtime stays HTTP-composition independent and uses only the matching [native authority](#native-writeback-authority); native deployment follows [package ownership](#22-physical-dependency-directions) |
 | `src/memory` | Memory commands, retrieval guidance, writeback, turn coordination, repository session pinning, manual CLI, and buffering/chunking | Client-neutral modules do not parse native transcript formats |
+| `src/coding-sessions` | Selected text/tool item contract, redaction, and frozen native-reference or prepared SDK attachments | Native parsing stays in clients; memory owns joint QA scheduling; remote HTTP stays in the provider; no durable archive queue |
 | `src/memory/harness-runtime.ts` | Common Turn-start and materialized-completion workflows for all supported clients; publishes registered Turn state synchronously and owns locally created memory resources while reusing injected shared resources | No client implementation, HTTP, app/lifecycle, or direct provider-transport imports; diagnostics enter through a port and native interpretation stays with each client |
 | `src/personal-memory` | Global User Profile listing, normalization, duplicate detection, updates, deletion, and atomic storage under `$MEMORAX_CODE_HOME/personal-memory` | No Backend service, provider calls, transcript processing, repository scope, or Procedure Memory mutation |
 | `src/repo-memory` | Repo Memory preparation, local and provider facet collection, delta detection, and bundle validation | Prepares bundle directories and the repository ignore entry, collects raw evidence, and validates output; agents author durable Markdown memory |
@@ -1229,7 +1353,8 @@ writes.
 Durable local state includes configuration, private runtime, setup-completion,
 package-transition, automatic-update, and trial credential records, active
 client selection,
-client-qualified trace JSONL, reminder cadence and quota-reminder state, and
+client-qualified trace JSONL,
+reminder cadence and quota-reminder state, and
 Repo Memory. State shared across processes requires a bounded lock, atomic
 replacement, or version validation appropriate to its record. An in-memory
 mutex is not cross-process authority.
@@ -1252,9 +1377,10 @@ publication. Its legacy directory lock retains the same path and blocks new
 acquisition until released; an unprovable abandoned directory is not removed
 based on age. Pending schema, correlation, and pruning remain client-owned.
 
-Backend-owned remote memory state is limited to MemoraX memories and Add tasks.
-The provider adapter is the network boundary for documented memory payloads;
-the Backend does not poll an Add task after its initial response.
+Backend remote operations cover MemoraX memories, Add tasks, and optional
+coding-session attachments on automatic Add. The provider is the network boundary for
+documented payloads; the Backend does not poll an Add task after its initial
+response or manage remote OSS objects directly.
 
 The Jev provider is a separate opt-in outbound boundary. It accepts only the
 current user request and an optional previous user/final-assistant pair, trims
@@ -1454,6 +1580,7 @@ paths are used below unless a different package or the repository root is named.
 | `src/personal-memory` | `test/personal-memory`; canonical Skill launcher integration in repository-root `test/shared-skill` |
 | `src/provider/memorax` | `test/provider/memorax` |
 | `src/provider/jev` | `test/provider/jev` |
+| `src/coding-sessions` | `test/coding-sessions`, with native-to-provider coverage in `test/memory/memory-service.test.mjs` |
 | `src/repository` | `test/repository` |
 | `src/shared` | `test/shared` |
 | `src/trace` | `test/trace` |

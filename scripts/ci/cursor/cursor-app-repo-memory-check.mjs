@@ -10,6 +10,10 @@ const tokenPattern = /^[a-f0-9]{64}$/;
 const headPattern = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
 const jobPattern = /^\d{17}-build-[a-zA-Z0-9_.-]+-[0-9a-f]{8}$/;
 const runPattern = /^[a-f0-9]{32}$/;
+const contextSources = ["initial", "fresh", "dynamic", "user", "exec"];
+const delegationReasons = ["context_absent", "context_invalid", "context_too_large", "marker_missing",
+  "conflict", "schema", "invocation", "options", "unknown"];
+const maxMarkerCount = 1000;
 
 function fail(suffix) {
   const code = `CURSOR_APP_REPO_MEMORY_${suffix}`;
@@ -43,29 +47,98 @@ function validateSummary(value, request, suffix) {
     && typeof value.expiresAt === "string" && Number.isFinite(Date.parse(value.expiresAt)), suffix);
 }
 
-export function parseCursorRepoMemoryDelegation(context, options) {
-  const suffix = "DELEGATION_INVALID";
-  check(record(options) && [options.executable, options.helper, options.stateHome, options.repo].every(absolute), suffix);
-  const lines = text(context, suffix).split(/\r?\n/), indices = lines.flatMap((line, index) => line === marker ? [index] : []);
-  check(indices.length > 0, suffix);
+export function projectCursorRepoMemoryDelegation(value) {
+  return { reason: delegationReasons.includes(value?.reason) ? value.reason : "unknown",
+    sources: Object.fromEntries(contextSources.map((source) => {
+      const current = value?.sources?.[source];
+      return [source, { present: current?.present === true,
+        markerCount: Number.isSafeInteger(current?.markerCount) && current.markerCount >= 0
+          && current.markerCount <= maxMarkerCount ? current.markerCount : 0 }];
+    })) };
+}
+
+function parseDelegation(context, options, reject) {
+  const suffix = "DELEGATION_INVALID", require = (value, reason) => { if (!value) reject(reason); };
+  require(record(options) && [options.executable, options.helper, options.stateHome, options.repo].every(absolute), "options");
+  require(context !== undefined && context !== null && context !== "", "context_absent");
+  require(typeof context === "string", "context_invalid");
+  require(Buffer.byteLength(context) <= limit, "context_too_large");
+  const lines = context.split(/\r?\n/), indices = lines.flatMap((line, index) => line === marker ? [index] : []);
+  require(indices.length > 0, "marker_missing");
   const delegations = indices.map((index) => {
     let next = index + 1;
     while (next < lines.length && lines[next].trim() === "") next += 1;
-    check(next < lines.length && lines[next] !== marker, suffix);
-    return json(lines[next], suffix);
+    require(next < lines.length && lines[next] !== marker, "schema");
+    try { return json(lines[next], suffix); } catch { reject("schema"); }
   }), [delegation] = delegations;
-  check(delegations.every((value) => isDeepStrictEqual(value, delegation)), suffix);
+  require(delegations.every((value) => isDeepStrictEqual(value, delegation)), "conflict");
   const paths = pathsFor(options.helper), generation = paths.dirname(paths.dirname(options.helper));
-  check(delegation.name === "memorax-repo-memory" && delegation.background === true
+  require(delegation.name === "memorax-repo-memory" && delegation.background === true
     && Object.keys(delegation).length === 4
-    && delegation.referencePath === paths.join(generation, "skills/memorax-code/references/repo-build.md"), suffix);
-  const calls = invocations(delegation.prompt, suffix);
-  check(calls.length === 1 && Array.isArray(calls[0].args) && calls[0].args.length === 10, suffix);
+    && delegation.referencePath === paths.join(generation, "skills/memorax-code/references/repo-build.md")
+    && typeof delegation.prompt === "string" && delegation.prompt.length > 0, "schema");
+  let calls;
+  try { calls = invocations(delegation.prompt, suffix); } catch { reject("invocation"); }
+  require(calls.length === 1 && Array.isArray(calls[0].args) && calls[0].args.length === 10, "invocation");
   const [call] = calls, jobId = call.args[5], runId = call.args[7], ticket = call.args[9];
-  check(jobPattern.test(jobId ?? "") && runPattern.test(runId ?? "") && tokenPattern.test(ticket ?? ""), suffix);
+  require(typeof jobId === "string" && jobPattern.test(jobId) && typeof runId === "string" && runPattern.test(runId)
+    && typeof ticket === "string" && tokenPattern.test(ticket), "invocation");
   const request = { executable: options.executable, helper: options.helper, stateHome: options.stateHome, repo: options.repo,
     jobId, runId, delegation };
-  return { ...request, claim: validateInvocation(call, request, "claim", ticket, suffix) };
+  try { return { ...request, claim: validateInvocation(call, request, "claim", ticket, suffix) }; }
+  catch { reject("invocation"); }
+}
+
+export function parseCursorRepoMemoryDelegation(context, options) {
+  return parseDelegation(context, options, () => fail("DELEGATION_INVALID"));
+}
+
+function countMarkers(value) {
+  let index = -1, count = 0;
+  while (count < maxMarkerCount && (index = value.indexOf(marker, index + 1)) !== -1) {
+    const end = index + marker.length;
+    if ((index === 0 || value[index - 1] === "\n")
+      && (end === value.length || value[end] === "\n" || value.slice(end, end + 2) === "\r\n")) count += 1;
+  }
+  return count;
+}
+
+export function readCursorRepoMemoryDelegation(run, options) {
+  let invalid = run !== undefined && run !== null && !record(run), oversized = false, bytes = 0;
+  const entries = (value) => {
+    if (value === undefined || value === null) return [];
+    if (!Array.isArray(value)) { invalid = true; return []; }
+    return value.map((entry) => { if (!record(entry)) { invalid = true; return undefined; } return entry.content; });
+  };
+  const content = {
+    initial: [run?.inputRequestContext?.hooksAdditionalContext],
+    fresh: [run?.requestContext?.hooksAdditionalContext],
+    dynamic: [run?.requestContextParts?.dynamicContext?.hooksAdditionalContext],
+    user: entries(run?.userHookAdditionalContexts), exec: entries(run?.execHookAdditionalContexts),
+  }, sources = {}, contexts = [];
+  for (const source of contextSources) {
+    sources[source] = { present: false, markerCount: 0 };
+    for (const value of content[source]) {
+      if (value === undefined || value === null || value === "") continue;
+      if (typeof value !== "string") { invalid = true; continue; }
+      sources[source].present = true;
+      sources[source].markerCount = Math.min(maxMarkerCount, sources[source].markerCount + countMarkers(value));
+      bytes += Buffer.byteLength(value) + (contexts.length ? 1 : 0);
+      if (bytes > limit) oversized = true;
+      else contexts.push(value);
+    }
+  }
+  const reject = (reason) => {
+    const code = "CURSOR_APP_REPO_MEMORY_DELEGATION_INVALID";
+    throw Object.assign(new Error(code), { code, repoMemoryDelegation: projectCursorRepoMemoryDelegation({ reason, sources }) });
+  };
+  if (invalid) reject("context_invalid");
+  if (oversized) reject("context_too_large");
+  const delegated = contexts.filter((value) => countMarkers(value) > 0);
+  if (!delegated.length) return parseDelegation(contexts.join("\n"), options, reject);
+  const [request, ...others] = delegated.map((value) => parseDelegation(value, options, reject));
+  if (!others.every((other) => isDeepStrictEqual(other.delegation, request.delegation))) reject("conflict");
+  return request;
 }
 
 export function parseCursorRepoMemoryClaim(stdout, request) {

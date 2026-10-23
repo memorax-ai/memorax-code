@@ -50,10 +50,13 @@ function readResult(id, bytes, failed = false) {
   return field(3, Buffer.concat([scalar(1, id), field(2, result)]));
 }
 function readRequest(id, blobId) { return field(4, Buffer.concat([scalar(1, id), field(2, field(1, blobId))])); }
-function execReadResult(id, path, content) {
+function hookContextFields(contexts) {
+  return contexts.map(({ hookEventName, content }) => field(45, Buffer.concat([field(1, hookEventName), field(2, content)])));
+}
+function execReadResult(id, path, content, hooks = []) {
   return field(2, Buffer.concat([scalar(1, id), field(7, field(1, Buffer.concat([
     field(1, path), field(2, content), scalar(3, content.split("\n").length), scalar(4, Buffer.byteLength(content)),
-  ])))]));
+  ]))), ...hookContextFields(hooks)]));
 }
 function execShellResult(id, command, workingDirectory, stdout, stderr = "") {
   return field(2, Buffer.concat([scalar(1, id), field(2, field(1, Buffer.concat([
@@ -68,8 +71,8 @@ function execControl(id, event = "close") {
   return field(5, field(event === "close" ? 1 : event === "heartbeat" ? 3 : 2,
     Buffer.concat([scalar(1, id), ...(event === "error" ? [field(2, "private-exec-error-canary")] : [])])));
 }
-function execContextResult(id, context) {
-  return field(2, Buffer.concat([scalar(1, id), field(10, field(1, field(1, context)))]));
+function execContextResult(id, context, hooks = []) {
+  return field(2, Buffer.concat([scalar(1, id), field(10, field(1, field(1, context))), ...hookContextFields(hooks)]));
 }
 function execTaskResult(id, toolCallId, agentId) {
   return field(2, Buffer.concat([scalar(1, id), field(15, toolCallId),
@@ -490,6 +493,60 @@ test("current Skill context, Read/Read/Shell and history require every native re
   assert.equal(resumed.inputRequestContext, undefined);
   assert.equal(resumed.contextKvReadCount, 0);
   assert.deepEqual(server.errors, []);
+});
+
+test("Exec Hook context is available only after matching native result and close", async (t) => {
+  const first = { hookEventName: "sessionStart", content: "Private synthetic session Hook" };
+  const second = { hookEventName: "beforeSubmitPrompt", content: "Private synthetic tool Hook" };
+  const step = { kind: "read", path: "/synthetic/skill.md" };
+  const server = await mock(t, { toolSteps(run, results) {
+    if (run.requestId !== requestId) return;
+    if (!run.requestContextCloseCount) return { kind: "requestContext" };
+    assert.deepEqual(run.execHookAdditionalContexts, results.length ? [first, second] : [first]);
+    return results.length ? undefined : step;
+  } });
+  const stream = openRun(t, server);
+  stream.send(runMessage(Buffer.alloc(0), { context: field(25, "Initial Hook") }));
+  await waitFor(() => server.runs[0]?.requestContextRequestCount === 1);
+  const run = server.runs[0];
+  stream.send(execContextResult(1, Buffer.alloc(0), [first]));
+  await waitFor(() => run.requestContextResultCount === 1);
+  assert.deepEqual(run.execHookAdditionalContexts, []);
+  stream.send(execControl(1));
+  await waitFor(() => run.execRequestCount === 1);
+  assert.equal(run.inputRequestContext.hooksAdditionalContext, "Initial Hook");
+  assert.equal(run.requestContext.hooksAdditionalContext, "");
+  const tool = { ...run.pendingTool };
+  stream.send(execReadResult(tool.id, step.path, "Skill body", [second]));
+  await waitFor(() => run.execResultCount === 1);
+  assert.deepEqual(run.execHookAdditionalContexts, [first]);
+  stream.send(execControl(tool.id));
+  await finishWrites(stream, run);
+  assert.deepEqual(run.execHookAdditionalContexts, [first, second]);
+  assert.ok(run.kvWrites.every((write) => !write.bytes.includes(Buffer.from("Private synthetic"))));
+  const resumed = await completedRun(t, server, { prior: [run] });
+  assert.deepEqual(resumed.execHookAdditionalContexts, []);
+  assert.deepEqual(server.errors, []);
+});
+
+test("Exec Hook context from unmatched or incomplete results is excluded", async (t) => {
+  const hook = { hookEventName: "sessionStart", content: "Private synthetic Hook" };
+  for (const [name, responses, code] of [
+    ["unknown id", (id) => [execReadResult(id + 1, "/synthetic/skill", "body", [hook])], "CURSOR_AGENT_EXEC_UNKNOWN"],
+    ["wrong path", (id) => [execReadResult(id, "/other", "body", [hook]), execControl(id)], "CURSOR_APP_EXEC_IDENTITY"],
+    ["missing close", (id) => [execReadResult(id, "/synthetic/skill", "body", [hook])], "CURSOR_AGENT_TIMEOUT"],
+  ]) await t.test(name, async (t) => {
+    const server = await mock(t, { timeoutMs: name === "missing close" ? 150 : 15000,
+      toolSteps: () => ({ kind: "read", path: "/synthetic/skill" }) });
+    const stream = openRun(t, server);
+    stream.send(runMessage());
+    await waitFor(() => server.runs[0]?.pendingTool);
+    stream.request.write(Buffer.concat(responses(server.runs[0].pendingTool.id).map((message) => frame(message))));
+    await stream.done;
+    assertFailure(server, stream, code);
+    assert.deepEqual(server.runs[0].execHookAdditionalContexts, []);
+    assert.equal(server.runs[0].kvWriteCount, 0);
+  });
 });
 
 test("referenced Skill and subagent catalogs validate their exact bytes before tool planning", async (t) => {

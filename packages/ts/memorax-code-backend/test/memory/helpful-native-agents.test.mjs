@@ -12,8 +12,9 @@ import { databaseFixture } from "../clients/cursor/support/database-fixtures.mjs
 
 const digest = text => createHash("sha256").update(text).digest("hex");
 
+for (const captureCodingTurns of [false, true]) {
 for (const client of ["codex", "claude-code", "codebuddy", "workbuddy", "dsh", "opencode", "cursor", "trae"]) {
-  test(`${client}: native authority -> service -> Add Helpful attachment`, async (t) => {
+  test(`${client}: native authority -> service -> Add Helpful attachment (coding context=${captureCodingTurns})`, async (t) => {
     const home = await mkdtemp(join(tmpdir(), "helpful-native-"));
     t.after(() => rm(home, { recursive: true, force: true }));
     const database = client === "cursor" ? await databaseFixture() : undefined;
@@ -24,6 +25,7 @@ for (const client of ["codex", "claude-code", "codebuddy", "workbuddy", "dsh", "
       MEMORAX_CODE_HOME: home, MEMORAX_CODE_MEMORAX_API_KEY: "synthetic",
       MEMORAX_CODE_MEMORAX_USER_ID: "synthetic", MEMORAX_CODE_MEMORAX_ENDPOINT: "http://synthetic.invalid",
       MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
+      MEMORAX_CODE_CODING_SESSIONS_ENABLED: String(captureCodingTurns),
       MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_TURNS: "8",
       MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_AGE_MS: "60000",
     };
@@ -51,12 +53,16 @@ for (const client of ["codex", "claude-code", "codebuddy", "workbuddy", "dsh", "
         turnId = `prompt-${i}`;
         records.push(
           userRecord({ uuid: `u${i}`, parentUuid: i > 1 ? `a${i - 1}` : null, promptId: turnId, sessionId, content: prompt }),
-          assistantRecord({ uuid: `a${i}`, parentUuid: `u${i}`, sessionId,
-            content: [{ type: "text", text: answer }], stopReason: "end_turn" }),
         );
         await writeFile(transcriptPath, records.map(r => JSON.stringify(r)).join("\n") + "\n");
         start = { ...base, promptId: turnId, transcriptPath };
         end = { ...start, lastAssistantMessage: answer };
+        afterStart = async () => {
+          records.push(assistantRecord({ uuid: `a${i}`, parentUuid: `u${i}`, sessionId,
+            timestamp: new Date(1700000001000 + i).toISOString(),
+            content: [{ type: "text", text: answer }], stopReason: "end_turn" }));
+          await writeFile(transcriptPath, records.map(r => JSON.stringify(r)).join("\n") + "\n");
+        };
       } else if (client === "codebuddy" || client === "workbuddy") {
         turnId = `${sessionId}:0:${digest(prompt)}`;
         records.push(
@@ -85,7 +91,7 @@ for (const client of ["codex", "claude-code", "codebuddy", "workbuddy", "dsh", "
             parts: [part(`a${i}`, answer)] },
         );
         start = { ...base, userMessageId: turnId };
-        end = { ...start, assistantMessageId: `a${i}`, messages: [...records] };
+        end = { ...start, assistantMessageId: `a${i}`, turnIndex: i, messages: [...records] };
       } else if (client === "cursor") {
         turnId = randomUUID();
         records.push({ requestId: turnId, userPrompt: prompt, userMessageId: randomUUID(),
@@ -101,10 +107,10 @@ for (const client of ["codex", "claude-code", "codebuddy", "workbuddy", "dsh", "
         start = { ...base, turnId };
         end = { ...start, lastAssistantMessage: answer };
       }
-      await service.recordTurnStart(start);
+      const started = await service.recordTurnStart(start);
       if (i === 1) {
         assert.equal(service.registerHelpfulSearch({
-          version: 1, client, sessionId, clientTurnId: turnId,
+          version: 1, client, sessionId, clientTurnId: started.claudeTurnKey ?? turnId,
           search_id: searchId, context_turns_k: 2,
         }).accepted, true);
       }
@@ -115,6 +121,13 @@ for (const client of ["codex", "claude-code", "codebuddy", "workbuddy", "dsh", "
     }
     await service.drain();
     assert.equal(sent.length, 1);
+    const supportsCodingContext = ["codex", "claude-code", "codebuddy", "workbuddy", "opencode"].includes(client);
+    if (captureCodingTurns && supportsCodingContext) {
+      assert.equal(sent[0].coding_context.turns.length, 3);
+      assert.ok(sent[0].coding_context.items.length > 0);
+    } else {
+      assert.equal(sent[0].coding_context, undefined);
+    }
     if (client === "trae") {
       assert.equal(sent[0].helpful_evaluations, undefined, "no native ordinal: do not invent continuity");
     } else {
@@ -124,6 +137,11 @@ for (const client of ["codex", "claude-code", "codebuddy", "workbuddy", "dsh", "
       assert.equal(evaluation.turns.length, 3);
       assert.equal(evaluation.turns[2].assistant_message, "");
       assert.match(evaluation.turns[0].user_message, new RegExp(`Synthetic ${client} question 1`));
+      if (client === "claude-code") {
+        assert.equal(evaluation.source_turn_id, "u1");
+        assert.deepEqual(evaluation.turns.map(turn => turn.turn_id), ["u1", "u2", "u3"]);
+      }
     }
   });
+}
 }
