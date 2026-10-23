@@ -13,6 +13,20 @@ const TARGET_NAME = "@memorax/memorax-code-preview";
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const options = { encoding: "utf8", timeout: 60_000, maxBuffer: 8 * 1024 * 1024, windowsHide: true };
 
+// Git for Windows may put GNU tar first on PATH. Absolute drive-letter archive
+// names are interpreted as remote hosts, so both tar paths are relative to cwd.
+export async function extractPreviewBaseline(directory, runCommand = execFileAsync) {
+  try {
+    await runCommand("tar", ["-xzf", "published-source.tgz", "-C", "extracted"], { ...options, cwd: directory });
+  } catch (error) {
+    const code = "INSTALL_PREVIEW_BASELINE_EXTRACT_FAILED";
+    const failure = Object.assign(new Error(code), { diagnosticCode: code });
+    if ((Number.isInteger(error.code) && error.code >= 0 && error.code <= 0xffffffff)
+      || ["ENOENT", "ENOEXEC", "EACCES", "EPERM", "ETIMEDOUT"].includes(error.code)) failure.code = error.code;
+    throw failure;
+  }
+}
+
 export async function createPreviewUpgradeBaseline({ directory, version, runNpm, fetchImpl = fetch }) {
   assert.match(version, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/);
   const response = await fetchImpl(
@@ -37,7 +51,7 @@ export async function createPreviewUpgradeBaseline({ directory, version, runNpm,
   await writeFile(source, bytes);
   const extract = join(directory, "extracted");
   await mkdir(extract);
-  await execFileAsync("tar", ["-xzf", source, "-C", extract], options);
+  await extractPreviewBaseline(directory);
   const packageRoot = join(extract, "package");
   const manifestPath = join(packageRoot, "package.json");
   const manifest = JSON.parse(await readFile(manifestPath, "utf8"));

@@ -651,6 +651,10 @@ jobs:
         timeout-minutes: 5
         shell: pwsh
         run: node --test scripts/ci/cursor/cursor-app-windows-check.test.mjs scripts/ci/cursor/cursor-app-windows-installer-diagnostics.test.mjs
+      - name: Verify preview baseline archive paths in Windows Bash
+        if: runner.os == 'Windows'
+        shell: bash
+        run: node --test scripts/ci/shared/preview-upgrade-baseline.test.mjs
       - name: Verify Cursor package lifecycle and saved account
         shell: bash
         run: |

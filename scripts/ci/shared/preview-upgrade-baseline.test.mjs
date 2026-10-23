@@ -4,17 +4,17 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve, win32 } from "node:path";
 import test from "node:test";
 import { promisify } from "node:util";
-import { createPreviewUpgradeBaseline } from "./preview-upgrade-baseline.mjs";
+import { createPreviewUpgradeBaseline, extractPreviewBaseline } from "./preview-upgrade-baseline.mjs";
 
 const run = promisify(execFile);
 const npmCli = [process.env.npm_execpath, join(dirname(process.execPath), "node_modules/npm/bin/npm-cli.js"),
   resolve(dirname(process.execPath), "../lib/node_modules/npm/bin/npm-cli.js")].find((path) => path && existsSync(path));
 
 async function fixture(t) {
-  const root = await mkdtemp(join(tmpdir(), "preview-baseline-"));
+  const root = await mkdtemp(join(tmpdir(), "preview baseline 空间-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const directory = join(root, "source");
   const packageRoot = join(directory, "package");
@@ -25,7 +25,7 @@ async function fixture(t) {
   await writeFile(join(packageRoot, "package.json"), JSON.stringify(manifest));
   await writeFile(join(packageRoot, "payload.txt"), "Historical component content.\n");
   const source = join(root, "source.tgz");
-  await run("tar", ["-czf", source, "-C", directory, "package"]);
+  await run("tar", ["-czf", "source.tgz", "-C", "source", "package"], { cwd: root });
   const bytes = await readFile(source);
   const metadata = { name: manifest.name, version: manifest.version, dist: {
     tarball: "https://registry.npmjs.org/@memorax/memorax-code/-/memorax-code-0.1.18.tgz",
@@ -54,9 +54,9 @@ test("synthetic preview baseline preserves historical contents and reports its e
   const input = await fixture(t);
   const { tarball, record } = await createPreviewUpgradeBaseline({ directory: join(input.root, "baseline"),
     version: "0.1.18", fetchImpl: input.fetchImpl, runNpm: input.runNpm });
-  const packed = JSON.parse((await run("tar", ["-xOzf", tarball, "package/package.json"], { encoding: "utf8" })).stdout);
+  const packed = JSON.parse((await run("tar", ["-xOzf", basename(tarball), "package/package.json"], { cwd: dirname(tarball), encoding: "utf8" })).stdout);
   assert.deepEqual(packed, { ...input.manifest, name: "@memorax/memorax-code-preview" });
-  assert.equal((await run("tar", ["-xOzf", tarball, "package/payload.txt"], { encoding: "utf8" })).stdout,
+  assert.equal((await run("tar", ["-xOzf", basename(tarball), "package/payload.txt"], { cwd: dirname(tarball), encoding: "utf8" })).stdout,
     "Historical component content.\n");
   assert.deepEqual(record, { kind: "synthetic-preview-baseline", sourcePackage: input.manifest.name, version: "0.1.18",
     sourceIntegrity: input.metadata.dist.integrity, sourceSha256: createHash("sha256").update(input.bytes).digest("hex"),
@@ -89,4 +89,39 @@ test("synthetic baseline rejects a missing published source instead of pretendin
   await assert.rejects(createPreviewUpgradeBaseline({ directory: join(input.root, "baseline"), version: "0.1.18",
     fetchImpl: async () => ({ status: 404 }), runNpm: () => { throw new Error("UNEXPECTED_NPM_INVOCATION"); } }),
   /PREVIEW_BASELINE_MANIFEST_UNAVAILABLE/);
+});
+
+test("baseline extraction keeps Windows drive letters and Unicode outside tar operands", async () => {
+  for (const directory of ["C:\\preview fixture\\空间", "D:\\a\\_temp\\preview baseline"]) {
+    let calls = 0;
+    await extractPreviewBaseline(directory, async (command, args, options) => {
+      calls += 1;
+      assert.equal(command, "tar");
+      assert.equal(options.cwd, directory);
+      const archive = args[args.indexOf("-xzf") + 1], destination = args[args.indexOf("-C") + 1];
+      // GNU tar treats a colon in the archive operand as remote-host syntax.
+      assert.ok(!archive.includes(":"));
+      assert.equal(win32.isAbsolute(archive), false);
+      assert.equal(win32.isAbsolute(destination), false);
+      assert.equal(options.windowsHide, true);
+      assert.ok(options.timeout > 0);
+    });
+    assert.equal(calls, 1);
+  }
+});
+
+test("baseline extraction identifies its failure without returning private command output", async () => {
+  for (const code of [2, "ENOENT", "ETIMEDOUT", "PRIVATE_UNKNOWN_CODE"]) {
+    await assert.rejects(extractPreviewBaseline("D:\\private fixture", async () => {
+      throw Object.assign(new Error("private path and output"), { code, stdout: "private stdout", stderr: "private stderr" });
+    }), (error) => {
+      assert.equal(error.message, "INSTALL_PREVIEW_BASELINE_EXTRACT_FAILED");
+      assert.equal(error.diagnosticCode, "INSTALL_PREVIEW_BASELINE_EXTRACT_FAILED");
+      assert.equal(error.code, code === "PRIVATE_UNKNOWN_CODE" ? undefined : code);
+      assert.equal(error.stdout, undefined);
+      assert.equal(error.stderr, undefined);
+      assert.ok(!error.stack.includes("private path"));
+      return true;
+    });
+  }
 });

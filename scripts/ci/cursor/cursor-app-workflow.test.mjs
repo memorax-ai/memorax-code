@@ -93,6 +93,12 @@ test("Cursor package lifecycle is required in every cell before native App execu
   assert.equal(step.length, 2);
   const lifecycle = step[1].split(/\n      - /)[0];
   assert.match(lifecycle, /^        shell: bash$/m);
+  const baselineTest = canary.split("      - name: Verify preview baseline archive paths in Windows Bash\n")[1]?.split(/\n      - /)[0];
+  assert.ok(baselineTest);
+  assert.match(baselineTest, /^        if: runner\.os == 'Windows'$/m);
+  assert.match(baselineTest, /^        shell: bash$/m);
+  assert.match(baselineTest, /^        run: node --test scripts\/ci\/shared\/preview-upgrade-baseline\.test\.mjs$/m);
+  assert.ok(canary.indexOf("- name: Verify preview baseline archive paths in Windows Bash") < canary.indexOf(`- name: ${name}`));
   assert.doesNotMatch(lifecycle, /^        (?:if|continue-on-error):/m);
   assert.ok(canary.indexOf("name: ${{ needs.package.outputs.package-artifact-name }}") < canary.indexOf(`- name: ${name}`));
   assert.ok(canary.indexOf(`- name: ${name}`) < canary.indexOf("- name: Verify isolated native Cursor App writeback"));
