@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -18,14 +19,25 @@ const workspace = join(root, "private-setup-workspace-canary");
 const apiKey = `sk_${"E".repeat(43)}`;
 const configCanary = "private-config-secret-canary";
 const malformedPid = "{private-setup-pid-canary\n";
-const clients = ["codex", "claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "qoder"];
+const clients = ["codex", "claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor", "qoder"];
 const disabledClients = `[clients]\n${clients.map((client) => `${client} = false`).join("\n")}\n`;
+const networkGuard = join(root, "local-only-fetch.mjs");
 const healthyHome = join(root, "healthy-state");
 let healthyPort;
 let healthyCleanupNeeded = false;
 
 try {
   await Promise.all([userHome, workspace, join(root, "tmp")].map((path) => mkdir(path, { recursive: true })));
+  await writeFile(networkGuard, `
+const originalFetch = globalThis.fetch;
+globalThis.fetch = (input, options) => {
+  const url = new URL(typeof input === "string" || input instanceof URL ? input : input.url);
+  if (!["127.0.0.1", "[::1]", "localhost"].includes(url.hostname)) {
+    throw new Error("Setup E2E blocked a non-loopback request");
+  }
+  return originalFetch(input, options);
+};
+`);
 
   const backendHome = await prepareHome("invalid-backend-state");
   const pidPath = join(backendHome, "runtime", "backend", "backend.pid.json");
@@ -81,9 +93,13 @@ try {
   await prepareHome("healthy-state");
   healthyPort = await freePort();
   healthyCleanupNeeded = true;
-  const healthy = await runSetup(healthyHome, healthyPort);
+  const healthy = await runSetup(healthyHome, healthyPort, { existingAccount: false });
   assert.equal(healthy.code, 0, `Healthy setup failed: ${healthy.stdout}\n${healthy.stderr}`);
   assert.match(healthy.stderr, /Setup completed successfully/);
+  assert.match(healthy.stderr, /Register or sign in at http:\/\/preview\.memorax\.net\//);
+  const healthyConfig = await readFile(join(healthyHome, "config.toml"), "utf8");
+  assert.ok(healthyConfig.includes(`api_key = "${apiKey}"`));
+  assert.match(healthyConfig, /^endpoint = "http:\/\/127\.0\.0\.1:9"/m);
   const completion = JSON.parse(await readFile(completionPath(healthyHome), "utf8"));
   assert.equal(completion.version, 1);
   assert.equal(completion.state, "complete");
@@ -115,8 +131,8 @@ async function prepareHome(name, config = disabledClients) {
   return stateHome;
 }
 
-async function runSetup(stateHome, port = 18787) {
-  const result = await runCommand(["setup", "--existing-account", "--non-interactive", "--home", stateHome], stateHome, port, `${apiKey}\n`);
+async function runSetup(stateHome, port = 18787, { existingAccount = true } = {}) {
+  const result = await runCommand(["setup", ...(existingAccount ? ["--existing-account"] : []), "--non-interactive", "--home", stateHome], stateHome, port, `${apiKey}\n`);
   for (const secret of [apiKey, configCanary, malformedPid.trim()]) {
     assert.equal(`${result.stdout}\n${result.stderr}`.includes(secret), false, "Setup output must not disclose input secrets or raw invalid records");
   }
@@ -149,6 +165,7 @@ function isolatedEnv(stateHome, port) {
     XDG_CONFIG_HOME: join(userHome, ".config"), XDG_DATA_HOME: join(userHome, ".local", "share"),
     XDG_STATE_HOME: join(userHome, ".local", "state"), XDG_CACHE_HOME: join(userHome, ".cache"),
     MEMORAX_CODE_HOME: stateHome, MEMORAX_CODE_AUTO_UPDATE: "false", MEMORAX_CODE_INSTALL_WATCHDOG: "0",
+    NODE_OPTIONS: `--import=${pathToFileURL(networkGuard).href}`,
     MEMORAX_CODE_BACKEND_HOST: "127.0.0.1", MEMORAX_CODE_BACKEND_PORT: String(port),
     MEMORAX_CODE_MEMORAX_ENDPOINT: "http://127.0.0.1:9",
     MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "false",
@@ -158,6 +175,7 @@ function isolatedEnv(stateHome, port) {
     CODEBUDDY_HOME: join(userHome, ".codebuddy"), CODEBUDDY_CONFIG_DIR: join(userHome, ".codebuddy"),
     WORKBUDDY_HOME: join(userHome, ".workbuddy"), WORKBUDDY_CONFIG_DIR: join(userHome, ".workbuddy"),
     TRAE_CN_HOME: join(userHome, ".trae-cn"), TRAE_HOME: join(userHome, ".trae-cn"),
+    CURSOR_HOME: join(userHome, ".cursor"),
     QODER_CONFIG_DIR: join(userHome, ".qoder"),
   };
   for (const client of clients) {

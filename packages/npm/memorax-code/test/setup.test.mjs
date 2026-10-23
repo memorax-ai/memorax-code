@@ -33,7 +33,7 @@ const vscodeExtensionCommandPath = fileURLToPath(new URL("../lib/vscode-extensio
 const windowsCliInvocationPath = fileURLToPath(new URL("../lib/windows-cli-invocation.mjs", import.meta.url));
 const smolTomlPath = fileURLToPath(new URL("../../../ts/memorax-code-backend/node_modules/smol-toml", import.meta.url));
 const memoraxCodePluginId = "memorax-code-codex-adapter@memorax-code";
-const trialApiKey = `sk_${"T".repeat(43)}`;
+const registeredApiKey = `sk_${"T".repeat(43)}`;
 
 async function writeMockNodeCommand(command, source, { npmCodeBuddy = false } = {}) {
   const contents = Array.isArray(source) ? source.join("\n") : source;
@@ -181,7 +181,7 @@ async function startMockMemorax({ status = 200, body = { success: true, data: { 
   };
 }
 
-async function runSetup({ existingCache = false, explicitCache = false, codexRegistered, hookRuntimeFailure, failStartOnce = false, adapterStartFailure = false, connectionAuthorityFailure = false, runtimeAuthorityFailureCode, officialMode = false, codexConfig, memoraxCodeConfig, memoraxCodeConfigMode, activeManagedClients, emptyClaudeSettings = false, claudeAvailable = true, claudeVersionFails = false, claudeSettingsText, codexAvailable = true, codexAppOnly = false, vscodeOnly = false, dshProfiles = [], opencodeAvailable = false, opencodeXdgAvailable = false, opencodeCliAvailable = false, codebuddyAvailable = false, codebuddyNativeConfig = false, workbuddyAvailable = false, legacyWorkBuddyInstallation = false, failingBuddyVersion, missingBuddyStatus, traeAvailable = false, cursorAvailable = false, qoderAvailable = false, skipCodexPluginInstall = false, skipClaudeAdapterInstall = false, skipOpenCodeAdapterInstall = false, skipCodeBuddyAdapterInstall = false, skipWorkBuddyAdapterInstall = false, skipTraeAdapterInstall = false, skipCursorAdapterInstall = false, skipQoderAdapterInstall = false, unavailableStatus = false, prefixedStatus = false, input = "", nativeSetupArgs = [], interactive = true, npmCommand = "install", updateMode = false, setupMode = "automatic", memoraxVerify, memoraxEnv = {}, memoryStatusFixture, tamperApiKeyAfterStart = false, trialProvisionFailure = false, hookSnapshot = [], hookUpdatePlan = [], hookFullReview = false, hookFullReviewMissing = false, hookSnapshotFails = false, hookCheckFails = false, hookTrustFails = false, detectedUserId = "memory-user", detectedLanguage = "zh", ttyOverride } = {}) {
+async function runSetup({ existingCache = false, explicitCache = false, codexRegistered, hookRuntimeFailure, failStartOnce = false, adapterStartFailure = false, connectionAuthorityFailure = false, runtimeAuthorityFailureCode, officialMode = false, codexConfig, memoraxCodeConfig, memoraxCodeConfigMode, activeManagedClients, emptyClaudeSettings = false, claudeAvailable = true, claudeVersionFails = false, claudeSettingsText, codexAvailable = true, codexAppOnly = false, vscodeOnly = false, dshProfiles = [], opencodeAvailable = false, opencodeXdgAvailable = false, opencodeCliAvailable = false, codebuddyAvailable = false, codebuddyNativeConfig = false, workbuddyAvailable = false, legacyWorkBuddyInstallation = false, failingBuddyVersion, missingBuddyStatus, traeAvailable = false, cursorAvailable = false, qoderAvailable = false, skipCodexPluginInstall = false, skipClaudeAdapterInstall = false, skipOpenCodeAdapterInstall = false, skipCodeBuddyAdapterInstall = false, skipWorkBuddyAdapterInstall = false, skipTraeAdapterInstall = false, skipCursorAdapterInstall = false, skipQoderAdapterInstall = false, unavailableStatus = false, prefixedStatus = false, input, nativeSetupArgs = [], interactive = true, npmCommand = "install", updateMode = false, setupMode = "automatic", memoraxVerify, memoraxEnv = {}, memoryStatusFixture, tamperApiKeyAfterStart = false, hookSnapshot = [], hookUpdatePlan = [], hookFullReview = false, hookFullReviewMissing = false, hookSnapshotFails = false, hookCheckFails = false, hookTrustFails = false, detectedUserId = "memory-user", detectedLanguage = "zh", ttyOverride } = {}) {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-setup-"));
   const binDir = join(root, "bin");
   const codexHome = join(root, "codex-home");
@@ -299,7 +299,7 @@ async function runSetup({ existingCache = false, explicitCache = false, codexReg
   await copyFile(clientHookRuntimePath, join(libDir, "client-hook-runtime.mjs"));
   await copyFile(setupReconcilePath, join(libDir, "setup-reconcile.mjs"));
   await copyFile(setupApiKeyInputPath, join(libDir, "setup-api-key-input.mjs"));
-  for (const file of ["setup-diagnostics.mjs", "trial-provision-client.mjs", "trial-provision-flow.mjs", "trial-plugin-mark.mjs"]) {
+  for (const file of ["setup-diagnostics.mjs"]) {
     await copyFile(new URL(`../lib/${file}`, import.meta.url), join(libDir, file));
   }
   await writeFile(join(libDir, "setup-memory-preferences.mjs"), [
@@ -311,28 +311,11 @@ async function runSetup({ existingCache = false, explicitCache = false, codexReg
     "}",
     "",
   ].join("\n"));
-  const trialReadyMarker = join(memoraxCodeHome, "runtime", "credentials", "trial-ready-test");
   await writeFile(join(libDir, "trial-setup.mjs"), [
-    "import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';",
-    "import { dirname } from 'node:path';",
-    "import { TrialProvisionFlowError } from './trial-provision-flow.mjs';",
-    "export { trialProvisionFailureDetails as trialSetupFailureDetails } from './trial-provision-flow.mjs';",
-    "export async function ensureTrialSetupCredential() {",
-    `  appendFileSync(${JSON.stringify(logPath)}, 'trial-provision\\n');`,
-    `  if (${JSON.stringify(trialProvisionFailure)}) {`,
-    "    throw new TrialProvisionFlowError('credential_failure', {",
-    "      stage: 'credential_load',",
-    "      error: Object.assign(new Error('redacted trial failure'), { code: 'TRIAL_CREDENTIAL_BACKEND_ERROR', reason: 'backend_unavailable' }),",
-    "    });",
-    "  }",
-    `  mkdirSync(dirname(${JSON.stringify(trialReadyMarker)}), { recursive: true });`,
-    `  writeFileSync(${JSON.stringify(trialReadyMarker)}, 'ready\\n');`,
-    `  return { status: 'ready', provisioned: true, accountId: '9001', projectId: '9002', apiKey: ${JSON.stringify(trialApiKey)} };`,
-    "}",
-    "export async function loadReadyTrialSetupCredential() {",
-    `  appendFileSync(${JSON.stringify(logPath)}, 'trial-load\\n');`,
-    `  return { status: 'ready', provisioned: false, accountId: '9001', projectId: '9002', apiKey: ${JSON.stringify(trialApiKey)} };`,
-    "}",
+    "throw new Error('Preview setup must not access guest credentials');",
+    "export async function ensureTrialSetupCredential() {}",
+    "export async function loadReadyTrialSetupCredential() {}",
+    "export function trialSetupFailureDetails() {}",
     "",
   ].join("\n"));
   const codexAdapterDir = join(libDir, "memorax-code-codex-adapter");
@@ -568,8 +551,7 @@ async function runSetup({ existingCache = false, explicitCache = false, codexReg
     "try { fileConfig = parse(readFileSync(join(process.env.MEMORAX_CODE_HOME, 'config.toml'), 'utf8')); } catch {}",
     "const apiKey = String(process.env.MEMORAX_CODE_MEMORAX_API_KEY ?? fileConfig.memorax?.api_key ?? '').trim();",
     "const userId = String(process.env.MEMORAX_CODE_MEMORAX_USER_ID ?? fileConfig.memorax?.user_id ?? '').trim();",
-    `const trialReady = existsSync(${JSON.stringify(trialReadyMarker)});`,
-    "const configured = Boolean(userId && (apiKey || trialReady));",
+    "const configured = Boolean(userId && apiKey);",
     "const globalEnabled = process.env.MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED !== 'false';",
     "const directValue = process.env.MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED ?? fileConfig.memory?.writeback?.enabled;",
     "const directConfigured = directValue === true || ['1', 'true', 'yes', 'on'].includes(String(directValue ?? '').toLowerCase());",
@@ -831,7 +813,7 @@ async function runSetup({ existingCache = false, explicitCache = false, codexReg
       env: childEnv,
       stdio: ["pipe", "pipe", "pipe"],
     });
-    child.stdin.end(input);
+    child.stdin.end(input ?? (updateMode ? "" : `\n${registeredApiKey}\n`));
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk) => { stdout += String(chunk); });
@@ -1267,13 +1249,16 @@ test("setup fresh install auto-detects Trae and requests one-time Global Hooks a
 });
 
 
-test("setup seeds the default MemoraX Code config around trial memory preferences", async () => {
+test("preview setup seeds the default config with registered account credentials", async () => {
   const run = await runSetup({ interactive: true });
   try {
     assert.equal(run.result.code, 0, run.result.stderr);
     assert.match(run.result.stderr, /MemoraX Code requires MemoraX for its core remote-memory functionality/);
     assert.match(run.result.stderr, /MemoraX memory: .*Configured/);
     const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
+    assert.equal(parse(config).memorax.endpoint, "http://preview.memorax.net");
+    assert.equal(parse(config).memorax.api_key, registeredApiKey);
+    assert.doesNotMatch(run.log, /^trial-(?:provision|load)$/m);
     assert.match(tomlSectionText(config, "clients"), /^dsh = true(?:\s+#.*)?$/m);
     assert.doesNotMatch(config, /profile\s*=/);
     assert.doesNotMatch(config, /\[memory\]\s|provider\s*=/);
@@ -1346,14 +1331,14 @@ test("setup detects memory preferences before writing MemoraX config", async () 
     assert.match(run.result.stderr, /MemoraX Code requires MemoraX for its core remote-memory functionality/);
     assert.match(run.result.stderr, /automatically send selected user prompts and final assistant answers to MemoraX/);
     assert.match(run.result.stderr, /Newly generated configuration enables automatic writeback/);
-    assert.doesNotMatch(run.result.stderr, /register|Connect MemoraX Code to MemoraX now/i);
+    assert.match(run.result.stderr, /Register or sign in at http:\/\/preview\.memorax\.net\//);
     assert.doesNotMatch(run.result.stderr, /Enable automatic writeback|Enable writeback now/);
-    assert.match(run.result.stderr, /Username: memorax-user \(detected from the system account\)/);
+    assert.match(run.result.stderr, /Username: <default>/);
     assert.match(run.result.stderr, /Preferred language: en \(detected from system settings\)/);
     assert.doesNotMatch(run.result.stderr, /Username \(used for your memories\)|Preferred language \[ZH\/en\]/);
     assert.doesNotMatch(run.result.stderr, /Do you already have a MemoraX account/);
-    assert.doesNotMatch(run.result.stderr, /API key/i);
-    assert.match(run.result.stderr, /Secure MemoraX credential is ready/);
+    assert.match(run.result.stderr, /MemoraX API key: <provided>/);
+    assert.match(run.result.stderr, /Existing MemoraX account connection configured/);
     assert.doesNotMatch(run.result.stderr, /MemoraX endpoint/);
     assert.match(run.result.stderr, /MemoraX config written to/);
     assert.match(run.result.stderr, /first workspace-scoped memory request from a trusted workspace/);
@@ -1361,15 +1346,14 @@ test("setup detects memory preferences before writing MemoraX config", async () 
     assert.match(run.result.stderr, /Automatic writeback: .*Enabled/);
     assert.match(run.log, /^memorax-code start --clients codex,claude,dsh --json$/m);
     assert.match(run.log, /^memorax-cli status --json --config-only$/m);
-    assert.match(run.log, /^trial-provision$/m);
-    assert.ok(run.log.indexOf("trial-provision") < run.log.indexOf("memorax-code start --clients codex,claude,dsh"));
-    assert.equal(`${run.result.stdout}\n${run.result.stderr}\n${run.log}`.includes(trialApiKey), false);
+    assert.doesNotMatch(run.log, /^trial-(?:provision|load)$/m);
+    assert.equal(`${run.result.stdout}\n${run.result.stderr}\n${run.log}`.includes(registeredApiKey), false);
     assert.equal(run.memoraxRequests.length, 0);
     const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
     assert.match(config, /\[memorax\]/);
     assert.ok(config.includes(`endpoint = "${run.memoraxEndpoint}" # MemoraX service URL.`));
     assert.match(config, /user_id = "memorax-user" # Stable username; requests derive a workspace-scoped namespace\./);
-    assert.ok(config.includes(`api_key = "${trialApiKey}" # MemoraX API key used by the local Backend.`));
+    assert.ok(config.includes(`api_key = "${registeredApiKey}" # MemoraX API key used by the local Backend.`));
     assert.doesNotMatch(config, /credential_source/);
     assert.doesNotMatch(config, /9001|9002/);
     assert.match(config, /\[memory\.add\]\r?\noutput_language = "en" # Language for newly generated MemoraX memories\./);
@@ -1427,7 +1411,6 @@ test("setup configures an existing MemoraX account without trial provisioning", 
     memoraxCodeConfigMode: 0o600,
     detectedUserId: "registered-user",
     detectedLanguage: "en",
-    trialProvisionFailure: true,
   });
   try {
     assert.equal(run.result.code, 0, run.result.stderr);
@@ -1457,7 +1440,6 @@ test("setup accepts API key stdin without a TTY and preserves independent client
   const run = await runSetup({
     interactive: false,
     nativeSetupArgs: ["--non-interactive"],
-    setupMode: "existing-account",
     input: `${apiKey}\r\n`,
     codexAvailable: false,
     claudeAvailable: false,
@@ -1465,7 +1447,6 @@ test("setup accepts API key stdin without a TTY and preserves independent client
     workbuddyAvailable: true,
     detectedUserId: "workbuddy-user",
     detectedLanguage: null,
-    trialProvisionFailure: true,
     memoraxCodeConfig: "[clients]\ncodex = false\nclaude = false\ncodebuddy = false\n\n[memory.writeback]\nenabled = false\n\n[memory.retrieval]\nenabled = true\ntop_k = 3\n\n[memorax]\nstartup_timeout_ms = 2500\n",
   });
   try {
@@ -1522,22 +1503,13 @@ test("API key stdin setup cannot complete with a missing username or a replaced 
   }
 });
 
-test("setup stops before client installation and Backend start when secure trial setup fails", async () => {
-  const run = await runSetup({ trialProvisionFailure: true, memoraxEnv: { MEMORAX_CODE_SETUP_VERBOSE: "0" } });
+test("preview setup requires a website API key before client installation and Backend start", async () => {
+  const run = await runSetup({ input: "\n\n", memoraxEnv: { MEMORAX_CODE_SETUP_VERBOSE: "0" } });
   try {
     assert.equal(run.result.code, 1, run.result.stderr);
-    assert.match(run.result.stderr, /\[TRIAL_CREDENTIAL_BACKEND_ERROR\] credential\.credential_load: Secure MemoraX credential setup failed/);
-    assert.match(run.result.stderr, /credential_failure, backend_unavailable/);
-    const diagnostics = await readSetupDiagnostics(run);
-    assert.equal(diagnostics.length, 1);
-    assert.equal(diagnostics[0].errorCode, "TRIAL_CREDENTIAL_BACKEND_ERROR");
-    assert.equal(diagnostics[0].stage, "credential.credential_load");
-    assert.equal(diagnostics[0].credentialReason, "backend_unavailable");
-    assert.ok(run.result.stderr.includes(`Diagnostic: ${diagnostics[0].id}`));
-    assert.doesNotMatch(JSON.stringify(diagnostics), /redacted trial failure/);
-    assert.equal(JSON.stringify(diagnostics).includes(trialApiKey), false);
-    assert.doesNotMatch(run.result.stderr, /redacted trial failure/);
-    assert.match(run.log, /^trial-provision$/m);
+    assert.match(run.result.stderr, /API key was empty/);
+    assert.match(run.result.stderr, /Register or sign in at http:\/\/preview\.memorax\.net\//);
+    assert.doesNotMatch(run.log, /^trial-(?:provision|load)$/m);
     assert.doesNotMatch(run.log, /^memorax-code (?:codex-plugin install|start|status)/m);
     const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
     assert.doesNotMatch(tomlSectionText(config, "memorax"), /^(?!\s*#)\s*(?:user_id|api_key)\s*=/m);
@@ -1641,10 +1613,10 @@ test("reconfigure mode replaces a reusable MemoraX configuration", async () => {
     assert.equal(run.result.code, 0, run.result.stderr);
     assert.doesNotMatch(run.result.stderr, /Reusing the existing MemoraX connection and memory preferences/);
     assert.doesNotMatch(run.result.stderr, /Use the saved connection and memory preferences/);
-    assert.match(run.result.stderr, /Username: memory-user \(detected from the system account\)/);
+    assert.match(run.result.stderr, /Username: <default>/);
     const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
     assert.match(config, /user_id = "memory-user"/);
-    assert.ok(config.includes(`api_key = "${trialApiKey}" # MemoraX API key used by the local Backend.`));
+    assert.ok(config.includes(`api_key = "${registeredApiKey}" # MemoraX API key used by the local Backend.`));
     assert.doesNotMatch(config, /existing-secret/);
   } finally {
     await rm(run.root, { recursive: true, force: true });
@@ -1673,15 +1645,15 @@ test("setup recognizes environment-only MemoraX credentials", async () => {
 });
 
 
-test("setup writes the platform endpoint when no override is supplied", async () => {
+test("setup writes the preview endpoint when no override is supplied", async () => {
   const run = await runSetup({
     interactive: true,
   });
   try {
     assert.equal(run.result.code, 0, run.result.stderr);
-    assert.match(run.result.stderr, /Secure MemoraX credential is ready/);
+    assert.match(run.result.stderr, /Existing MemoraX account connection configured/);
     const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
-    assert.match(config, /endpoint = "https:\/\/platform\.memorax\.net" # MemoraX service URL\./);
+    assert.match(config, /endpoint = "http:\/\/preview\.memorax\.net" # MemoraX service URL\./);
     assert.match(config, /output_language = "zh" # Language for newly generated MemoraX memories\./);
   } finally {
     await rm(run.root, { recursive: true, force: true });

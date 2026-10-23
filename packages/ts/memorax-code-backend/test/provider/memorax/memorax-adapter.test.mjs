@@ -187,7 +187,7 @@ test("MemoraX adapter sends fallback requests to the platform endpoint", async (
 
     assert.equal(result.ok, true);
     assert.deepEqual(requests, [{
-      url: "https://platform.memorax.net/v1/memories/search",
+      url: "http://preview.memorax.net/v1/memories/search",
       method: "POST",
     }]);
   } finally {

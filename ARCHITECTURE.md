@@ -92,7 +92,6 @@ flowchart LR
   Build -->|"assembles"| Artifact
   Artifact -->|"lifecycle start"| Service
   Artifact -->|"memory command"| MemoryCLI
-  Artifact -->|"trial provision when needed"| MemoraX
 
   Backend -->|"shared source imports"| Common
   CodexAdapter --> Common
@@ -153,7 +152,7 @@ owns only normalized semantic evaluation requests.
 | [Trae adapter](packages/ts/memorax-code-trae-adapter) | Managed Global Hooks, versioned runtime and Skill deployment, and Hook observation | Global Hooks activation, provider settings, or guessed native Sessions |
 | [Cursor adapter](packages/ts/memorax-code-cursor-adapter) | Marker-owned native Hooks, versioned runtime, and independent shared Skill deployment | Native transcript interpretation or third-party import settings |
 | [Qoder adapter](packages/ts/memorax-code-qoder-adapter) | Marker-owned user settings Hooks, private runtime generations, canonical Skill and native Repo Memory subagent deployment, runtime observation, and native job coordination | Qoder plugin registry, provider settings, or native transcript interpretation |
-| [npm package](packages/npm/memorax-code) | Installed wrappers, setup and update reconciliation, trial provisioning, and package replacement | Backend lifecycle semantics, uninstall orchestration, or artifact staging |
+| [npm package](packages/npm/memorax-code) | Installed wrappers, account setup and update reconciliation, and package replacement | Backend lifecycle semantics, uninstall orchestration, or artifact staging |
 | [scripts](scripts) | Build, staging/materialization, and repository/artifact checks | Product runtime authority |
 | [.github](.github) | Contribution templates and CI workflows | Product runtime behavior |
 
@@ -375,10 +374,10 @@ Update failures and final recovery outcomes use the shared immutable diagnostic
 store. Recovery summaries link child diagnostic IDs without rewriting their
 original records; default status and diagnostic-history queries expose both.
 
-Public `memorax-code setup` owns disclosure, preferences, credential
-provisioning or entry, client discovery, initial Hook activation, and Backend
-reconciliation. It accepts either interactive input or an explicit
-`--existing-account --non-interactive` request with a raw key on stdin. The latter
+Public `memorax-code setup` owns disclosure, preferences, account credential
+entry, client discovery, initial Hook activation, and Backend reconciliation.
+It accepts either interactive input or an explicit `--non-interactive` request
+with a raw key on stdin; `--existing-account` remains optional. The latter
 uses detected preferences, preserves explicit client choices, and verifies the
 saved key locally without returning it. Both commit the versioned completion
 record only after final verification. Invalid or unsupported
@@ -388,7 +387,7 @@ migration follow the [setup state rules](docs/configuration.md#setup-automatic-u
 The npm package's `lib/setup-diagnostics.mjs` owns default setup failure
 presentation and content-free records. It reuses existing Backend and client
 diagnostics and IDs instead of recording the same failures again. Shared
-configuration writes and trial provisioning supply safe stage, system-code, validation, and recovery
+configuration writes supply safe stage, system-code, validation, and recovery
 evidence; raw exceptions, configuration, credentials, and device identity do not
 enter the diagnostic projection. Final connection checks validate local effective
 configuration, not remote Search/Add authentication. A completion-record failure
@@ -516,14 +515,14 @@ native Repo Memory coordinator reuses common maintenance policy, locks, snapshot
 and publication; it does not invoke a Qoder CLI or edit the internal plugin registry.
 See [Qoder configuration](docs/configuration.md#qoder-integration-paths).
 
-Account-free setup creates or restores versioned trial credentials through
-adapter-common's secure credential port and calls MemoraX provisioning to
-complete an unprovisioned record. Existing-account setup and reuse of ready
-credentials skip that request. The secure record is authoritative for reuse;
-the API key is also projected into private configuration. Account, project,
-and device-mark metadata remain only in secure credential storage. A matching
-anonymous quota reminder may read the mark for account claiming, but it does
-not replace configured repository-scoped memory identity.
+Preview setup accepts an API key created on the preview account website and
+stores it in private configuration. The shared MemoraX defaults own both the
+service origin and account website address. Default setup reuses a complete
+effective connection; explicit account setup and reconfiguration accept new
+credentials. Trial utilities remain in the source tree, but preview setup does
+not call provisioning or the secure trial credential store. Quota reminders
+use the configured connection and normalized balances without reading trial
+identity or selecting guest-account guidance.
 
 ### 3.2 Hook and retrieval data flow
 
@@ -1255,7 +1254,7 @@ and
 | Package replacement intent | Versioned private package-transition record plus its bounded lock | npm process state or the presence of installed package files |
 | Completed foreground setup | Versioned private setup-completion record written after final verification | Configuration-file presence, Backend liveness, or detected clients |
 | Automatic update cadence | Versioned private automatic-update record plus its bounded lock | Managed Backend timer state or client process lifetime |
-| Quota reminders | Versioned private local runtime record keyed by a one-way connection fingerprint for deduplication; normalized MemoraX balances for the quota amount; a ready secure trial record matching the active API key for optional anonymous Mark ID text | Account registration status, raw API keys, and in-memory reminder state are not quota-reminder authority |
+| Quota reminders | Versioned private local runtime record keyed by a one-way connection fingerprint for deduplication; normalized MemoraX balances for the quota amount | Account registration status, raw API keys, and in-memory reminder state are not quota-reminder authority |
 | MemoraX memory results and Add acceptance | Normalized response from `provider/memorax` | Observability and trace |
 | Persisted current-turn operational state | Client-qualified current-turn records with Session and Turn checks | CLI workspace association and exact recovery; native content is independently validated |
 | Trace history | Client-qualified local trace events | Diagnostics; not native content or general Turn-identity authority |
@@ -1316,9 +1315,9 @@ repository-session bindings, in-flight provider operations, and observability
 writes.
 
 Durable local state includes configuration, private runtime, setup-completion,
-package-transition, automatic-update, and trial credential records, active
-client selection,
-client-qualified trace JSONL, reminder cadence and quota-reminder state, and
+package-transition, automatic-update, and retained legacy trial credential
+records, active client selection, client-qualified trace JSONL, reminder
+cadence and quota-reminder state, and
 Repo Memory. State shared across processes requires a bounded lock, atomic
 replacement, or version validation appropriate to its record. An in-memory
 mutex is not cross-process authority.

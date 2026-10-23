@@ -78,13 +78,14 @@ Options:
 function printSetupHelp() {
   console.log(`Usage: memorax-code setup [--existing-account | --reconfigure] [--non-interactive] [--home DIR]
 
-Configure or repair MemoraX Code interactively, or use --existing-account
---non-interactive with an API Key on stdin. Plain setup reuses a complete configuration.
+Configure or repair MemoraX Code using a registered preview account and API Key.
+Plain setup reuses a complete configuration. Use --non-interactive with an API Key
+on stdin for scripted setup.
 
 Options:
-  --existing-account  Configure an existing account instead of anonymous access
-  --non-interactive   With --existing-account, read the API Key from stdin and use defaults without prompting
-  --reconfigure       Re-detect memory preferences instead of reusing configuration
+  --existing-account  Enter account credentials instead of reusing configuration
+  --non-interactive   Read the API Key from stdin and use defaults without prompting
+  --reconfigure       Enter account credentials and memory preferences again
   --home DIR           Configure the specified MemoraX Code home
   -h, --help           Show this help message`);
 }
@@ -457,10 +458,7 @@ function parseSetupMode(args) {
       throw new Error("unknown setup option; see --help for supported input methods");
     }
   }
-  if (nonInteractive && setupMode !== "existing-account") {
-    throw new Error("--non-interactive requires --existing-account");
-  }
-  return setupMode;
+  return nonInteractive && setupMode === "automatic" ? "existing-account" : setupMode;
 }
 
 function setupCanPrompt() {

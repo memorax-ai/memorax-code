@@ -5,7 +5,8 @@ CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, Trae, Cursor, and Qoder.
 
 This is the preview edition. Its commands are `memorax-code` for setup and
 management and `memorax-cli` for memory operations. Manual and automatic updates
-follow `@memorax/memorax-code-preview`'s own npm `latest`.
+follow `@memorax/memorax-code-preview`'s own npm `latest`. The default service and
+account website are [MemoraX preview](http://preview.memorax.net/).
 
 ## Requirements
 
@@ -19,14 +20,18 @@ follow `@memorax/memorax-code-preview`'s own npm `latest`.
 npm install -g @memorax/memorax-code-preview
 ```
 
-### Connect a MemoraX Account (Recommended)
+### Connect a MemoraX Account
 
-[Create a MemoraX account](https://platform.memorax.net/) or use an existing
-one, then run:
+[Register on the preview website](http://preview.memorax.net/) and create an
+API key for your account, then run:
 
 ```bash
 memorax-code setup --existing-account
 ```
+
+Enter your MemoraX username and preview API key locally. Default
+`memorax-code setup` uses this same account flow when a connection is missing.
+The preview edition does not create guest accounts.
 
 For an agent without an interactive terminal, supply the key through stdin.
 This example assumes the caller already provided `MEMORAX_SETUP_API_KEY`:
@@ -48,28 +53,9 @@ are described in `docs/configuration.md`.
 > on another device. This file contains your API key—keep it private and never
 > paste it into chats or public issues.
 
-### Or Try Without an Account (90-Day Guest Mode)
-
-To start immediately and connect an account later, run:
-
-```bash
-memorax-code setup
-```
-
-To activate your guest account, first run this command directly in your local
-terminal:
-
-```bash
-memorax-code account --show-mark-id
-```
-
-After obtaining the Mark ID, create your MemoraX account. The platform does
-not currently support attaching a Mark ID to an account that has already been
-registered.
-
-Both account and guest setup automatically detect supported coding agents.
-Default setup reuses a complete saved configuration; use
-`memorax-code setup --reconfigure` to replace it.
+Setup automatically detects supported coding agents. Default setup reuses a
+complete saved connection. To replace it, use `memorax-code setup --reconfigure`
+or `memorax-code setup --existing-account` and enter your preview account details.
 
 On Windows, setup also verifies npm's global command directory and
 adds it to the current setup process and the Windows user `PATH` when needed.

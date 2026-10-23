@@ -49,7 +49,7 @@ MemoraX Code 让 Codex、Claude Code、CodeBuddy CLI、WorkBuddy、DeepSeek Harn
 ## 快速开始
 
 此预览版的 npm 包名为 `@memorax/memorax-code-preview`。安装配置和管理命令仍为
-`memorax-code`，记忆操作命令为 `memorax-cli`。
+`memorax-code`，记忆操作命令为 `memorax-cli`，默认连接 [MemoraX 预览环境](http://preview.memorax.net/)。
 
 开始前，请确保已安装 Node.js 20 或更高版本（推荐 Node.js 24 LTS），以及 Codex、Claude Code、
 CodeBuddy CLI、WorkBuddy、DeepSeek Harness、OpenCode、Trae、Cursor 或 Qoder 中的至少一个。
@@ -59,8 +59,7 @@ CodeBuddy CLI、WorkBuddy、DeepSeek Harness、OpenCode、Trae、Cursor 或 Qode
 使用 DSH 桌面版时，请先打开一次以初始化 Profile，再完全退出以安装插件；MemoraX Code
 会调用桌面版内置的启动器和包管理器。CLI 与桌面版可以同时启用。MemoraX Code 不会安装或更新 DSH。
 
-Linux 下，游客凭据管理需要 libsecret 提供的 `/usr/bin/secret-tool`，以及当前用户会话中可用的
-Secret Service。使用 Remote SSH、WSL 或 Dev Container 时，请将 MemoraX Code 安装在
+使用 Remote SSH、WSL 或 Dev Container 时，请将 MemoraX Code 安装在
 Coding Agent 所在的同一环境中。MemoraX 搜索和写回需要网络访问。
 
 ### 安装与接入
@@ -74,15 +73,16 @@ npm install -g @memorax/memorax-code-preview
 此命令只安装包，不会启动交互式安装引导。请勿使用 `--ignore-scripts`：替换包时，npm 生命周期
 脚本会安全停止并恢复已有的运行中托管 Backend。
 
-#### 2. 注册或接入 MemoraX 账号（推荐）
+#### 2. 注册或接入 MemoraX 账号
 
-前往 [MemoraX](https://platform.memorax.net/) 注册账号；已有账号可直接使用，然后在正常的交互式终端中运行：
+前往 [MemoraX 预览网站](http://preview.memorax.net/) 注册账号并创建 API Key，然后在正常的交互式终端中运行：
 
 ```bash
 memorax-code setup --existing-account
 ```
 
-按照安装引导，在本机终端中输入 MemoraX 用户名和 API Key。
+按照安装引导，在本机终端中输入 MemoraX 用户名和预览环境的 API Key。
+未配置连接时，默认 `memorax-code setup` 也会进入相同的账号接入流程。预览版不创建游客账号。
 
 如果 Coding Agent 无法提供交互式终端，可以通过 stdin 传入 API Key。以下示例假定调用方
 已提供 `MEMORAX_SETUP_API_KEY` 变量；请勿将 Key 填入命令参数或项目文件。
@@ -106,31 +106,13 @@ $env:MEMORAX_SETUP_API_KEY | memorax-code.cmd setup --existing-account --non-int
 > 找到 MemoraX 用户名和 API Key，再在新设备的安装引导终端中本地输入。
 > 该文件包含您的 API Key，请妥善保管，不要粘贴到聊天记录或公开 Issue 中。
 
-#### 或免账号体验（90 天游客模式）
-
-如果您希望先体验并稍后再接入账号，请运行：
-
-```bash
-memorax-code setup
-```
-
-默认 setup 会复用已有的完整连接；否则会检测本机用户名和语言，必要时询问，再创建或恢复游客凭据。
-如需替换已保存的连接，游客模式使用 `memorax-code setup --reconfigure`，
-正式账号使用 `memorax-code setup --existing-account`。
-
-如果稍后注册时希望保留游客记忆，请先直接在本机终端运行：
-
-```bash
-memorax-code account --show-mark-id
-```
-
-> [!IMPORTANT]
-> 请先获取 Mark ID，再前往 [MemoraX](https://platform.memorax.net/) 注册并使用它激活游客账号。
-> 当前暂不支持为已经注册的账号补绑 Mark ID。
+默认 setup 会复用已有的完整连接。如需替换已保存的连接，使用
+`memorax-code setup --reconfigure` 或 `memorax-code setup --existing-account`，
+并输入预览环境的账号信息。
 
 #### 3. 激活并验证
 
-两种安装引导都会自动检测受支持的 Coding Agent。完成后，请重启或刷新检测到的 Coding Agent。
+安装引导会自动检测受支持的 Coding Agent。完成后，请重启或刷新检测到的 Coding Agent。
 
 | 客户端 | 完成激活 |
 | --- | --- |
@@ -284,15 +266,13 @@ Coding Memory 按仓库或工作区确定范围。Codex、WorkBuddy、OpenCode�
 这个共享的 `@General` 范围；打开仓库后则使用该仓库的正常范围。已有记忆不会自动迁移，目录规则详见
 [记忆范围](docs/configuration.md#memory-scope)。
 
-游客额度提醒可能显示完整的 Mark ID；请将包含该信息的提醒文本和本地 trace 视为敏感信息。
-
 主动记忆操作会将查询或选中的内容发送至 MemoraX。自动写回会从受信任工作区的任务中，发送经过
 选择的用户指令和对应的 Agent 最终回复，并先移除最终回复中的记忆作用说明，再用于提取和保存记忆；它不会上传完整的本地客户端 trace
 文件或本地 trace 路径。
 
 QA 写回会保留可用的原生时间戳，并标明使用观测时间的回退情况，详见[消息时间戳](docs/configuration.md#automatic-writeback-timestamps)。
 
-登录 [MemoraX Console](https://platform.memorax.net/) 后，可以随时查看、修改或删除已经保存的记忆。
+登录 [MemoraX Console](http://preview.memorax.net/) 后，可以随时查看、修改或删除已经保存的记忆。
 MemoraX 云端不会接收模型服务商凭据或本地 Backend Token。
 
 完整行为请参阅[配置](docs/configuration.md)，网络、本地数据和保留边界请参阅

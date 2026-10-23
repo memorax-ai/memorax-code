@@ -177,19 +177,12 @@ lease expires. Cursor does not use a standalone Agent CLI for these jobs.
 
 ### MemoraX memory traffic
 
-The trial-provisioning client sends a versioned device mark and the device
-attributes required by the provision contract to the configured MemoraX
-service. MemoraX returns the API key and account/project assignment; the API
-key is not generated locally. The complete provisioning record is stored by
-the current user's platform credential backend. Foreground setup also writes
-the returned API key to the private `config.toml` so the effective connection
-can be reused and managed with the normal configuration surface. Both copies
-are credentials and must not be logged or published. Account and project
-metadata remain only in secure credential storage. Device-mark metadata is not
-written to the user configuration file; it is read only for explicit account
-inspection and matching anonymous quota reminders.
+Preview setup accepts an API key created by the user on the preview account
+website and writes it to private `config.toml`. It does not provision guest
+accounts or read platform trial credentials. Retained trial utility modules
+are not part of the preview setup path. API keys must not be logged or published.
 
-Explicit existing-account setup can accept a raw API key through stdin with
+Account setup can accept a raw API key through stdin with
 `--non-interactive`, without an interactive terminal. It writes the key to private
 configuration and verifies the saved value without placing it in its command
 arguments or output. The invoking shell or coding agent remains responsible
@@ -199,18 +192,15 @@ do not establish remote authentication.
 
 Quota-reminder deduplication is stored separately in a private local runtime
 record containing a one-way connection fingerprint and reminder levels, never
-a raw API key or Mark ID. An anonymous quota reminder reads the ready secure
-trial credential only when its API key matches the active connection, then
-displays the complete Mark ID in the local coding-agent notice or CLI output.
-Registered-account reminders, status, and diagnostics do not expose it. The
-user can also explicitly run `memorax-code account --show-mark-id` directly in
-a local terminal. Neither path prints the API key. Treat conversations,
-screenshots, and logs containing a displayed Mark ID as sensitive.
+a raw API key or Mark ID. Preview reminders link to the account website without
+reading trial credentials or inferring account registration from quota limits.
+The retained `memorax-code account --show-mark-id` utility can inspect a legacy
+local trial identity only when explicitly invoked; its output remains sensitive.
 
 MemoraX-backed Search, Add, and automatic writeback require a Base User ID, API
 key, and network access. Foreground setup discloses automatic writeback before
-creating or accepting credentials. Completing setup activates Search/Add and
-the generated configuration's automatic writeback.
+accepting credentials. Completing setup activates Search/Add and the generated
+configuration's automatic writeback.
 
 Memory searches send the query and repository-scoped identity to MemoraX when
 the agent or user invokes `memorax-cli search`. Hooks do not send prompts to
@@ -252,9 +242,10 @@ content and Search queries are sent as entered and do not use this automatic
 writeback detector; do not intentionally submit credentials or private data
 through those operations.
 
-The packaged default uses `https://platform.memorax.net`. An endpoint override
-is a separate trust decision; configure only a compatible MemoraX service you
-trust.
+The preview package defaults to `http://preview.memorax.net` for memory traffic
+and the account website. HTTP does not encrypt the API key or memory payloads
+in transit. An endpoint override is a separate trust decision; configure only
+a compatible MemoraX service you trust.
 
 Treat the MemoraX API key, trial Mark ID, Base User ID, repository identity,
 queries, selected writeback content, and saved memories as sensitive.
@@ -393,8 +384,8 @@ intentionally retains:
 
 - `MEMORAX_CODE_HOME`, including private configuration and its API-key copy,
   local traces, and retained runtime records;
-- account-free provisioning credentials and account/project metadata in the
-  current user's operating-system credential store, separately from
+- any legacy account-free provisioning credentials and account/project metadata
+  in the current user's operating-system credential store, separately from
   `MEMORAX_CODE_HOME`;
 - Claude plugin data;
 - DSH Profiles and native session data;

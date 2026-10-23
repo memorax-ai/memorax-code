@@ -12,6 +12,7 @@ import {
 } from "../lib/memorax-code-adapter-common/src/memorax-code-config-file.mjs";
 import { DEFAULT_JEV_CONFIG_TEXT, appendMissingJevConfig } from "../lib/memorax-code-adapter-common/src/jev-config-defaults.mjs";
 import {
+  MEMORAX_ACCOUNT_URL,
   MEMORAX_DEFAULT_BASE_URL,
   MEMORAX_DEFAULT_MEMORY_OUTPUT_LANGUAGE,
   normalizeMemoraxBaseUrl,
@@ -51,7 +52,6 @@ import {
 } from "../lib/setup-reconcile.mjs";
 import { detectSetupMemoryPreferences } from "../lib/setup-memory-preferences.mjs";
 import { readSetupApiKey } from "../lib/setup-api-key-input.mjs";
-import { ensureTrialSetupCredential, trialSetupFailureDetails } from "../lib/trial-setup.mjs";
 import { printSetupBackendDiagnostic, printSetupClientDiagnostics, reportSetupDeploymentFailure, reportSetupFailure } from "../lib/setup-diagnostics.mjs";
 import { commandOnPath } from "../lib/vscode-extension-command.mjs";
 import { resolveWindowsCliInvocation } from "../lib/windows-cli-invocation.mjs";
@@ -95,8 +95,8 @@ if (automaticUpdateMode && !updateMode) {
 }
 let stdinApiKey;
 if (nonInteractive) {
-  if (setupMode !== "existing-account" || updateMode) {
-    logRed("--non-interactive requires existing-account setup, not update reconciliation.");
+  if (updateMode) {
+    logRed("--non-interactive cannot be used for update reconciliation.");
     process.exit(1);
   }
   try {
@@ -290,7 +290,7 @@ const clientMode = clientModeFor(lifecycleClients, {
 });
 let memoraxConfigResult = "skipped";
 if (!updateMode) {
-  const existingMemoraxStatus = setupMode === "automatic"
+  const existingMemoraxStatus = setupMode === "automatic" && !nonInteractive
     ? readMemoraxInstallStatus()
     : undefined;
   if (existingMemoraxStatus?.configured) {
@@ -299,7 +299,6 @@ if (!updateMode) {
     memoraxConfigResult = "preserved";
   } else {
     memoraxConfigResult = await maybeConfigureMemoraxMemory(scriptedAnswers, {
-      existingAccount: setupMode === "existing-account",
       apiKey: stdinApiKey,
     });
   }
@@ -516,11 +515,11 @@ logGreen("Setup completed successfully.");
 process.exit(0);
 
 async function maybeConfigureMemoraxMemory(scriptedAnswers, {
-  existingAccount = false,
   showDisclosure = true,
   apiKey,
 } = {}) {
   if (showDisclosure) printMemoraxDisclosure();
+  log(`Register or sign in at ${MEMORAX_ACCOUNT_URL} and create an API key for preview setup.`);
   const detectedPreferences = detectSetupMemoryPreferences();
   if (apiKey !== undefined) {
     if (!detectedPreferences.userId) {
@@ -532,41 +531,26 @@ async function maybeConfigureMemoraxMemory(scriptedAnswers, {
       userId: detectedPreferences.userId,
       endpoint: memoraxInstallEndpoint(),
       outputLanguage: detectedPreferences.outputLanguage ?? MEMORAX_DEFAULT_MEMORY_OUTPUT_LANGUAGE,
-      existingAccount: true,
       apiKey,
     });
   }
   if (scriptedAnswers) {
-    return await configureMemoraxMemoryFromAnswers(scriptedAnswers, detectedPreferences, {
-      existingAccount,
-    });
+    return await configureMemoraxMemoryFromAnswers(scriptedAnswers, detectedPreferences);
   }
   let rl = createInterface({ input: process.stdin, output: process.stderr });
   try {
-    const userId = existingAccount
-      ? await questionExistingAccountUserId(rl, detectedPreferences.userId)
-      : detectedPreferences.userId
-        ?? (await rl.question(`${PREFIX} Username (used for your memories): `)).trim();
+    const userId = await questionAccountUserId(rl, detectedPreferences.userId);
     const outputLanguage = detectedPreferences.outputLanguage
       ?? await questionPreferredLanguage(rl);
-    printDetectedMemoryPreferences(detectedPreferences, { includeUserId: !existingAccount });
-    if (existingAccount) {
-      rl.close();
-      rl = undefined;
-      const apiKey = (await questionMasked(`${PREFIX} MemoraX API key: `)).trim();
-      return await writeMemoraxConfigFromInput({
-        userId,
-        endpoint: memoraxInstallEndpoint(),
-        outputLanguage,
-        existingAccount,
-        apiKey,
-      });
-    }
+    printDetectedMemoryPreferences(detectedPreferences, { includeUserId: false });
+    rl.close();
+    rl = undefined;
+    const apiKey = (await questionMasked(`${PREFIX} MemoraX API key: `)).trim();
     return await writeMemoraxConfigFromInput({
       userId,
       endpoint: memoraxInstallEndpoint(),
       outputLanguage,
-      existingAccount,
+      apiKey,
     });
   } finally {
     rl?.close();
@@ -603,20 +587,10 @@ async function chooseUpdateClients(previousClients, newlyDetectedClients, script
   return SETUP_CLIENTS.filter((client) => selected.has(client));
 }
 
-async function configureMemoraxMemoryFromAnswers(answers, detectedPreferences, {
-  existingAccount = false,
-} = {}) {
-  const userIdAnswer = existingAccount
-    ? String(answers.shift() ?? "").trim()
-    : undefined;
-  const userId = existingAccount
-    ? userIdAnswer || detectedPreferences.userId
-    : detectedPreferences.userId ?? String(answers.shift() ?? "").trim();
-  if (existingAccount) {
-    log(`Username: ${userIdAnswer ? "<provided>" : detectedPreferences.userId ? "<default>" : "<missing>"}`);
-  } else if (!detectedPreferences.userId) {
-    log(`Username: ${userId ? "<provided>" : "<missing>"}`);
-  }
+async function configureMemoraxMemoryFromAnswers(answers, detectedPreferences) {
+  const userIdAnswer = String(answers.shift() ?? "").trim();
+  const userId = userIdAnswer || detectedPreferences.userId;
+  log(`Username: ${userIdAnswer ? "<provided>" : detectedPreferences.userId ? "<default>" : "<missing>"}`);
   const outputLanguageAnswer = detectedPreferences.outputLanguage
     ? undefined
     : String(answers.shift() ?? "").trim();
@@ -625,16 +599,13 @@ async function configureMemoraxMemoryFromAnswers(answers, detectedPreferences, {
   if (!detectedPreferences.outputLanguage) {
     log(`Preferred language [ZH/en] (used for Memory extraction): ${outputLanguageAnswer ? "<provided>" : "<default>"}`);
   }
-  printDetectedMemoryPreferences(detectedPreferences, { includeUserId: !existingAccount });
-  const apiKey = existingAccount
-    ? String(answers.shift() ?? "").trim()
-    : undefined;
-  if (existingAccount) log(`MemoraX API key: ${apiKey ? "<provided>" : "<missing>"}`);
+  printDetectedMemoryPreferences(detectedPreferences, { includeUserId: false });
+  const apiKey = String(answers.shift() ?? "").trim();
+  log(`MemoraX API key: ${apiKey ? "<provided>" : "<missing>"}`);
   return await writeMemoraxConfigFromInput({
     userId,
     endpoint: memoraxInstallEndpoint(),
     outputLanguage,
-    existingAccount,
     apiKey,
   });
 }
@@ -658,7 +629,6 @@ async function writeMemoraxConfigFromInput({
   userId,
   endpoint,
   outputLanguage,
-  existingAccount,
   apiKey,
 }) {
   if (!userId) {
@@ -669,41 +639,15 @@ async function writeMemoraxConfigFromInput({
     logRed("MemoraX config was not written because preferred language must be zh or en.");
     return "failed";
   }
-  if (existingAccount) {
-    if (!apiKey) {
-      logRed("MemoraX config was not written because API key was empty.");
-      return "failed";
-    }
-    if (writeMemoraxConfig({ userId, endpoint, outputLanguage, apiKey }) === "failed") {
-      logRed("MemoraX config was not written because the existing config could not be safely updated.");
-      return "failed";
-    }
-    logGreen("Existing MemoraX account connection configured.");
-    logGreen(`MemoraX config written to ${memoraxCodeConfigPath()}.`);
-    log("MemoraX network access will be checked by the first workspace-scoped memory request from a trusted workspace.");
-    return "configured";
-  }
-  log("Creating or restoring a secure MemoraX credential...");
-  let trialCredential;
-  try {
-    trialCredential = await ensureTrialSetupCredential({
-      memoraxCodeHome: memoraxCodeHome(),
-      env: process.env,
-    });
-  } catch (error) {
-    setupFailure("credential", { details: trialSetupFailureDetails(error) });
+  if (!apiKey) {
+    logRed(`MemoraX config was not written because API key was empty. Register or sign in at ${MEMORAX_ACCOUNT_URL} to create one.`);
     return "failed";
   }
-  if (writeMemoraxConfig({
-    userId,
-    endpoint,
-    outputLanguage,
-    apiKey: trialCredential.apiKey,
-  }) === "failed") {
+  if (writeMemoraxConfig({ userId, endpoint, outputLanguage, apiKey }) === "failed") {
     logRed("MemoraX config was not written because the existing config could not be safely updated.");
     return "failed";
   }
-  logGreen("Secure MemoraX credential is ready.");
+  logGreen("Existing MemoraX account connection configured.");
   logGreen(`MemoraX config written to ${memoraxCodeConfigPath()}.`);
   log("MemoraX network access will be checked by the first workspace-scoped memory request from a trusted workspace.");
   return "configured";
@@ -718,9 +662,9 @@ async function questionPreferredLanguage(rl) {
   }
 }
 
-async function questionExistingAccountUserId(rl, detectedUserId) {
+async function questionAccountUserId(rl, detectedUserId) {
   const defaultLabel = detectedUserId ? ` [${detectedUserId}]` : "";
-  const answer = await rl.question(`${PREFIX} Username from your existing MemoraX Code setup${defaultLabel}: `);
+  const answer = await rl.question(`${PREFIX} Username (used for your memories)${defaultLabel}: `);
   return answer.trim() || detectedUserId;
 }
 

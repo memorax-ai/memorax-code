@@ -96,7 +96,7 @@ license_text = (package_root / "LICENSE").read_text()
 package_manifest = json.loads((package_root / "package.json").read_text())
 assert "npm install -g @memorax/memorax-code-preview" in readme
 assert "```bash\nmemorax-code setup --existing-account\n```" in readme
-assert "```bash\nmemorax-code setup\n```" in readme
+assert "http://preview.memorax.net/" in readme
 assert "--foreground-scripts" not in readme
 assert license_text == Path("LICENSE").read_text()
 assert package_manifest["name"] == "@memorax/memorax-code-preview"
@@ -150,8 +150,8 @@ memorax_defaults = (
     / "src"
     / "memorax-defaults.mjs"
 ).read_text()
-assert 'MEMORAX_DEFAULT_BASE_URL = "https://platform.memorax.net"' in memorax_defaults
-assert 'MEMORAX_ACCOUNT_URL = "https://platform.memorax.net/"' in memorax_defaults
+assert 'MEMORAX_DEFAULT_BASE_URL = "http://preview.memorax.net"' in memorax_defaults
+assert 'MEMORAX_ACCOUNT_URL = "http://preview.memorax.net/"' in memorax_defaults
 assert 'MEMORAX_DEFAULT_MEMORY_OUTPUT_LANGUAGE = "zh"' in memorax_defaults
 manifest = json.loads((package_root / "lib" / "memorax-code-codex-adapter" / ".codex-plugin" / "plugin.json").read_text())
 codebuddy_manifest = json.loads((package_root / "lib" / "memorax-code-codebuddy-adapter" / ".codebuddy-plugin" / "plugin.json").read_text())
@@ -386,7 +386,7 @@ printf '%s\n' 'package-check-user' 'package-check-key' | \
   MEMORAX_CODE_SKIP_TRAE_ADAPTER_INSTALL=1 \
   MEMORAX_CODE_SKIP_QODER_ADAPTER_INSTALL=1 \
   MEMORAX_CODE_SKIP_CURSOR_ADAPTER_INSTALL=1 \
-  "$prefix/bin/memorax-code" setup --existing-account \
+  "$prefix/bin/memorax-code" setup \
     >"$home_dir/setup.stdout" 2>"$home_dir/setup.stderr"
 node --input-type=module - "$MEMORAX_CODE_HOME/config.toml" <<'NODE_DISABLE_DSH'
 import { readFileSync, writeFileSync } from "node:fs";
@@ -593,13 +593,14 @@ grep -Fqx "$update_memorax_code_home" "$update_cwd_root/home.txt"
 "$prefix/bin/memorax-cli" --help >/dev/null
 test "$("$prefix/bin/memorax-cli" --version)" = "memorax-cli $package_version"
 MEMORAX_CODE_HOME="$home_dir/.memorax-code-cli-check" \
-MEMORAX_CODE_MEMORAX_ENDPOINT="https://platform.memorax.net" \
+MEMORAX_CODE_MEMORAX_ENDPOINT="" \
 MEMORAX_CODE_MEMORAX_API_KEY="package-check-key" \
 MEMORAX_CODE_MEMORAX_USER_ID="package-check-user" \
   "$prefix/bin/memorax-cli" status --json --config-only > "$home_dir/memorax-cli-status.json"
 node -e '
   const report = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
   if (report.ok !== true || report.action !== "memory.status" || report.provider !== "memory.memorax") process.exit(1);
+  if (report.config?.baseUrl !== "http://preview.memorax.net") process.exit(1);
 ' "$home_dir/memorax-cli-status.json"
 node scripts/memory-cli-npm-package-e2e.mjs "$package_install_root"
 node scripts/lifecycle-cli-npm-package-e2e.mjs "$package_install_root"

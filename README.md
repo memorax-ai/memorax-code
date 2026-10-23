@@ -54,6 +54,7 @@ and validation sooner.
 
 This preview edition installs as `@memorax/memorax-code-preview`. Use
 `memorax-code` for setup and management, and `memorax-cli` for memory commands.
+It connects to the [MemoraX preview environment](http://preview.memorax.net/).
 
 Prepare Node.js 20+ (Node.js 24 LTS recommended) and at least one of Codex,
 Claude Code, CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, Trae, Cursor, or Qoder.
@@ -66,9 +67,7 @@ it for plugin installation; MemoraX Code uses its bundled launcher and package
 manager. CLI and Desktop can be enabled together. MemoraX Code does not install
 or update DSH.
 
-On Linux, guest credentials require `/usr/bin/secret-tool` from
-libsecret and an available Secret Service in the current user session. For
-Remote SSH, WSL, or Dev Containers, install MemoraX Code in the same environment
+For Remote SSH, WSL, or Dev Containers, install MemoraX Code in the same environment
 as the coding agent. MemoraX search and writeback require network access.
 
 ### Install and Connect
@@ -83,16 +82,18 @@ This installs the package; it does not start interactive setup. Do not use
 `--ignore-scripts`: npm lifecycle scripts safely stop and restore an existing
 running managed Backend during package replacement.
 
-#### 2. Connect a MemoraX Account (Recommended)
+#### 2. Connect a MemoraX Account
 
-[Create a MemoraX account](https://platform.memorax.net/) or use an existing
-one, then run from a normal interactive terminal:
+[Register on the preview website](http://preview.memorax.net/), create an API
+key for your account, then run from a normal interactive terminal:
 
 ```bash
 memorax-code setup --existing-account
 ```
 
-Follow the setup prompts to enter your MemoraX username and API key locally.
+Follow the setup prompts to enter your MemoraX username and preview API key
+locally. Default `memorax-code setup` uses the same account flow when a connection
+is missing. The preview edition does not create guest accounts.
 
 For a coding agent without an interactive terminal, pass the API key through
 stdin. The examples assume `MEMORAX_SETUP_API_KEY` is already provided by the
@@ -121,36 +122,13 @@ for input and reuse behavior.
 > on the new device. This file contains your API key; keep it private and
 > never paste it into chats or public issues.
 
-#### Or Try Without an Account (90-Day Guest Mode)
-
-To start immediately and connect an account later, run:
-
-```bash
-memorax-code setup
-```
-
-Default setup reuses a complete existing connection. Otherwise, it detects
-your local username and language, asks when needed, and creates or restores
-guest credentials. To replace the saved connection, use
-`memorax-code setup --reconfigure` for guest mode or
-`memorax-code setup --existing-account` for a registered account.
-
-To keep your guest memory when registering later, first run this command
-directly in your local terminal:
-
-```bash
-memorax-code account --show-mark-id
-```
-
-> [!IMPORTANT]
-> Obtain the Mark ID before registering, then use it to activate your guest
-> account on [MemoraX](https://platform.memorax.net/). The platform does not
-> currently support attaching a Mark ID to an account that has already been
-> registered.
+Default setup reuses a complete saved connection. To replace it, use
+`memorax-code setup --reconfigure` or `memorax-code setup --existing-account`
+and enter the preview account details.
 
 #### 3. Activate and Verify
 
-Both setup paths automatically detect supported coding agents. Restart or
+Setup automatically detects supported coding agents. Restart or
 refresh every detected coding agent after setup.
 
 | Client | Complete activation |
@@ -348,9 +326,6 @@ no folder selected uses this shared `@General` scope; opening a repository uses
 that repository's normal scope. Existing memories are not migrated; see
 [memory scope](docs/configuration.md#memory-scope) for the directory rules.
 
-Guest quota reminders may display the complete Mark ID. Treat reminder text
-and retained traces containing it as sensitive.
-
 Active memory operations send their query or selected content to MemoraX.
 Automatic writeback sends selected user instructions and the matching final
 Agent response from trusted workspace turns after removing the final-answer
@@ -361,7 +336,7 @@ path.
 QA writeback preserves available native timestamps and labels observation-time
 fallbacks; see [message timestamps](docs/configuration.md#automatic-writeback-timestamps).
 
-Sign in to [MemoraX Console](https://platform.memorax.net/) at any time to view,
+Sign in to [MemoraX Console](http://preview.memorax.net/) at any time to view,
 edit, or delete saved memories. MemoraX Cloud does not receive model-provider
 credentials or local Backend tokens.
 

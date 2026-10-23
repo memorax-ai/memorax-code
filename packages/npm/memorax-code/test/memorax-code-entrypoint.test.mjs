@@ -386,7 +386,7 @@ test("account command reveals only the requested local trial Mark ID", async () 
   }
 });
 
-test("setup help describes interactive and non-interactive existing-account modes", async () => {
+test("setup help describes registered preview accounts and stdin input", async () => {
   const fixture = await createPackageFixture();
   try {
     const result = runCli(fixture, ["setup", "--help"]);
@@ -395,9 +395,9 @@ test("setup help describes interactive and non-interactive existing-account mode
     assert.equal(result.error, undefined);
     assert.match(result.stdout, /^Usage: memorax-code setup \[--existing-account \| --reconfigure\] \[--non-interactive\] \[--home DIR\]/);
     assert.match(result.stdout, /Plain setup reuses a complete configuration/);
-    assert.match(result.stdout, /^  --existing-account\s+Configure an existing account instead of anonymous access$/m);
-    assert.match(result.stdout, /^  --non-interactive\s+With --existing-account, read the API Key from stdin and use defaults without prompting$/m);
-    assert.match(result.stdout, /^  --reconfigure\s+Re-detect memory preferences instead of reusing configuration$/m);
+    assert.match(result.stdout, /^  --existing-account\s+Enter account credentials instead of reusing configuration$/m);
+    assert.match(result.stdout, /^  --non-interactive\s+Read the API Key from stdin and use defaults without prompting$/m);
+    assert.match(result.stdout, /^  --reconfigure\s+Enter account credentials and memory preferences again$/m);
     assert.equal(await pathExists(fixture.setupLogPath), false);
     assert.equal(await pathExists(fixture.backendLogPath), false);
   } finally {
@@ -443,38 +443,38 @@ test("setup rejects conflicting setup modes before starting setup", async () => 
   }
 });
 
-test("setup forwards an existing-account API key through private stdin without a TTY", async () => {
-  const fixture = await createPackageFixture();
-  const apiKey = `sk_${"P".repeat(43)}`;
-  try {
-    const result = await runCli(fixture, ["setup", "--existing-account", "--non-interactive"], {
-      inputChunks: [apiKey.slice(0, 9), apiKey.slice(9), "\r\n"],
-      timeout: 10_000,
-    });
+test("preview setup forwards account keys through private stdin without a TTY", async (t) => {
+  for (const flags of [[], ["--existing-account"], ["--reconfigure"]]) await t.test(flags[0] ?? "plain setup", async () => {
+    const fixture = await createPackageFixture();
+    const apiKey = `sk_${"P".repeat(43)}`;
+    try {
+      const result = await runCli(fixture, ["setup", ...flags, "--non-interactive"], {
+        inputChunks: [apiKey.slice(0, 9), apiKey.slice(9), "\r\n"],
+        timeout: 10_000,
+      });
 
-    assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.error, undefined);
-    assert.deepEqual(await readJsonLines(fixture.setupLogPath), [{
-      args: ["--non-interactive"],
-      home: fixture.memoraxCodeHome,
-      setupMode: "existing-account",
-      stdinKeyHash: createHash("sha256").update(apiKey).digest("hex"),
-      keyInEnvironment: false,
-      stdinIsTTY: false,
-    }]);
-    assert.equal(`${result.stdout}\n${result.stderr}`.includes(apiKey), false);
-    assert.equal((await readFile(fixture.setupLogPath, "utf8")).includes(apiKey), false);
-    assert.equal(await pathExists(fixture.backendLogPath), false);
-  } finally {
-    await fixture.cleanup();
-  }
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(result.error, undefined);
+      assert.deepEqual(await readJsonLines(fixture.setupLogPath), [{
+        args: ["--non-interactive"],
+        home: fixture.memoraxCodeHome,
+        setupMode: flags.includes("--reconfigure") ? "reconfigure" : "existing-account",
+        stdinKeyHash: createHash("sha256").update(apiKey).digest("hex"),
+        keyInEnvironment: false,
+        stdinIsTTY: false,
+      }]);
+      assert.equal(`${result.stdout}\n${result.stderr}`.includes(apiKey), false);
+      assert.equal((await readFile(fixture.setupLogPath, "utf8")).includes(apiKey), false);
+      assert.equal(await pathExists(fixture.backendLogPath), false);
+    } finally {
+      await fixture.cleanup();
+    }
+  });
 });
 
 test("setup rejects invalid API key stdin before starting setup without exposing input", async (t) => {
   const apiKey = `sk_${"I".repeat(43)}`;
   for (const scenario of [
-    { name: "missing existing-account mode", args: ["--non-interactive"], input: apiKey },
-    { name: "reconfigure mode", args: ["--reconfigure", "--non-interactive"], input: apiKey },
     { name: "key accidentally passed as an argument", args: ["--existing-account", "--non-interactive", apiKey], input: apiKey },
     { name: "empty input", input: "" },
     { name: "multiple lines", input: `${apiKey}\nsecond-line` },

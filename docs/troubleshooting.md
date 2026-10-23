@@ -82,8 +82,9 @@ memorax-code setup
 
 If a complete configuration was retained from an earlier installation,
 default setup reuses it automatically. Use `memorax-code setup --reconfigure`
-to replace it, or `memorax-code setup --existing-account` to enter an
-existing MemoraX connection.
+to replace it, or `memorax-code setup --existing-account` to enter a
+preview account connection. Register and create an API key on the
+[preview website](http://preview.memorax.net/) first.
 
 Interactive setup requires terminal input and terminal-visible stderr. If a
 coding agent reports `an interactive terminal is required`, use the explicit
@@ -99,8 +100,7 @@ Close stdin after one raw key; do not pipe a sequence of interactive answers.
 This mode uses the detected username and language and replaces the saved key.
 If username detection fails, complete setup in a normal interactive terminal.
 See [non-interactive setup rules](configuration.md#existing-account-setup-without-a-terminal).
-Guest setup still requires an interactive terminal. Do not change PowerShell
-execution policy to run the `.ps1` shim; use `.cmd`.
+Do not change PowerShell execution policy to run the `.ps1` shim; use `.cmd`.
 
 ## Windows: `memorax-code` or `memorax-cli` is not found
 
@@ -399,11 +399,13 @@ memorax-code setup
 memorax-cli status
 ```
 
-Default setup creates or restores an account-free connection. For an existing
-account, run `memorax-code setup --existing-account`. A manually managed
-connection may instead configure `endpoint`, `user_id`, and `api_key`
-under `[memorax]`, or set their environment equivalents. The current default
-endpoint is `https://platform.memorax.net`.
+Register on the [preview website](http://preview.memorax.net/) and create an
+API key before setup. Default setup prompts for those account details when no
+complete connection exists. Use `memorax-code setup --existing-account` to
+replace an existing connection. A manually managed connection may instead
+configure `endpoint`, `user_id`, and `api_key` under `[memorax]`, or set their
+environment equivalents. The preview default endpoint is
+`http://preview.memorax.net`; existing explicit overrides remain in effect.
 
 After changing persistent configuration:
 
@@ -511,20 +513,10 @@ Automatic quota reminders are currently supported in Codex, Claude Code,
 CodeBuddy/WorkBuddy, OpenCode, and Trae. DeepSeek Harness does not currently
 surface these reminders.
 
-A guest reminder displays the complete Mark ID when the ready local trial
-identity matches the active API key. Registered-account reminders do not
-include it. If a guest reminder cannot verify a matching local identity, it
-instead directs you to run this command yourself in a local terminal:
-
-```sh
-memorax-code account --show-mark-id
-```
-
-The command reads a ready local trial identity and prints only its Mark ID. A
-reminder or command output containing the Mark ID is sensitive; do not share it
-in a conversation, screenshot, or log. If no ready local trial identity exists,
-use `memorax-code setup`; a connection copied from another computer does not
-include that computer's device-local Mark ID.
+Preview reminders direct you to your account on the
+[preview website](http://preview.memorax.net/). They do not use Mark IDs or
+request guest-account activation. If your key or account configuration needs
+to change, run `memorax-code setup --existing-account`.
 
 ## Backend does not start
 

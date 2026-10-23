@@ -19,9 +19,8 @@ explicit command/context value > environment variable > config.toml > code fallb
 ```
 
 Use `config.toml` for durable choices and environment variables for temporary
-overrides. Both account-free and existing-account setup write the effective API
-key to this private file so the connection can be reused. After editing the
-file, run:
+overrides. Account setup writes the effective API key to this private file so
+the connection can be reused. After editing the file, run:
 
 ```sh
 memorax-code start
@@ -115,14 +114,15 @@ not change any coding agent's provider settings.
 
 ## Existing-account setup without a terminal
 
-`memorax-code setup --existing-account --non-interactive` is the public
-non-interactive account setup entrypoint. It reads one raw API key from stdin
+`memorax-code setup --non-interactive` is the public non-interactive account
+setup entrypoint. The optional `--existing-account` flag remains compatible.
+It reads one raw API key from stdin
 until EOF, with a 16 KiB input limit; surrounding whitespace is trimmed.
 The value must be non-empty and contain no embedded line breaks or NUL bytes.
 The key comes from stdin, not a command-line argument or environment fallback.
 A conflicting `MEMORAX_CODE_MEMORAX_API_KEY` override is rejected. The caller
-must close stdin; do not send JSON or the interactive setup answers. The flag
-is valid only with `--existing-account`, not guest setup or update reconciliation.
+must close stdin; do not send JSON or the interactive setup answers.
+`--non-interactive` is not valid for update reconciliation.
 
 The command replaces the saved connection key and uses the detected
 operating-system username and system language defaults (`zh` or `en`). If a
@@ -155,16 +155,16 @@ review, and final readiness checks. Trae setup installs the managed Hook
 entries but cannot turn on Trae's application-level Global Hooks setting; the
 user must enable that setting once in Trae Settings.
 
-Default setup reuses a complete effective connection. Otherwise it detects the
-logged-in operating-system username and maps the system language to `zh` or
-`en`, asking only when a value cannot be detected safely. It then creates or
-restores an account-free credential and writes its API key to `config.toml`.
-`memorax-code setup --existing-account` bypasses automatic reuse and accepts
-an existing connection's username and API key. `--reconfigure` bypasses reuse
-and follows the account-free path again.
+Default setup reuses a complete effective connection. Otherwise it prompts for
+an existing account's username and API key, then writes the connection to
+`config.toml`. Register and create the API key on the
+[preview website](http://preview.memorax.net/) before running setup.
+`memorax-code setup --existing-account` and `--reconfigure` bypass automatic
+reuse and request the account details again. The preview edition does not
+create or restore guest credentials.
 
-The explicit `--existing-account --non-interactive` mode also works without a
-terminal; see [its input and configuration rules](#existing-account-setup-without-a-terminal).
+The explicit `--non-interactive` mode works without a terminal; see
+[its input and configuration rules](#existing-account-setup-without-a-terminal).
 
 Successful setup writes a private versioned record at:
 
@@ -688,7 +688,7 @@ MemoraX is the required remote-memory service:
 
 ```toml
 [memorax]
-endpoint = "https://platform.memorax.net"
+endpoint = "http://preview.memorax.net"
 user_id = "your-username"
 api_key = "your-api-key"
 # timeout_ms = 5000
@@ -696,20 +696,20 @@ api_key = "your-api-key"
 
 | Field | Environment override | Fallback |
 | --- | --- | --- |
-| `endpoint` | `MEMORAX_CODE_MEMORAX_ENDPOINT` | `https://platform.memorax.net` |
+| `endpoint` | `MEMORAX_CODE_MEMORAX_ENDPOINT` | `http://preview.memorax.net` |
 | `user_id` | `MEMORAX_CODE_MEMORAX_USER_ID` | required username |
 | `api_key` | `MEMORAX_CODE_MEMORAX_API_KEY` | required; setup writes it |
 | `timeout_ms` | `MEMORAX_CODE_MEMORAX_TIMEOUT_MS` | `5000` ms |
 
 MemoraX requests send the API key and the query or content required by the
-selected memory operation to the HTTPS endpoint. Override `endpoint` only with
-a compatible MemoraX service you trust.
+selected memory operation to the configured endpoint. The preview default uses
+HTTP. Override `endpoint` only with a compatible MemoraX service you trust.
 
 Quota reminders keep only a one-way connection fingerprint and the last
 notified level for memory write and memory search under the private runtime
-directory. They do not store a raw API key, Mark ID, or account-registration
-state. The returned quota limit is used only to decide whether to include
-conditional anonymous-account guidance.
+directory. They do not store a raw API key or account-registration state.
+Reminders direct users to the preview account website; quota limits do not
+select guest-account guidance or trigger credential-store reads.
 
 ### Memory scope
 
@@ -1019,17 +1019,14 @@ Entries submit independently and return ordered `results`. One failure does not
 stop other files or erase their receipts; the command exits unsuccessfully if
 any entry failed. Each input ID must be unique within the manifest. A new version
 needs a new input ID and the last confirmed revision; an unchanged retry reuses
-all original fields. The default production endpoint remains unchanged. For an
-isolated demo integration, set `MEMORAX_CODE_MEMORAX_ENDPOINT=http://demo.memorax.net`
-in the test process environment for Add and Search. Confirm the override
-without contacting the service:
+all original fields. This preview package defaults to `http://preview.memorax.net`
+for Add, Search, and document uploads. Environment variables and existing
+`config.toml` values retain their normal precedence. Confirm the effective
+connection without contacting the service:
 
 ```bash
-MEMORAX_CODE_MEMORAX_ENDPOINT=http://demo.memorax.net memorax-cli status --config-only --json
+memorax-cli status --config-only --json
 ```
-
-Keep the demo credentials and `MEMORAX_CODE_HOME` in the isolated test environment;
-do not overwrite the normal production configuration.
 
 ### Disabling memory writes
 

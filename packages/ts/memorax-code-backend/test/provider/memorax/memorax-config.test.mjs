@@ -25,22 +25,22 @@ test("memory CLI uses its executable name as the default session identity", () =
   assert.equal(memoryCliSessionId([], {}), "memorax-cli");
 });
 
-test("MemoraX config resolver uses the platform endpoint by default", () => {
+test("MemoraX config resolver uses the preview endpoint by default", () => {
   const result = memoraxConfigFromEnv({
     MEMORAX_CODE_MEMORAX_API_KEY: "secret",
     MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
   }, {});
 
-  assert.equal(MEMORAX_DEFAULT_BASE_URL, "https://platform.memorax.net");
+  assert.equal(MEMORAX_DEFAULT_BASE_URL, "http://preview.memorax.net");
   assert.equal(result.ok, true);
-  assert.equal(result.config.baseUrl, "https://platform.memorax.net");
+  assert.equal(result.config.baseUrl, "http://preview.memorax.net");
   assert.equal(result.config.memoryOutputLanguage, "zh");
 });
 
 test("MemoraX endpoint helper normalizes trailing slashes", () => {
   assert.equal(
-    normalizeMemoraxBaseUrl(" https://platform.memorax.net/// "),
-    "https://platform.memorax.net",
+    normalizeMemoraxBaseUrl(" http://preview.memorax.net/// "),
+    "http://preview.memorax.net",
   );
 });
 
@@ -58,7 +58,7 @@ test("seeded MemoraX Code config exposes high-signal choices without a tuning ca
   const config = await readFile(join(root, "config.toml"), "utf8");
   assert.match(config, /\[clients\]\ncodex = true\nclaude = true/);
   assert.match(config, /\[memorax\]/);
-  assert.match(config, /# endpoint = "https:\/\/platform\.memorax\.net" # MemoraX service URL\./);
+  assert.match(config, /# endpoint = "http:\/\/preview\.memorax\.net" # MemoraX service URL\./);
   assert.match(config, /# api_key = "" # MemoraX API key used by the local Backend\./);
   assert.match(config, /# user_id = "" # MemoraX base user ID; requests derive a workspace-scoped namespace\./);
   assert.match(config, /\[jev\]\nenabled = false/);
