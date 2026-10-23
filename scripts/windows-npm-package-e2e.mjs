@@ -16,7 +16,7 @@ async function main() {
   const workspace = resolve(required(options, "workspace"));
   const mode = options.mode ?? "lifecycle";
   const port = parsePort(options.port ?? "18787");
-  const packageRoot = join(prefix, "node_modules", "@memorax/memorax-code");
+  const packageRoot = join(prefix, "node_modules", "@memorax/memorax-code-preview");
   const memoraxCode = join(packageRoot, "bin", "memorax-code.mjs");
   const childEnv = { ...process.env, MEMORAX_CODE_BACKEND_PORT: String(port) };
   process.chdir(workspace);
@@ -59,7 +59,7 @@ async function runLifecycle({
   const installedVersion = nonEmptyString(manifest?.version) ? manifest.version : "";
   const assertions = {
     npmInstallOk: await isDirectory(packageRoot),
-    packageIdentityExact: manifest?.name === "@memorax/memorax-code" && Boolean(installedVersion),
+    packageIdentityExact: manifest?.name === "@memorax/memorax-code-preview" && Boolean(installedVersion),
     productionDependencyReady: await exists(join(packageRoot, "node_modules", "smol-toml", "package.json"))
       && !await exists(join(packageRoot, "node_modules", "typescript", "package.json")),
     allBinShimsRunnable: options["bin-shims-verified"] === "true",

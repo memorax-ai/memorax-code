@@ -8,7 +8,7 @@ $ErrorActionPreference = 'Stop'
 if (-not $IsWindows) { throw 'This wrapper requires Windows.' }
 $npmCommand = (Get-Command npm.cmd).Source
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
-$tarballs = @(Get-ChildItem -LiteralPath $TarballDirectory -File -Filter 'memorax-memorax-code-*.tgz')
+$tarballs = @(Get-ChildItem -LiteralPath $TarballDirectory -File -Filter 'memorax-memorax-code-preview-*.tgz')
 if ($tarballs.Count -ne 1) { throw 'Expected exactly one MemoraX Code tarball.' }
 $tarball = $tarballs[0].FullName
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('memorax-claude-install-' + [guid]::NewGuid())
@@ -78,7 +78,7 @@ Invoke-WithCodexTestUserPath -Prefix $prefix -Action {
     Write-CiLedger phase suites
     Write-CiLedger start claude-install-smoke
     & node (Join-Path $repoRoot 'scripts/ci/claude/claude-install-smoke.mjs') `
-      (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'claude.cmd') `
+      (Join-Path $prefix 'node_modules/@memorax/memorax-code-preview') (Join-Path $prefix 'claude.cmd') `
       $tarball $npmCommand $PreviousVersion (Join-Path $testRoot 'terminal/node_modules/node-pty') `
       (Join-Path $repoRoot 'scripts/ci/claude/claude-setup-pty.mjs') $ClaudeVersion
     $suiteExit = $LASTEXITCODE
@@ -86,20 +86,20 @@ Invoke-WithCodexTestUserPath -Prefix $prefix -Action {
     if ($suiteExit -ne 0) { throw 'The Claude installation smoke failed; its runtime stays on this runner and is not exported.' }
     Write-CiLedger start claude-install-interruption-check
     & node (Join-Path $repoRoot 'scripts/ci/claude/claude-install-interruption-check.mjs') `
-      (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'claude.cmd') `
+      (Join-Path $prefix 'node_modules/@memorax/memorax-code-preview') (Join-Path $prefix 'claude.cmd') `
       (Join-Path $testRoot 'terminal/node_modules/node-pty') $ClaudeVersion
     $suiteExit = $LASTEXITCODE
     Write-CiLedger end claude-install-interruption-check $suiteExit
     if ($suiteExit -ne 0) { throw 'The Claude setup interruption check failed; its runtime stays on this runner and is not exported.' }
     Write-CiLedger start claude-native-check
     & node (Join-Path $repoRoot 'scripts/ci/claude/claude-native-check.mjs') `
-      (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'claude.cmd') $ClaudeVersion
+      (Join-Path $prefix 'node_modules/@memorax/memorax-code-preview') (Join-Path $prefix 'claude.cmd') $ClaudeVersion
     $suiteExit = $LASTEXITCODE
     Write-CiLedger end claude-native-check $suiteExit
     if ($suiteExit -ne 0) { throw 'The Claude native flow check failed; its runtime stays on this runner and is not exported.' }
     Write-CiLedger start claude-permissions-check
     & node (Join-Path $repoRoot 'scripts/ci/claude/claude-permissions-check.mjs') `
-      (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'claude.cmd') $ClaudeVersion
+      (Join-Path $prefix 'node_modules/@memorax/memorax-code-preview') (Join-Path $prefix 'claude.cmd') $ClaudeVersion
     $suiteExit = $LASTEXITCODE
     Write-CiLedger end claude-permissions-check $suiteExit
     if ($suiteExit -ne 0) { throw 'The Claude native permission check failed; its runtime stays on this runner and is not exported.' }

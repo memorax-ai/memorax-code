@@ -193,7 +193,7 @@ jobs:
           if-no-files-found: error
           retention-days: 30
       - name: Verify test assertions reject malformed content and unexpected failures
-        run: node --test scripts/ci/shared/ci-evidence.test.mjs scripts/ci/shared/native-evidence-workflow.test.mjs scripts/ci/shared/native-evidence-wrappers.test.mjs scripts/ci/shared/native-process-cleanup.test.mjs scripts/ci/shared/release-acceptance.test.mjs scripts/ci/codex/codex-native-content-check.test.mjs scripts/ci/codex/codex-lifecycle-assertions.test.mjs scripts/ci/codex/codex-install-interruption-evidence.test.mjs scripts/ci/codex/codex-install-interruption-check.test.mjs scripts/ci/codex/codex-setup-pty.test.mjs scripts/ci/codex/codex-setup-pty-consumers.test.mjs scripts/ci/codex/codex-install-smoke.test.mjs scripts/ci/claude/claude-install-evidence.test.mjs scripts/ci/claude/claude-install-smoke.test.mjs scripts/ci/codex/codex-writeback-diagnostics.test.mjs scripts/ci/opencode/opencode-native-support.test.mjs scripts/ci/opencode/opencode-initialization-diagnostic.test.mjs scripts/ci/opencode/opencode-initialization-layouts.test.mjs scripts/ci/claude/claude-native-content-check.test.mjs scripts/ci/claude/claude-native-support.test.mjs scripts/ci/claude/claude-permissions-support.test.mjs scripts/ci/claude/claude-lifecycle-assertions.test.mjs scripts/ci/claude/claude-lifecycle-process.test.mjs scripts/ci/claude/claude-background-assertions.test.mjs scripts/ci/claude/claude-install-interruption-driver.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-native-content-check.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-native-support.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-install-cleanup.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-lifecycle-assertions.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-install-interruption-driver.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-permissions-support.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-background-assertions.test.mjs
+        run: node --test scripts/ci/shared/ci-evidence.test.mjs scripts/ci/shared/native-evidence-workflow.test.mjs scripts/ci/shared/native-evidence-wrappers.test.mjs scripts/ci/shared/native-process-cleanup.test.mjs scripts/ci/shared/release-acceptance.test.mjs scripts/ci/shared/preview-upgrade-baseline.test.mjs scripts/ci/codex/codex-native-content-check.test.mjs scripts/ci/codex/codex-lifecycle-assertions.test.mjs scripts/ci/codex/codex-install-interruption-evidence.test.mjs scripts/ci/codex/codex-install-interruption-check.test.mjs scripts/ci/codex/codex-setup-pty.test.mjs scripts/ci/codex/codex-setup-pty-consumers.test.mjs scripts/ci/codex/codex-install-smoke.test.mjs scripts/ci/claude/claude-install-evidence.test.mjs scripts/ci/claude/claude-install-smoke.test.mjs scripts/ci/codex/codex-writeback-diagnostics.test.mjs scripts/ci/opencode/opencode-native-support.test.mjs scripts/ci/opencode/opencode-initialization-diagnostic.test.mjs scripts/ci/opencode/opencode-initialization-layouts.test.mjs scripts/ci/claude/claude-native-content-check.test.mjs scripts/ci/claude/claude-native-support.test.mjs scripts/ci/claude/claude-permissions-support.test.mjs scripts/ci/claude/claude-lifecycle-assertions.test.mjs scripts/ci/claude/claude-lifecycle-process.test.mjs scripts/ci/claude/claude-background-assertions.test.mjs scripts/ci/claude/claude-install-interruption-driver.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-native-content-check.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-native-support.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-install-cleanup.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-lifecycle-assertions.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-install-interruption-driver.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-permissions-support.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-background-assertions.test.mjs
       - name: Verify shared CodeBuddy and WorkBuddy native and install contracts
         run: node --test scripts/ci/codebuddy-workbuddy/codebuddy-native-memory-support.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-install-interruption-check.test.mjs scripts/ci/codebuddy-workbuddy/workbuddy-install-entry.test.mjs
       - name: Verify Cursor App canary contracts
@@ -226,7 +226,7 @@ jobs:
         run: |
           sha256sum dist/npm/tarballs/*.tgz
           # Publish the checksum only when one candidate is unambiguous; this step adds no new gate.
-          set -- dist/npm/tarballs/memorax-memorax-code-*.tgz
+          set -- dist/npm/tarballs/memorax-memorax-code-preview-*.tgz
           if [[ "$#" -eq 1 && -f "$1" && ! -L "$1" ]]; then
             printf 'sha256=%s\n' "$(sha256sum "$1" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
           fi
@@ -654,7 +654,7 @@ jobs:
       - name: Verify Cursor package lifecycle and saved account
         shell: bash
         run: |
-          set -- dist/npm/tarballs/memorax-memorax-code-*.tgz
+          set -- dist/npm/tarballs/memorax-memorax-code-preview-*.tgz
           [[ "$#" -eq 1 && -f "$1" && ! -L "$1" ]] || exit 1
           node scripts/ci/cursor/cursor-lifecycle-check.mjs "$1" "$RUNNER_TEMP/cursor-lifecycle-report"
       - name: Verify isolated native Cursor App writeback
@@ -663,7 +663,7 @@ jobs:
           CURSOR_RELEASE: ${{ matrix.release }}
           CURSOR_NODE: ${{ matrix.node }}
         run: |
-          set -- dist/npm/tarballs/memorax-memorax-code-*.tgz
+          set -- dist/npm/tarballs/memorax-memorax-code-preview-*.tgz
           [[ "$#" -eq 1 && -f "$1" && ! -L "$1" ]] || exit 1
           case "$RUNNER_OS" in
             Linux) entrypoint=scripts/ci/cursor/cursor-app-container-check.mjs ;;
@@ -965,7 +965,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $node = (Get-Command node).Source
           $npm = (Get-Command npm.cmd).Source
-          $tarballs = @(Get-ChildItem dist/npm/tarballs -Filter 'memorax-memorax-code-*.tgz')
+          $tarballs = @(Get-ChildItem dist/npm/tarballs -Filter 'memorax-memorax-code-preview-*.tgz')
           if ($tarballs.Count -ne 1) { throw 'Expected one validated package.' }
           $osTempBase = [IO.Path]::GetTempPath()
           $runnerTempBase = $env:RUNNER_TEMP
@@ -996,7 +996,7 @@ jobs:
           $rg = & $node -e 'process.stdout.write(require(process.argv[1]).rgPath)' (Join-Path $prefix 'node_modules/@vscode/ripgrep')
           if ($LASTEXITCODE -ne 0) { throw 'Diagnostic ripgrep resolution failed.' }
           $env:PATH = "$(Split-Path $rg -Parent);$env:PATH"
-          & $node scripts/ci/opencode/opencode-initialization-diagnostic.mjs (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'node_modules/opencode-ai/bin/opencode.exe') $osTempBase $runnerTempBase
+          & $node scripts/ci/opencode/opencode-initialization-diagnostic.mjs (Join-Path $prefix 'node_modules/@memorax/memorax-code-preview') (Join-Path $prefix 'node_modules/opencode-ai/bin/opencode.exe') $osTempBase $runnerTempBase
           if ($LASTEXITCODE -ne 0) { throw 'The diagnostic reported a failure; inspect the recorded trials.' }
           Remove-Item -LiteralPath $root -Recurse -Force
 
@@ -1072,7 +1072,7 @@ jobs:
           CURSOR_RESULT: ${{ needs.cursor-app.result }}
         run: |
           printf 'Package: **%s**\n\nCursor App Linux/macOS/Windows matrix: **%s**.\n\nUbuntu 24.04, macOS 15 and Windows 2025, baseline/latest on Node 24 and Linux baseline on Node 22. Eleven native App runs per cell cover repeated-prompt follow-up, cross-workspace isolation, App restart/resume, explicit Skill Search/Add, Shell denial, pending-Shell interruption and same-session recovery. A real foreground Hook also delegates a Repo Memory job through native Task: the managed child inherits model selection, claims the job and finishes without a bundle, requiring artifact_validation_failed, no published bundle, exited lease guard and no child automatic Add. Nine completed foreground turns produce exactly nine automatic Adds; the two explicit Skill operations bring the total Memory requests to eleven. Scripted tool requests do not validate model-driven Skill selection or successful Repo Memory generation. macOS and Windows use signature-verified Apps, isolated homes and local fixtures on fresh GitHub-hosted runners, without an additional Seatbelt or WFP prerequisite. Chromium sandboxing remains enabled. This matrix does not validate real login, OS credential-store isolation, hosted models or full functional coverage.\n' "$PACKAGE_RESULT" "$CURSOR_RESULT" >> "$GITHUB_STEP_SUMMARY"
-          printf '\nEvery cell also requires the isolated MemoraX package lifecycle check: fresh/repeat setup, uninstall/reinstall, real previous-version upgrade, download and replacement failure recovery, saved account/configuration retention, and four setup interruption stages: after-config-write, before-backend-start, after-backend-start, saved-account-key-cancel. The setup checkpoints use a real PTY, the existing Backend lock and a test-only Node child gate; retries require no account input and verify complete Cursor integration plus a local saved-account Search. This does not simulate power loss or start the Cursor App.\n' >> "$GITHUB_STEP_SUMMARY"
+          printf '\nEvery cell also requires the isolated MemoraX package lifecycle check: fresh/repeat setup, uninstall/reinstall, synthetic preview baseline upgrade, download and replacement failure recovery, saved account/configuration retention, and four setup interruption stages: after-config-write, before-backend-start, after-backend-start, saved-account-key-cancel. The setup checkpoints use a real PTY, the existing Backend lock and a test-only Node child gate; retries require no account input and verify complete Cursor integration plus a local saved-account Search. This does not simulate power loss or start the Cursor App.\n' >> "$GITHUB_STEP_SUMMARY"
           if [[ "$PACKAGE_RESULT" != success || "$CURSOR_RESULT" != success ]]; then
             echo '::error::The package and Cursor App canary must both succeed. Failed, cancelled or skipped dependencies do not pass this check.'
             exit 1

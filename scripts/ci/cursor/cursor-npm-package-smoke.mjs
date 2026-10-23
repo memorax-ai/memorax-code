@@ -14,7 +14,7 @@ import { createDatabaseFixture } from "../../../packages/ts/memorax-code-backend
 const packageRoot = resolve(process.argv[2] ?? "");
 assert.ok(process.argv[2], "Usage: node scripts/ci/cursor/cursor-npm-package-smoke.mjs PACKAGE_ROOT");
 const packageManifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
-assert.equal(packageManifest.name, "@memorax/memorax-code");
+assert.equal(packageManifest.name, "@memorax/memorax-code-preview");
 const root = await realpath(await mkdtemp(join(tmpdir(), "memorax cursor package smoke-")));
 const home = join(root, "home");
 const stateHome = join(root, "state");

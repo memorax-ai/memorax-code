@@ -318,6 +318,11 @@ complete model of GitHub Actions execution.
 
 ### Release Acceptance
 
+The `feat/investor-preview` branch builds `@memorax/memorax-code-preview` for
+occasional investor releases. Start its CI manually on this branch. Select
+reviewed changes from `main` when another preview is needed, then validate the
+resulting candidate before publishing.
+
 Manual dispatch of the
 [native client functional workflow](.github/workflows/macos-codex-install.yml)
 defaults to `mode=release-acceptance`. It runs the complete acceptance for the
@@ -330,19 +335,23 @@ release.
 
 The `Release candidate` job records the dispatched commit as both the candidate
 and the test-script commit; an optional `expected_sha` must equal it. It records
-release eligibility separately from acceptance: the ref must be `main`, versions
-must be consistent, `CHANGELOG.md` needs a dated entry for the version, no
-`v<version>` tag may exist, the version must be newer than the previous release
-tag, and npm must show that the version was never published. Only stable
+release eligibility separately from acceptance: the ref must be
+`feat/investor-preview`, versions must be consistent, `CHANGELOG.md` needs a dated
+entry for the version, no `preview-v<version>` tag may exist, the version must be
+newer than the previous preview release tag, and npm must show that the version
+was never published. Only stable
 `MAJOR.MINOR.PATCH` versions are releasable; a prerelease or build version is
 `NOT_RELEASABLE` (`PRERELEASE_NOT_SUPPORTED`) and is never compared, and
-prerelease tags and npm prereleases are not part of the release history. npm's
-stable releases must agree with that history, so publishing the candidate as
+prerelease tags and npm prereleases are not part of the release history.
+Only `preview-v<version>` tags and the preview npm package define this history;
+the main distribution's `v<version>` tags do not participate. npm's stable
+preview releases must agree with that history, so publishing the candidate as
 `latest` cannot move `latest` backwards or skip a release: no newer stable
 version may be published, the newest stable version besides the candidate must
 be the previous release tag (none when no tag is reachable), and `latest` must
-point to the newest stable version. A failed or unreadable npm query leaves
-eligibility unconfirmed rather than unpublished. The
+point to the newest stable version. A registry `404` for the preview package,
+with no prior preview tags, permits the first release. Other failed or unreadable
+npm queries leave eligibility unconfirmed rather than unpublished. The
 job also records the previous release tag, the commits and merged pull requests
 since it, and the README comparison base: the previous release commit, or the
 first parent when no release tag is reachable. Eligibility never decides which
@@ -372,8 +381,18 @@ client versions, each WorkBuddy cell's verified versions, hashes and attempt and
 the coverage report, each attempt's status and unsuccessful jobs, and the
 previous release range.
 Each release acceptance has its own concurrency group and is never cancelled by
-another run. Upgrade suites install fixed earlier versions; upgrading from the
-previous release to the candidate is not exercised.
+another run.
+
+The first preview has no published preview version to use for upgrade checks.
+The upgrade suites instead use synthetic preview baselines: the shared fixture
+helper downloads a fixed earlier main-distribution artifact, verifies its
+registry integrity, changes only the outer npm manifest's name to
+`@memorax/memorax-code-preview`, and repacks it with lifecycle scripts disabled.
+It records the source package and version, source hash, and fixture hash.
+Historical component versions and behavior are preserved. This exercises
+installation, update failures and recovery within the preview package name;
+it does not establish an upgrade from a published preview release. The release
+record keeps that coverage limitation explicit.
 
 Publishing stays manual and must use the accepted file:
 
@@ -381,9 +400,9 @@ Publishing stays manual and must use the accepted file:
    `make npm-publish-dry-run` builds a new package, not the accepted file.
 2. Confirm the file's SHA-256 against the record.
 3. Run `npm publish <file> --access public --tag latest`.
-4. Compare `npm view @memorax/memorax-code@<version> dist.integrity dist.shasum`
+4. Compare `npm view @memorax/memorax-code-preview@<version> dist.integrity dist.shasum`
    with the file's SHA-512 and SHA-1.
-5. Tag `v<version>` at the candidate commit and attach the same file and its
+5. Tag `preview-v<version>` at the candidate commit and attach the same file and its
    `SHA256SUMS` to the GitHub Release.
 
 These steps are a procedure, not a technical lock on other publishing paths.
@@ -600,8 +619,9 @@ specific rejected-input diagnostics, real-terminal cancellation and masked crede
 failed setup and recovery, repeated setup, native plugin registration, Hook
 trust, stop/start, and uninstall/reinstall. A scoped local npm registry serves
 the candidate to the real public `update --latest` command: an initial artifact
-download failure must preserve the installed 0.1.17 package and running Backend,
-then a terminal-driven retry must activate the candidate. The installed candidate
+download failure must preserve the installed synthetic preview baseline derived
+from 0.1.17 and its running Backend, then a terminal-driven retry must activate
+the candidate. The installed candidate
 also runs its own forced update through the scoped registry. Successful updates
 must retire the old Backend process and establish a new instance with a matching
 health response. Terminal credential checks cover both raw output and visible
@@ -772,7 +792,7 @@ using its own plugin, native SDK messages, tools, and permission protocol:
 | Shared acceptance goal | OpenCode evidence |
 | --- | --- |
 | Lifecycle and protected configuration | Real npm installation, terminal setup and cancellation, repeated setup, stop/start, uninstall/reinstall; preserve account, client choices, provider settings, and synthetic personal memory |
-| Upgrade and recovery | Published 0.1.18 to candidate through the public updater; controlled download and postinstall failures, Backend replacement, recovery and retry |
+| Upgrade and recovery | Synthetic preview baseline derived from published 0.1.18 to candidate through the public updater; controlled download and postinstall failures, Backend replacement, recovery and retry |
 | Setup interruption | After config publication, before Backend start, after Backend start, and cancellation at the replacement-key prompt; saved-account retry and Search |
 | Native memory flow | Real sessions and continuation, complete selected Unicode content, redaction, workspace isolation, installed CLI and scripted Skill Search/Add |
 | Permissions and interruption | Native approval requests, actual file effects, denied and interrupted turns, and pending requests; interrupted turns must not trigger automatic Add |
@@ -890,8 +910,9 @@ plugin registration is not Codex Hook trust, and comparing the stable shell does
 not claim that every cached runtime file was replaced.
 
 A scoped local npm registry serves the candidate to the public updater. The
-suite upgrades published MemoraX Code 0.1.18 to the candidate, first rejecting the
-artifact download and then retrying through a real terminal. It also exercises
+suite upgrades the synthetic preview baseline derived from published MemoraX Code
+0.1.18 to the candidate, first rejecting the artifact download and then retrying
+through a real terminal. It also exercises
 the candidate's forced reinstall and a controlled npm postinstall failure after
 Backend retirement, followed by recovery. Successful replacement requires the
 old Backend process to exit and a new instance to match its health response.
@@ -1028,7 +1049,7 @@ receiver:
 | Functional scenario | Evidence |
 | --- | --- |
 | Installation and lifecycle | Empty or multiline stdin rejection, real-PTY cancellation and hidden credentials, fresh and repeated setup, port-conflict recovery, stop/start, uninstall/reinstall, and retained account, model settings, and synthetic memory |
-| Upgrade and failure recovery | Published `0.1.18` to candidate upgrade, failed artifact download retaining the old Backend, forced reinstall, injected postinstall exit `23`, and recovery/retry through public commands |
+| Upgrade and failure recovery | Synthetic preview baseline derived from published `0.1.18` to candidate upgrade, failed artifact download retaining the old Backend, forced reinstall, injected postinstall exit `23`, and recovery/retry through public commands |
 | Setup interruption | Interruption after configuration publication, before and after Backend start, and at the saved-account API-key prompt; retry without re-entering the account, followed by a native turn and saved-account Search |
 | Cold first turn | Native session, Hook reminder in model context, and complete three-part Unicode prompt and answer in automatic Add |
 | Same-session resume and tool | The real client resumes the exact session, executes Bash, and correlates native tool IDs, arguments, results, session environment, and completed content |
@@ -1305,7 +1326,7 @@ bundled runtime; CodeBuddy results are not substitutes.
 
 The shared lifecycle cases cover rejected stdin, real-terminal cancellation and
 hidden credentials, fresh/repeated setup, port-conflict recovery, stop/start,
-uninstall/reinstall, configuration retention, previous-version upgrade, rejected
+uninstall/reinstall, configuration retention, synthetic preview baseline upgrade, rejected
 artifact download, forced reinstall, postinstall failure, and recovery/retry.
 Four setup-interruption cases cover configuration publication, before/after
 Backend start, and saved-account key cancellation. Recovery verifies the saved
@@ -1315,11 +1336,11 @@ To run only native Memory/Skill checks against an already installed candidate:
 
 ```bash
 memorax_dev node scripts/ci/codebuddy-workbuddy/workbuddy-native-check.mjs \
-  "$memorax_dev_root/npm/lib/node_modules/@memorax/memorax-code" \
+  "$memorax_dev_root/npm/lib/node_modules/@memorax/memorax-code-preview" \
   "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION"
 ```
 
-On Windows, use the npm prefix's `node_modules/@memorax/memorax-code` package
+On Windows, use the npm prefix's `node_modules/@memorax/memorax-code-preview` package
 directory. The native scenarios share CodeBuddy's six-turn contract: complete
 Unicode/multiline automatic Add, same-session resume and real tools, sensitive
 input redaction, separate workspace/session content, direct CLI Search in JSON
@@ -1392,10 +1413,10 @@ These two suites can also run independently against the installed candidate:
 
 ```bash
 memorax_dev node scripts/ci/codebuddy-workbuddy/codebuddy-permissions-check.mjs \
-  "$memorax_dev_root/npm/lib/node_modules/@memorax/memorax-code" \
+  "$memorax_dev_root/npm/lib/node_modules/@memorax/memorax-code-preview" \
   "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION" workbuddy
 memorax_dev node scripts/ci/codebuddy-workbuddy/codebuddy-background-check.mjs \
-  "$memorax_dev_root/npm/lib/node_modules/@memorax/memorax-code" \
+  "$memorax_dev_root/npm/lib/node_modules/@memorax/memorax-code-preview" \
   "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION" workbuddy
 ```
 
@@ -1404,11 +1425,11 @@ prevent investigating the other:
 
 ```bash
 memorax_dev node scripts/ci/codebuddy-workbuddy/codebuddy-permissions-check.mjs \
-  "$memorax_dev_root/npm/lib/node_modules/@memorax/memorax-code" \
+  "$memorax_dev_root/npm/lib/node_modules/@memorax/memorax-code-preview" \
   "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION" workbuddy \
   --interrupt-case user-inflight-interrupt
 memorax_dev node scripts/ci/codebuddy-workbuddy/codebuddy-permissions-check.mjs \
-  "$memorax_dev_root/npm/lib/node_modules/@memorax/memorax-code" \
+  "$memorax_dev_root/npm/lib/node_modules/@memorax/memorax-code-preview" \
   "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION" workbuddy \
   --interrupt-case user-wait-interrupt
 ```
@@ -1446,8 +1467,9 @@ aggregate; a local or single-platform pass is not three-platform evidence.
 
 Every cell first runs `scripts/ci/cursor/cursor-lifecycle-check.mjs TARBALL REPORT_DIR` in
 an isolated npm prefix and client/Backend home. It covers fresh/repeated setup,
-uninstall/reinstall, saved account/configuration retention, real upgrade from
-published MemoraX Code **0.1.18**, rejected download, replacement failure and retry.
+uninstall/reinstall, saved account/configuration retention, an upgrade from a
+synthetic preview baseline derived from published MemoraX Code **0.1.18**,
+rejected download, replacement failure and retry.
 That baseline predates Cursor support: its Backend must be ready before upgrade,
 and the candidate must install the complete Cursor integration. Four real-PTY
 setup interruptions cover `after-config-write`, `before-backend-start`,

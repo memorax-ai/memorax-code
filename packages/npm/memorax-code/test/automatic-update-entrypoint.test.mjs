@@ -8,27 +8,31 @@ import { fileURLToPath } from "node:url";
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
-test("automatic update installs an exact latest version and runs non-interactive reconciliation", async (t) => {
-  const fixture = await createFixture(t);
-  await writeSetupCompletion(fixture.memoraxCodeHome, "0.1.9");
-  const result = runAutomaticUpdate(fixture);
+test("automatic update installs an exact latest version of the installed package and reconciles", async (t) => {
+  for (const packageName of ["@memorax/memorax-code", "@memorax/memorax-code-preview"]) {
+    await t.test(packageName, async (t) => {
+      const fixture = await createFixture(t, packageName);
+      await writeSetupCompletion(fixture.memoraxCodeHome, "0.1.9");
+      const result = runAutomaticUpdate(fixture);
 
-  assert.equal(result.status, 0, result.stderr);
-  assert.deepEqual(await readJsonLines(fixture.npmLogPath), [
-    ["view", "@memorax/memorax-code@latest", "version", "--json"],
-    ["install", "-g", "@memorax/memorax-code@0.1.10"],
-  ]);
-  assert.deepEqual(await readJsonLines(fixture.setupLogPath), [{
-    automaticUpdateMode: "1",
-    home: fixture.memoraxCodeHome,
-    updateMode: "1",
-  }]);
-  const state = JSON.parse(await readFile(
-    join(fixture.memoraxCodeHome, "runtime", "install", "automatic-update.json"),
-    "utf8",
-  ));
-  assert.equal(state.installedVersion, "0.1.10");
-  assert.deepEqual(Object.keys(state).sort(), ["installedVersion", "nextCheckAt", "version"]);
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(await readJsonLines(fixture.npmLogPath), [
+        ["view", `${packageName}@latest`, "version", "--json"],
+        ["install", "-g", `${packageName}@0.1.10`],
+      ]);
+      assert.deepEqual(await readJsonLines(fixture.setupLogPath), [{
+        automaticUpdateMode: "1",
+        home: fixture.memoraxCodeHome,
+        updateMode: "1",
+      }]);
+      const state = JSON.parse(await readFile(
+        join(fixture.memoraxCodeHome, "runtime", "install", "automatic-update.json"),
+        "utf8",
+      ));
+      assert.equal(state.installedVersion, "0.1.10");
+      assert.deepEqual(Object.keys(state).sort(), ["installedVersion", "nextCheckAt", "version"]);
+    });
+  }
 });
 
 test("automatic update reports npm registry authentication failure without response text", async (t) => {
@@ -91,7 +95,7 @@ test("automatic update respects the explicit opt-out", async (t) => {
   assert.deepEqual(await readJsonLines(fixture.setupLogPath), []);
 });
 
-async function createFixture(t) {
+async function createFixture(t, packageName = "@memorax/memorax-code-preview") {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-automatic-entrypoint-"));
   const memoraxCodeHome = join(root, "memorax-code-home");
   const home = join(root, "home");
@@ -137,7 +141,7 @@ async function createFixture(t) {
   }));
   await Promise.all([fakeBin, home].map((path) => mkdir(path, { recursive: true })));
   await writeFile(join(root, "package.json"), `${JSON.stringify({
-    name: "@memorax/memorax-code",
+    name: packageName,
     version: "0.1.9",
     type: "module",
   })}\n`);

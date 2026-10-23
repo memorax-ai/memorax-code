@@ -625,8 +625,12 @@ async function assertCaptureHookRuns({ pluginRoot, pluginData, home, codexHome, 
   assert.equal(pluginWorkspaceState.runtime, "codex");
 }
 
-test("memorax-code uninstall removes the npm package when running from an npm package root", async () => {
-  await assertMemoraxCodeNpmPackageRemoval("@memorax/memorax-code");
+test("memorax-code uninstall removes the installed npm package identity", async (t) => {
+  for (const packageName of ["@memorax/memorax-code", "@memorax/memorax-code-preview"]) {
+    await t.test(packageName, async () => {
+      await assertMemoraxCodeNpmPackageRemoval(packageName);
+    });
+  }
 });
 
 test("memorax-code uninstall does not remove the npm package when Backend stop fails", { timeout: 10_000 }, async () => {

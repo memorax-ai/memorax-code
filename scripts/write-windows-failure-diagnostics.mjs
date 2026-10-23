@@ -11,7 +11,7 @@ if (!["package", "codex", "claude"].includes(job)) {
 const prefix = resolve(required(options, "prefix"));
 const output = resolve(required(options, "output"));
 const memoraxCodeHome = resolve(requiredEnv("MEMORAX_CODE_HOME"));
-const packageRoot = join(prefix, "node_modules", "@memorax/memorax-code");
+const packageRoot = join(prefix, "node_modules", "@memorax/memorax-code-preview");
 const statePath = join(memoraxCodeHome, "runtime", "backend", "backend.pid.json");
 const state = await readJson(statePath);
 const assertionReport = options.assertions

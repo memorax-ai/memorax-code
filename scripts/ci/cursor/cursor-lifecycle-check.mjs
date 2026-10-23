@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createPreviewUpgradeBaseline } from "../shared/preview-upgrade-baseline.mjs";
 import { createHash } from "node:crypto";
 import { projectTerminalDisposal } from "../codex/codex-setup-pty-evidence.mjs";
 import { cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
@@ -76,7 +77,7 @@ export async function runCursorLifecycleCheck(candidatePath, reportDirectory, pr
     check(isAbsolute(temporary), "CURSOR_LIFECYCLE_TEMP_DIRECTORY");
     root = await realpath(await mkdtemp(join(temporary, "cursor-lifecycle-")));
     prefix = join(root, "npm");
-    packageRoot = join(prefix, process.platform === "win32" ? "node_modules" : "lib/node_modules", "@memorax/memorax-code");
+    packageRoot = join(prefix, process.platform === "win32" ? "node_modules" : "lib/node_modules", "@memorax/memorax-code-preview");
     entrypoint = join(packageRoot, "bin/memorax-code.mjs");
     const nodeDirectory = dirname(await realpath(process.execPath));
     for (const path of [join(nodeDirectory, "node_modules/npm/bin/npm-cli.js"),
@@ -113,7 +114,7 @@ export async function runCursorLifecycleCheck(candidatePath, reportDirectory, pr
     await npmInstall(candidate);
     check(!(await exists(completionPath())) && !(await exists(pidPath())), "CURSOR_LIFECYCLE_INSTALL_STARTED_BACKEND");
     manifest = await json(join(packageRoot, "package.json"));
-    check(manifest.name === "@memorax/memorax-code" && /^\d+\.\d+\.\d+$/.test(manifest.version)
+    check(manifest.name === "@memorax/memorax-code-preview" && /^\d+\.\d+\.\d+$/.test(manifest.version)
       && manifest.version !== previousVersion, "CURSOR_LIFECYCLE_PACKAGE_VERSION");
     report.packageVersion = manifest.version; report.previousVersion = previousVersion;
     ({ parse } = createRequire(join(packageRoot, "package.json"))("smol-toml"));
@@ -145,10 +146,13 @@ export async function runCursorLifecycleCheck(candidatePath, reportDirectory, pr
 
     report.stage = "previous-version-install";
     await prepareHome("upgrade user");
-    await npmInstall(`@memorax/memorax-code@${previousVersion}`);
+    const baseline = await createPreviewUpgradeBaseline({ directory: join(root, "synthetic-preview-baseline"),
+      version: previousVersion, runNpm: npm });
+    report.upgradeBaseline = baseline.record;
+    await npmInstall(baseline.tarball);
     check((await json(join(packageRoot, "package.json"))).version === previousVersion, "CURSOR_LIFECYCLE_PREVIOUS_VERSION");
     await terminal("complete");
-    // The published baseline predates Cursor support; verify its Backend before upgrading the integration.
+    // The published formal source used for this synthetic baseline predates Cursor support; verify its Backend before upgrading the integration.
     const oldStatus = await productJson(["status", "--clients", "none", "--json"]);
     check(oldStatus.ok === true && oldStatus.backend?.ok === true
       && (await json(completionPath())).completedByVersion === previousVersion, "CURSOR_LIFECYCLE_PREVIOUS_NOT_READY");
@@ -462,7 +466,7 @@ export async function createCursorLifecycleRegistry(manifest, artifact) {
     let path;
     try { path = decodeURIComponent(new URL(request.url, "http://localhost").pathname); }
     catch { response.writeHead(400).end(); return; }
-    if (request.method === "GET" && path === "/@memorax/memorax-code") {
+    if (request.method === "GET" && path === "/@memorax/memorax-code-preview") {
       counts.manifest++;
       const version = { ...manifest, dist: { tarball: `${registry.url}/candidate.tgz`, shasum: createHash("sha1").update(artifact).digest("hex") } };
       response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ name: manifest.name,

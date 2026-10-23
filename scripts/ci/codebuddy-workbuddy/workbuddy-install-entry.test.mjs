@@ -136,7 +136,7 @@ for (const client of ["codebuddy", "workbuddy"]) {
       await spy("npm");
       await spy("node");
       const command = await bundle(true);
-      const tarball = join(root, "memorax-memorax-code-0.1.19.tgz");
+      const tarball = join(root, "memorax-memorax-code-preview-0.1.19.tgz");
       await writeFile(tarball, "Synthetic artifact; never installed.\n");
       const args = [wrapper, root, runtimeVersion];
       if (client === "workbuddy") args.push("0.1.18", client, command);
@@ -176,7 +176,7 @@ for (const failedSuite of ["codebuddy-background-check.mjs", "codebuddy-permissi
       await spy("npm");
       await spy("node");
       const command = await bundle(true);
-      await writeFile(join(root, "memorax-memorax-code-0.1.19.tgz"), "Synthetic artifact; never installed.\n");
+      await writeFile(join(root, "memorax-memorax-code-preview-0.1.19.tgz"), "Synthetic artifact; never installed.\n");
       const result = await run("/bin/bash", [wrapper, root, runtimeVersion, "0.1.18", "workbuddy", command]);
       assert.equal(result.code, 23);
       const checks = (await calls()).filter((call) => call.command.endsWith(".mjs"));

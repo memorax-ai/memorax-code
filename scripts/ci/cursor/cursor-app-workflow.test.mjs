@@ -187,14 +187,14 @@ test("Cursor matrix independently merges exact platform releases and keeps Linux
 test("workflow entrypoints preserve platform selection, quoted inputs and every failure", { skip: process.platform === "win32" }, async (t) => {
   const root = await mkdtemp(join(tmpdir(), "cursor-app-workflow-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const name = "memorax-memorax-code-fixture with spaces.tgz";
+  const name = "memorax-memorax-code-preview-fixture with spaces.tgz";
   for (const [runnerOs, entrypoint] of [["Linux", "container"], ["macOS", "macos"], ["Windows", "windows"], ["FreeBSD", null]]) {
     for (const kind of ["missing", "single", "multiple", "directory", "symlink", "failed"]) {
       const cwd = join(root, runnerOs, kind), tarballs = join(cwd, "dist/npm/tarballs"), candidate = join(tarballs, name);
       const calls = join(cwd, "calls"), runnerTemp = join(cwd, "runner temp");
       await mkdir(tarballs, { recursive: true });
       if (["single", "multiple", "failed"].includes(kind)) await writeFile(candidate, "synthetic tarball");
-      if (kind === "multiple") await writeFile(join(tarballs, "memorax-memorax-code-other.tgz"), "second");
+      if (kind === "multiple") await writeFile(join(tarballs, "memorax-memorax-code-preview-other.tgz"), "second");
       if (kind === "directory") await mkdir(candidate);
       if (kind === "symlink") { await writeFile(join(cwd, "target"), "fixture"); await symlink(join(cwd, "target"), candidate); }
       for (const lifecycle of [false, true]) {

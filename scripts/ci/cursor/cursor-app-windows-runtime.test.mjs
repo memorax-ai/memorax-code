@@ -7,7 +7,7 @@ import { auditWindowsProcesses, hasOwnedWindowsProcesses, projectWindowsProcessA
   stopWindowsApp, waitForWindowsProcessesExit, windowsRuntimePaths, windowsShellCommand } from "./cursor-app-windows-runtime.mjs";
 
 const paths = { root: "C:\\owned test", appPath: "C:\\owned app\\Cursor.exe",
-  packageRoot: "C:\\candidate\\node_modules\\@memorax\\memorax-code", nodePath: "C:\\node\\node.exe" };
+  packageRoot: "C:\\candidate\\node_modules\\@memorax\\memorax-code-preview", nodePath: "C:\\node\\node.exe" };
 const code = (suffix) => ({ code: `CURSOR_APP_WINDOWS_${suffix}` });
 
 test("Windows runtime isolates homes and builds PATH from explicit application and system paths", () => {

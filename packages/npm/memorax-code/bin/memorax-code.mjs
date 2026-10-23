@@ -362,7 +362,7 @@ async function reportSetupCommandFailure(kind, home, error, commandResult, clean
 }
 
 function repairWindowsSetupPath() {
-  if (readPackageJson().name !== "@memorax/memorax-code") return;
+  if (!["@memorax/memorax-code", "@memorax/memorax-code-preview"].includes(readPackageJson().name)) return;
   const repair = ensureWindowsNpmGlobalPath();
   if (repair.userPathChanged) {
     console.error("memorax-code setup: added npm's global command directory to the Windows user PATH");

@@ -70,7 +70,7 @@ failure record does not establish successful Hook execution or remote acceptance
 This is expected after:
 
 ```sh
-npm install -g @memorax/memorax-code
+npm install -g @memorax/memorax-code-preview
 ```
 
 npm installation is deliberately non-interactive. Start setup from a normal

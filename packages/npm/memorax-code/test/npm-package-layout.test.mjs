@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
 import {
   isAllowedNpmPackFilePath,
@@ -7,6 +8,25 @@ import {
   requiredNpmPackagePaths,
 } from "../../../../scripts/npm-package-layout.mjs";
 import { npmShippedDocs } from "../../../../scripts/npm-shipped-docs.mjs";
+
+test("investor preview retains the public command names", () => {
+  const manifest = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  assert.equal(manifest.name, "@memorax/memorax-code-preview");
+  assert.deepEqual(Object.keys(manifest.bin).sort(), [
+    "memorax-cli",
+    "memorax-code",
+    "memorax-code-backend",
+    "memorax-code-claude",
+    "memorax-code-codebuddy",
+    "memorax-code-codex",
+    "memorax-code-cursor",
+    "memorax-code-opencode",
+    "memorax-code-qoder",
+    "memorax-code-trae",
+  ]);
+  assert.equal(manifest.bin["memorax-code"], "bin/memorax-code.mjs");
+  assert.equal(manifest.bin["memorax-cli"], "bin/memorax-cli.mjs");
+});
 
 test("single npm package layout accepts declared paths and rejects unknown trees", () => {
   for (const path of npmShippedDocs) {

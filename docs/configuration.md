@@ -148,7 +148,7 @@ agent from retaining the command or conversation that supplied it.
 ## Setup, automatic update, and package-transition state
 
 npm installation and foreground setup are separate operations.
-`npm install -g @memorax/memorax-code` installs or replaces package files
+`npm install -g @memorax/memorax-code-preview` installs or replaces package files
 without reading terminal input. `memorax-code setup` owns client detection,
 connection setup, configuration writes, client integration activation or
 review, and final readiness checks. Trae setup installs the managed Hook
@@ -185,8 +185,10 @@ partial client uninstall preserve it.
 After setup completion, the managed Backend schedules detached update checks
 while it remains running. It reads the next deadline from the private update
 record, so an active Backend continues checking even when the user stays in one
-client session. Stable installations follow npm `latest`; prerelease
-installations follow `preview`. A successful result is reused for eight hours,
+client session. Manual and automatic updates resolve the installed npm package
+name. For this edition, stable installations follow
+`@memorax/memorax-code-preview@latest`; prerelease versions follow that package's
+`preview` tag. A successful result is reused for eight hours,
 while a failed check, install, or reconciliation retries after 15 minutes. Local
 scheduling checks run at intervals of at most 15 minutes to detect pending package
 transitions without waiting for the eight-hour window. These local checks do not

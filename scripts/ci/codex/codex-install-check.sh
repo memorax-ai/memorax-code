@@ -22,7 +22,7 @@ npm_command="$(command -v npm)"
   echo "CODEX_VERSION must be an exact stable version." >&2
   exit 1
 }
-set -- "$tarball_dir"/memorax-memorax-code-*.tgz
+set -- "$tarball_dir"/memorax-memorax-code-preview-*.tgz
 if [[ $# -ne 1 || ! -f "$1" ]]; then
   echo "Expected exactly one MemoraX Code tarball; run make npm-package-check first." >&2
   exit 1
@@ -81,15 +81,15 @@ isolated "$test_root/npm/bin/memorax-code" --help >/dev/null
 isolated "$test_root/npm/bin/codex" --version
 ledger phase suites
 run_suite codex-install-smoke isolated_suite node "$repo_root/scripts/ci/codex/codex-install-smoke.mjs" \
-  "$test_root/npm/lib/node_modules/@memorax/memorax-code" \
+  "$test_root/npm/lib/node_modules/@memorax/memorax-code-preview" \
   "$test_root/npm/bin/codex" "$tarball" "$npm_command" "$previous_version" \
   "$test_root/terminal/node_modules/node-pty" "$repo_root/scripts/ci/codex/codex-setup-pty.mjs" "$codex_version"
 run_suite codex-native-check isolated_suite node "$repo_root/scripts/ci/codex/codex-native-check.mjs" \
-  "$test_root/npm/lib/node_modules/@memorax/memorax-code" "$test_root/npm/bin/codex"
+  "$test_root/npm/lib/node_modules/@memorax/memorax-code-preview" "$test_root/npm/bin/codex"
 run_suite codex-permissions-check isolated_suite node "$repo_root/scripts/ci/codex/codex-permissions-check.mjs" \
-  "$test_root/npm/lib/node_modules/@memorax/memorax-code" "$test_root/npm/bin/codex"
+  "$test_root/npm/lib/node_modules/@memorax/memorax-code-preview" "$test_root/npm/bin/codex"
 run_suite codex-install-interruption-check isolated_suite node "$repo_root/scripts/ci/codex/codex-install-interruption-check.mjs" \
-  "$test_root/npm/lib/node_modules/@memorax/memorax-code" "$test_root/npm/bin/codex" \
+  "$test_root/npm/lib/node_modules/@memorax/memorax-code-preview" "$test_root/npm/bin/codex" \
   "$test_root/terminal/node_modules/node-pty"
 echo 'SKIP: foreground model/provider override inheritance is pending implementation (see CONTRIBUTING.md).'
 

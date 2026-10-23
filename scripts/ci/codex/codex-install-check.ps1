@@ -8,7 +8,7 @@ $ErrorActionPreference = 'Stop'
 if (-not $IsWindows) { throw 'This wrapper requires Windows.' }
 $npmCommand = (Get-Command npm.cmd).Source
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
-$tarballs = @(Get-ChildItem -LiteralPath $TarballDirectory -Filter 'memorax-memorax-code-*.tgz')
+$tarballs = @(Get-ChildItem -LiteralPath $TarballDirectory -Filter 'memorax-memorax-code-preview-*.tgz')
 if ($tarballs.Count -ne 1) { throw 'Expected exactly one MemoraX Code tarball.' }
 $tarball = $tarballs[0].FullName
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('memorax-codex-install-' + [guid]::NewGuid())
@@ -66,7 +66,7 @@ if ($CiEvidenceDir) { $env:MEMORAX_CI_EVIDENCE_DIR = $CiEvidenceDir }
 Write-CiLedger phase suites
 Write-CiLedger start codex-install-smoke
 & node (Join-Path $repoRoot 'scripts/ci/codex/codex-install-smoke.mjs') `
-  (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'codex.cmd') `
+  (Join-Path $prefix 'node_modules/@memorax/memorax-code-preview') (Join-Path $prefix 'codex.cmd') `
   $tarball $npmCommand $PreviousVersion `
   (Join-Path $testRoot 'terminal/node_modules/node-pty') (Join-Path $repoRoot 'scripts/ci/codex/codex-setup-pty.mjs') $CodexVersion
 $suiteExit = $LASTEXITCODE
@@ -75,19 +75,19 @@ if ($suiteExit -ne 0) { throw 'The Codex installation smoke failed; its runtime 
 
 Write-CiLedger start codex-native-check
 & node (Join-Path $repoRoot 'scripts/ci/codex/codex-native-check.mjs') `
-  (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'codex.cmd')
+  (Join-Path $prefix 'node_modules/@memorax/memorax-code-preview') (Join-Path $prefix 'codex.cmd')
 $suiteExit = $LASTEXITCODE
 Write-CiLedger end codex-native-check $suiteExit
 if ($suiteExit -ne 0) { throw 'The Codex native flow check failed; its runtime stays on this runner and is not exported.' }
 Write-CiLedger start codex-permissions-check
 & node (Join-Path $repoRoot 'scripts/ci/codex/codex-permissions-check.mjs') `
-  (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'codex.cmd')
+  (Join-Path $prefix 'node_modules/@memorax/memorax-code-preview') (Join-Path $prefix 'codex.cmd')
 $suiteExit = $LASTEXITCODE
 Write-CiLedger end codex-permissions-check $suiteExit
 if ($suiteExit -ne 0) { throw 'The Codex permissions check failed; its runtime stays on this runner and is not exported.' }
 Write-CiLedger start codex-install-interruption-check
 & node (Join-Path $repoRoot 'scripts/ci/codex/codex-install-interruption-check.mjs') `
-  (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'codex.cmd') `
+  (Join-Path $prefix 'node_modules/@memorax/memorax-code-preview') (Join-Path $prefix 'codex.cmd') `
   (Join-Path $testRoot 'terminal/node_modules/node-pty')
 $suiteExit = $LASTEXITCODE
 Write-CiLedger end codex-install-interruption-check $suiteExit

@@ -8,7 +8,7 @@ import test from "node:test";
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
-async function createPackageFixture(version) {
+async function createPackageFixture(version, packageName) {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-update-test-"));
   const commonRoot = join(packageRoot, "..", "..", "ts", "memorax-code-adapter-common", "src");
   await mkdir(join(root, "bin"), { recursive: true });
@@ -48,6 +48,7 @@ async function createPackageFixture(version) {
   await cp(join(packageRoot, "lib", "vscode-extension-command.mjs"), join(root, "lib", "vscode-extension-command.mjs"));
   const manifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
   manifest.version = version;
+  if (packageName) manifest.name = packageName;
   await writeFile(join(root, "package.json"), `${JSON.stringify(manifest, null, 2)}\n`);
   return root;
 }
@@ -58,19 +59,21 @@ function runUpdate(root, ...args) {
   });
 }
 
-test("memorax-code update preserves the installed release channel", async (t) => {
-  for (const [name, version, channel] of [
-    ["preview", "0.0.1-preview.1", "preview"],
-    ["stable", "0.0.1", "latest"],
+test("memorax-code update preserves the installed package and release channel", async (t) => {
+  for (const [name, packageName, version, channel] of [
+    ["formal prerelease", "@memorax/memorax-code", "0.0.1-preview.1", "preview"],
+    ["formal stable", "@memorax/memorax-code", "0.0.1", "latest"],
+    ["investor preview stable", "@memorax/memorax-code-preview", "0.0.1", "latest"],
+    ["investor preview prerelease", "@memorax/memorax-code-preview", "0.0.1-preview.1", "preview"],
   ]) {
     await t.test(name, async () => {
-      const root = await createPackageFixture(version);
+      const root = await createPackageFixture(version, packageName);
       try {
         const result = runUpdate(root, "--dry-run");
         assert.equal(result.status, 0, result.stderr);
         assert.equal(
           result.stdout.trim(),
-          `npm install -g @memorax/memorax-code@${channel}`,
+          `npm install -g ${packageName}@${channel}`,
         );
       } finally {
         await rm(root, { recursive: true, force: true });
@@ -86,14 +89,14 @@ test("memorax-code update supports explicit channel selection and force", async 
     assert.equal(latest.status, 0, latest.stderr);
     assert.equal(
       latest.stdout.trim(),
-      "npm install -g @memorax/memorax-code@latest",
+      "npm install -g @memorax/memorax-code-preview@latest",
     );
 
     const previewForce = runUpdate(root, "--force", "--preview", "--dry-run");
     assert.equal(previewForce.status, 0, previewForce.stderr);
     assert.equal(
       previewForce.stdout.trim(),
-      "npm install -g @memorax/memorax-code@preview --force",
+      "npm install -g @memorax/memorax-code-preview@preview --force",
     );
   } finally {
     await rm(root, { recursive: true, force: true });
@@ -168,7 +171,7 @@ test("memorax-code update resolves argument and environment homes before npm cha
         args: [
           "install",
           "-g",
-          "@memorax/memorax-code@latest",
+          "@memorax/memorax-code-preview@latest",
         ],
         cwd: userHome,
         memoraxCodeHome,

@@ -111,6 +111,40 @@ test("explicit setup defaults to automatic mode and ignores inherited setup mode
   }
 });
 
+test("setup invokes Windows PATH repair for formal and preview package identities only", async (t) => {
+  for (const [packageName, expectedCalls] of [
+    ["@memorax/memorax-code", 1],
+    ["@memorax/memorax-code-preview", 1],
+    ["@memorax/memorax-code-entrypoint-test", 0],
+  ]) {
+    await t.test(packageName, async () => {
+      const fixture = await createPackageFixture(packageName);
+      const repairLogPath = join(fixture.root, "path-repair.jsonl");
+      try {
+        await writeFile(join(fixture.root, "lib", "windows-user-path.mjs"), [
+          'import { appendFileSync } from "node:fs";',
+          'export function ensureWindowsNpmGlobalPath() {',
+          '  appendFileSync(process.env.MEMORAX_CODE_TEST_PATH_REPAIR_LOG, JSON.stringify({ called: true }) + "\\n");',
+          '  return { status: "unchanged", userPathChanged: false, processPathChanged: false, restartRecommended: false };',
+          '}',
+          '',
+        ].join("\n"));
+        const result = runCli(fixture, ["setup", "--existing-account"], {
+          assumeInteractive: true,
+          extraEnv: { MEMORAX_CODE_TEST_PATH_REPAIR_LOG: repairLogPath },
+        });
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(result.error, undefined);
+        assert.equal(await pathExists(repairLogPath), expectedCalls > 0);
+        if (expectedCalls > 0) assert.equal((await readJsonLines(repairLogPath)).length, expectedCalls);
+        assert.equal((await readJsonLines(fixture.setupLogPath)).length, 1);
+      } finally {
+        await fixture.cleanup();
+      }
+    });
+  }
+});
+
 test("setup propagates an explicit home to the setup process", async () => {
   const fixture = await createPackageFixture();
   const requestedHome = join(fixture.root, "custom memorax-code home");
@@ -491,7 +525,7 @@ async function readSetupDiagnostics(fixture) {
   return await Promise.all(files.map(async (name) => JSON.parse(await readFile(join(directory, name), "utf8"))));
 }
 
-async function createPackageFixture() {
+async function createPackageFixture(packageName = "@memorax/memorax-code-entrypoint-test") {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-entrypoint-test-"));
   const memoraxCodeHome = join(root, "memorax-code-home");
   const home = join(root, "home");
@@ -549,7 +583,7 @@ async function createPackageFixture() {
   }
 
   await writeFile(join(root, "package.json"), `${JSON.stringify({
-    name: "@memorax/memorax-code-entrypoint-test",
+    name: packageName,
     version: "0.0.0-test",
     type: "module",
   }, null, 2)}\n`);

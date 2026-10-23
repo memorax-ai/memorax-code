@@ -561,7 +561,7 @@ function githubSource(env = process.env) {
 }
 
 function packageFile(directory) {
-  const names = readdirSync(directory).filter((name) => /^memorax-memorax-code-\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?\.tgz$/.test(name));
+  const names = readdirSync(directory).filter((name) => /^memorax-memorax-code-preview-\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?\.tgz$/.test(name));
   return names.length === 1 ? names[0] : undefined;
 }
 

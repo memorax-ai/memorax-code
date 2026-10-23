@@ -1418,6 +1418,14 @@ Log and its path are never copied into trace.
 
 ## 7. Packaging and Distribution
 
+The npm assembly manifest identifies this distribution as
+`@memorax/memorax-code-preview`. Assembly produces one distribution from that
+manifest. Its public commands include `memorax-code` and `memorax-cli`; the
+Backend, adapter and Skill identities, account configuration, and local state
+roots retain their existing ownership. Package updates and removal use the
+installed npm manifest's name. Component versions remain synchronized with the
+npm package version through the shared version contract.
+
 ```mermaid
 flowchart TD
   BackendSource["Backend TypeScript source"]

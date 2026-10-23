@@ -20,7 +20,7 @@ function safeCode(error) {
 
 export function windowsCheckEnvironment(root, nodePath, systemRoot = "C:\\Windows") {
   const { env } = windowsRuntimePaths({ root, nodePath, systemRoot,
-    packageRoot: win32.join(root, "candidate", "node_modules", "@memorax", "memorax-code"),
+    packageRoot: win32.join(root, "candidate", "node_modules", "@memorax", "memorax-code-preview"),
     appPath: win32.join(root, "home", "AppData", "Local", "Programs", "Cursor", "Cursor.exe") });
   return { ...env, PATH: `${env.PATH};${gitDirectory}`, npm_config_cache: win32.join(root, "npm-cache"),
     GITHUB_ACTIONS: "true", RUNNER_OS: "Windows" };
@@ -105,7 +105,7 @@ export async function runWindowsCheck(candidatePath, reportPath, { releaseManife
         { cwd: root, env, timeout: 180_000, signal, maxBuffer: 1024 * 1024, windowsHide: true });
       } catch { check(false, prefix === "candidate" ? "CURSOR_APP_WINDOWS_CANDIDATE_INSTALL" : "CURSOR_APP_WINDOWS_PROBE_INSTALL"); }
     }
-    const packageRoot = join(root, "candidate", "node_modules", "@memorax", "memorax-code");
+    const packageRoot = join(root, "candidate", "node_modules", "@memorax", "memorax-code-preview");
     report.stage = "windows-package-smoke";
     try {
       await exec(process.execPath, [join(scripts, "cursor-npm-package-smoke.mjs"), packageRoot],

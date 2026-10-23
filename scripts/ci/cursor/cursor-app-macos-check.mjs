@@ -62,7 +62,7 @@ export async function runMacosCheck(candidatePath, reportPath, { releaseManifest
     report.stage = "macos-package-smoke";
     try {
       await exec(process.execPath, [join(scripts, "cursor-npm-package-smoke.mjs"),
-        join(root, "candidate/node_modules/@memorax/memorax-code")],
+        join(root, "candidate/node_modules/@memorax/memorax-code-preview")],
       { cwd: root, env, timeout: 180_000, signal, maxBuffer: 1024 * 1024, killSignal: "SIGKILL" });
     } catch {
       // A failed smoke cannot confirm that its owned Backend has stopped.
@@ -78,7 +78,7 @@ export async function runMacosCheck(candidatePath, reportPath, { releaseManifest
       let executionError;
       try {
         await exec(process.execPath, [join(scripts, "cursor-app-native-check.mjs"),
-          join(root, "candidate/node_modules/@memorax/memorax-code"), appPath, release.version,
+          join(root, "candidate/node_modules/@memorax/memorax-code-preview"), appPath, release.version,
           join(root, "probe/node_modules/playwright-core"), nativeOutput, nodeMajor],
         { cwd: root, env, timeout: 10 * 60_000, signal, maxBuffer: 1024 * 1024, killSignal: "SIGKILL" });
       } catch (error) { executionError = error; }

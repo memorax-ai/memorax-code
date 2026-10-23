@@ -62,7 +62,7 @@ async function main() {
   const userProfile = resolve(requiredEnv("USERPROFILE"));
   const codexHome = resolve(requiredEnv("CODEX_HOME"));
   const memoraxCodeHome = resolve(requiredEnv("MEMORAX_CODE_HOME"));
-  const packageRoot = join(prefix, "node_modules", "@memorax/memorax-code");
+  const packageRoot = join(prefix, "node_modules", "@memorax/memorax-code-preview");
   const memoraxCode = join(packageRoot, "bin", "memorax-code.mjs");
   const backendUrl = `http://127.0.0.1:${port}`;
   const childEnv = {

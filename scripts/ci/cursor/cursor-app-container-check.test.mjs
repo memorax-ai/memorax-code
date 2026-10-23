@@ -227,7 +227,7 @@ test("container arguments retain all isolation controls without host mounts or p
   assert.ok(args.includes("/tmp:rw,nosuid,nodev,size=1g"));
   assert.ok(args.includes(`type=volume,source=${volume},destination=/artifacts`));
   assert.deepEqual(args.slice(args.indexOf(imageId) + 1), ["xvfb-run", "--auto-servernum", "--server-args=-screen 0 1280x800x24",
-    "node", "/opt/check/cursor/cursor-app-native-check.mjs", "/opt/candidate/node_modules/@memorax/memorax-code",
+    "node", "/opt/check/cursor/cursor-app-native-check.mjs", "/opt/candidate/node_modules/@memorax/memorax-code-preview",
     "/opt/cursor-app/usr/share/cursor/cursor", "3.21.18", "/opt/probe/node_modules/playwright-core", "/artifacts", "24"]);
   assert.ok(!args.some((value) => /type=bind|docker\.sock|--privileged|--cap-add|--publish|--no-sandbox/.test(value)));
   assert.throws(() => makeContainerArgs({ runId: "other", imageId, seccompPath: "/owned/profile" }), /CURSOR_CONTAINER_IDENTITY/);

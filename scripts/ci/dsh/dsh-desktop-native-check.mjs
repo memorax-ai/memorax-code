@@ -81,7 +81,7 @@ async function main() {
     await stage("install-packages", npm, ["install", "-g", "--prefix", paths.prefix, tarball,
       `@deepseek-ai/dsh-llm-mock-server@${version}`, "--omit=optional", "--foreground-scripts", "--loglevel", "warn"], { timeout: 180_000 });
     const packages = join(paths.prefix, "lib", "node_modules");
-    entry = join(packages, "@memorax", "memorax-code", "bin", "memorax-code.mjs");
+    entry = join(packages, "@memorax", "memorax-code-preview", "bin", "memorax-code.mjs");
     const mockModule = await import(pathToFileURL(join(packages, "@deepseek-ai", "dsh-llm-mock-server", "lib", "index.js")));
     model = await mockModule.startMockLlmServer({ sequence: ["success"], repeatLast: true, apiKey: MODEL_KEY, successText: VISIBLE_REPLY });
     memory = await startMemoryMock(memoryRequests);

@@ -235,7 +235,7 @@ async function main() {
   { timeout: 300_000 });
   assert.equal(installed.code, 0);
 
-  const installedRoot = await packageRoot(paths.prefix, "@memorax/memorax-code");
+  const installedRoot = await packageRoot(paths.prefix, "@memorax/memorax-code-preview");
   memoraxEntry = join(installedRoot, "bin", "memorax-code.mjs");
   await mkdir(paths.memoraxHome, { recursive: true });
   await writeFile(join(paths.memoraxHome, "config.toml"), [

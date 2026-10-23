@@ -61,7 +61,7 @@ export function makeContainerArgs({ runId, imageId, seccompPath, expectedVersion
     "--tmpfs", "/tmp:rw,nosuid,nodev,size=1g", "--shm-size", "512m", "--memory", "3g", "--pids-limit", "1024",
     "--mount", `type=volume,source=${volume},destination=/artifacts`, imageId,
     "xvfb-run", "--auto-servernum", "--server-args=-screen 0 1280x800x24", "node", "/opt/check/cursor/cursor-app-native-check.mjs",
-    "/opt/candidate/node_modules/@memorax/memorax-code", "/opt/cursor-app/usr/share/cursor/cursor", expectedVersion,
+    "/opt/candidate/node_modules/@memorax/memorax-code-preview", "/opt/cursor-app/usr/share/cursor/cursor", expectedVersion,
     "/opt/probe/node_modules/playwright-core", "/artifacts", nodeMajor];
 }
 

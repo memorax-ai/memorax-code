@@ -31,8 +31,8 @@ const reports = process.argv.slice(2).map((path) => {
   return parsed[0];
 });
 const [baseline, next] = reports;
-if (baseline.name !== "@memorax/memorax-code"
-  || next.name !== "@memorax/memorax-code"
+if (baseline.name !== "@memorax/memorax-code-preview"
+  || next.name !== "@memorax/memorax-code-preview"
   || typeof baseline.version !== "string"
   || typeof next.version !== "string"
   || baseline.version === next.version
@@ -165,9 +165,9 @@ npm publish "$baseline_tarball" --access public --tag "$update_channel" --loglev
 npm publish "$next_tarball" --access public --tag "$update_channel" --loglevel warn
 
 cd "$workspace"
-npm install -g "@memorax/memorax-code@$baseline_version" --loglevel warn
+npm install -g "@memorax/memorax-code-preview@$baseline_version" --loglevel warn
 
-package_install_root="$npm_prefix/lib/node_modules/@memorax/memorax-code"
+package_install_root="$npm_prefix/lib/node_modules/@memorax/memorax-code-preview"
 memorax_code_bin="$npm_prefix/bin/memorax-code"
 test -d "$package_install_root"
 test -x "$memorax_code_bin"
@@ -300,7 +300,7 @@ backend_state="$MEMORAX_CODE_HOME/runtime/backend/backend.pid.json"
   >"$isolated_root/initial-stop.json"
 test ! -e "$backend_state"
 
-npm install -g "@memorax/memorax-code@$baseline_version" --loglevel warn
+npm install -g "@memorax/memorax-code-preview@$baseline_version" --loglevel warn
 test ! -e "$backend_state"
 test -f "$MEMORAX_CODE_HOME/runtime/setup/setup-completion.json"
 test ! -e "$MEMORAX_CODE_HOME/runtime/install/package-transition.json"

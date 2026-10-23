@@ -30,15 +30,15 @@ function writeRelease(root, version, changelogVersions) {
   writeFileSync(join(root, "CHANGELOG.md"), `# Changelog\n\n## Unreleased\n\n${changelogVersions.map((item) => `## [${item}] - 2026-10-20\n`).join("\n")}`);
 }
 
-// A repository whose first commit is the v0.1.19 release and whose HEAD prepares 0.1.20 after two merged pull requests.
+// A repository whose first commit is the preview-v0.1.19 release and whose HEAD prepares 0.1.20 after two merged pull requests.
 function releaseRepository(t, { tagPrevious = true } = {}) {
   const root = temporary(t, "release-candidate-");
-  git(root, "init", "-q", "-b", "main");
+  git(root, "init", "-q", "-b", "feat/investor-preview");
   writeRelease(root, "0.1.19", ["0.1.19"]);
   git(root, "add", "-A");
   git(root, "commit", "-q", "-m", "chore:(release) prepare 0.1.19");
   const previous = git(root, "rev-parse", "HEAD");
-  if (tagPrevious) git(root, "tag", "v0.1.19");
+  if (tagPrevious) git(root, "tag", "preview-v0.1.19");
   writeFileSync(join(root, "notes.txt"), "change\n");
   git(root, "add", "-A");
   git(root, "commit", "-q", "-m", "Merge pull request #301 from memorax-ai/feature");
@@ -48,27 +48,44 @@ function releaseRepository(t, { tagPrevious = true } = {}) {
   return { root, previous, head: git(root, "rev-parse", "HEAD"), parent: git(root, "rev-parse", "HEAD^1") };
 }
 
-const candidate = (root, sha, options = {}) => collectCandidate({ root, sha, ref: "refs/heads/main", checkVersions: () => true,
+const candidate = (root, sha, options = {}) => collectCandidate({ root, sha, ref: "refs/heads/feat/investor-preview", checkVersions: () => true,
   fetchImpl: published(["0.1.18", "0.1.19"]), ...options });
 
-test("a main candidate with an unpublished, consistent and documented version is releasable", { skip }, async (t) => {
+test("a preview branch candidate with an unpublished, consistent and documented version is releasable", { skip }, async (t) => {
   const repo = releaseRepository(t);
   const record = await candidate(repo.root, repo.head);
   assert.deepEqual(record.eligibility, { status: "RELEASABLE", reasons: [], unconfirmed: [] });
   assert.equal(record.candidateSha, repo.head);
   assert.equal(record.testScriptsSha, repo.head);
   assert.deepEqual(record.package, { name: PACKAGE_NAME, version: "0.1.20" });
-  assert.deepEqual(record.previousRelease, { tag: "v0.1.19", sha: repo.previous, version: "0.1.19" });
-  assert.deepEqual(record.range, { from: "v0.1.19", commits: 2, pullRequests: [302, 301] });
+  assert.deepEqual(record.previousRelease, { tag: "preview-v0.1.19", sha: repo.previous, version: "0.1.19" });
+  assert.deepEqual(record.range, { from: "preview-v0.1.19", commits: 2, pullRequests: [302, 301] });
   assert.deepEqual(record.docsBase, { sha: repo.previous, source: "previous-release" });
   assert.deepEqual(record.npm, { status: "NOT_PUBLISHED", latest: "0.1.19", stableVersions: ["0.1.18", "0.1.19"] });
   assert.deepEqual(record.notes, []);
 });
 
+test("first preview ignores formal release tags and queries only its own npm history", { skip }, async (t) => {
+  const repo = releaseRepository(t, { tagPrevious: false });
+  git(repo.root, "tag", "v0.1.20");
+  git(repo.root, "tag", "v0.1.19", repo.previous);
+  const queries = [];
+  const record = await candidate(repo.root, repo.head, { fetchImpl: async (url) => {
+    queries.push(url);
+    return { status: 404 };
+  } });
+  assert.deepEqual(queries, ["https://registry.npmjs.org/@memorax%2Fmemorax-code-preview"]);
+  assert.deepEqual(record.eligibility, { status: "RELEASABLE", reasons: [], unconfirmed: [] });
+  assert.equal(record.previousRelease, null);
+  assert.deepEqual(record.docsBase, { sha: repo.parent, source: "first-parent" });
+  const main = await candidate(repo.root, repo.head, { ref: "refs/heads/main", fetchImpl: registry(null, 404) });
+  assert.deepEqual(main.eligibility.reasons, ["REF_NOT_PREVIEW_BRANCH"]);
+});
+
 test("eligibility problems are recorded as reasons, never thrown", { skip }, async (t) => {
   const repo = releaseRepository(t);
   for (const [options, reason] of [
-    [{ ref: "refs/heads/chore/ci-release-acceptance" }, "REF_NOT_MAIN"],
+    [{ ref: "refs/heads/chore/ci-release-acceptance" }, "REF_NOT_PREVIEW_BRANCH"],
     [{ expectedSha: "a".repeat(40) }, "CANDIDATE_SHA_MISMATCH"],
     [{ expectedSha: "main" }, "EXPECTED_SHA_INVALID"],
     [{ checkVersions: () => false }, "VERSION_INCONSISTENT"],
@@ -96,19 +113,19 @@ test("only stable versions are releasable; a prerelease or build version is refu
     const record = await candidate(repo.root, repo.head, { fetchImpl: published(["0.1.19"]) });
     assert.deepEqual(record.eligibility, { status: "NOT_RELEASABLE", reasons: ["PRERELEASE_NOT_SUPPORTED"], unconfirmed: [] }, version);
   }
-  for (const version of ["0.1", "01.2.3", "v0.1.20"]) {
+  for (const version of ["0.1", "01.2.3", "preview-v0.1.20"]) {
     writeRelease(repo.root, version, [version]);
     assert.ok((await candidate(repo.root, repo.head)).eligibility.reasons.includes("PACKAGE_IDENTITY_INVALID"), version);
   }
   git(repo.root, "checkout", "-q", "--", ".");
   // A prerelease tag is not a previous release, even when it sorts after the stable one.
-  git(repo.root, "tag", "v0.1.20-rc.1", repo.parent);
+  git(repo.root, "tag", "preview-v0.1.20-rc.1", repo.parent);
   const stable = await candidate(repo.root, repo.head);
-  assert.equal(stable.previousRelease.tag, "v0.1.19");
+  assert.equal(stable.previousRelease.tag, "preview-v0.1.19");
   assert.equal(stable.eligibility.status, "RELEASABLE");
   // Stable tags compare numerically, not as text.
-  git(repo.root, "tag", "v0.1.9", repo.previous);
-  assert.equal((await candidate(repo.root, repo.head)).previousRelease.tag, "v0.1.19");
+  git(repo.root, "tag", "preview-v0.1.9", repo.previous);
+  assert.equal((await candidate(repo.root, repo.head)).previousRelease.tag, "preview-v0.1.19");
 });
 
 test("npm's stable history must agree with the candidate's release history before it can become latest", { skip }, async (t) => {
@@ -127,7 +144,7 @@ test("npm's stable history must agree with the candidate's release history befor
     assert.deepEqual(record.eligibility.reasons, reasons, label);
     assert.equal(record.eligibility.status, reasons.length ? "NOT_RELEASABLE" : "RELEASABLE", label);
   }
-  // npm released 0.1.20 from another branch: the candidate's history ends at v0.1.19, so 0.1.21 would skip that release.
+  // npm released 0.1.20 from another branch: the candidate's history ends at preview-v0.1.19, so 0.1.21 would skip that release.
   writeRelease(repo.root, "0.1.21", ["0.1.21", "0.1.19"]);
   const skipped = await candidate(repo.root, repo.head, { fetchImpl: published(["0.1.19", "0.1.20"]) });
   assert.deepEqual(skipped.eligibility.reasons, ["NPM_HISTORY_MISMATCH"]);
@@ -151,8 +168,8 @@ test("an npm query that fails or cannot be read leaves eligibility unconfirmed, 
     assert.equal(record.npm.status, "UNCONFIRMED");
     assert.deepEqual(record.eligibility, { status: "UNCONFIRMED", reasons: [], unconfirmed: [reason] });
   }
-  const offMain = await candidate(repo.root, repo.head, { ref: "refs/heads/feature", fetchImpl: registry({}, 503) });
-  assert.deepEqual(offMain.eligibility, { status: "NOT_RELEASABLE", reasons: ["REF_NOT_MAIN"], unconfirmed: ["NPM_QUERY_FAILED"] });
+  const offPreview = await candidate(repo.root, repo.head, { ref: "refs/heads/feature", fetchImpl: registry({}, 503) });
+  assert.deepEqual(offPreview.eligibility, { status: "NOT_RELEASABLE", reasons: ["REF_NOT_PREVIEW_BRANCH"], unconfirmed: ["NPM_QUERY_FAILED"] });
   assert.equal((await npmPublication("0.1.20", { fetchImpl: registry({}, 500) })).status, "UNCONFIRMED");
 });
 
@@ -161,14 +178,14 @@ test("git history decides tags, the previous release and the documentation base"
   writeRelease(repo.root, "0.1.20", ["0.1.19"]);
   assert.deepEqual((await candidate(repo.root, repo.head)).eligibility.reasons, ["CHANGELOG_ENTRY_MISSING"]);
   git(repo.root, "checkout", "-q", "--", ".");
-  git(repo.root, "tag", "v0.1.20");
+  git(repo.root, "tag", "preview-v0.1.20");
   assert.deepEqual((await candidate(repo.root, repo.head)).eligibility.reasons, ["TAG_EXISTS"]);
-  git(repo.root, "tag", "-d", "v0.1.20");
-  git(repo.root, "tag", "v0.1.21", repo.previous);
+  git(repo.root, "tag", "-d", "preview-v0.1.20");
+  git(repo.root, "tag", "preview-v0.1.21", repo.previous);
   const history = published(["0.1.19", "0.1.21"]);
   const notIncreased = await candidate(repo.root, repo.head, { fetchImpl: history });
   assert.deepEqual(notIncreased.eligibility.reasons, ["VERSION_NOT_INCREASED", "NPM_NEWER_VERSION_PUBLISHED"]);
-  assert.equal(notIncreased.previousRelease.tag, "v0.1.21");
+  assert.equal(notIncreased.previousRelease.tag, "preview-v0.1.21");
   assert.deepEqual((await candidate(repo.root, repo.previous, { fetchImpl: history })).eligibility.reasons,
     ["CHECKOUT_MISMATCH", "VERSION_NOT_INCREASED", "NPM_NEWER_VERSION_PUBLISHED"]);
 
@@ -225,16 +242,16 @@ function acceptedRun(t, { version = "0.1.20", eligibility = { status: "RELEASABL
   writeFileSync(join(staging, "package.json"), JSON.stringify({ name: PACKAGE_NAME, version }));
   const packageDir = join(root, "download");
   mkdirSync(join(packageDir, "memorax-code-package-attempt1"), { recursive: true });
-  const tgz = join(packageDir, "memorax-code-package-attempt1", "memorax-memorax-code-0.1.20.tgz");
+  const tgz = join(packageDir, "memorax-code-package-attempt1", "memorax-memorax-code-preview-0.1.20.tgz");
   assert.equal(spawnSync("tar", ["-czf", tgz, "-C", join(root, "staging"), "package"]).status, 0);
   const sha256 = createHash("sha256").update(readFileSync(tgz)).digest("hex");
   const reports = join(root, "reports");
   for (const row of WORKBUDDY_ROWS) writeReport(reports, row, 1);
   const matrix = (key, value) => JSON.stringify({ include: [{ os: "ubuntu-24.04", node: "24", channel: "baseline", [key]: value }] });
   const needs = Object.fromEntries(REQUIRED_JOBS.map((id) => [id, { result: "success", outputs: {} }]));
-  needs.candidate.outputs.record = JSON.stringify({ schemaVersion: 1, candidateSha: SHA, testScriptsSha: SHA, ref: "refs/heads/main",
-    expectedSha: null, package: { name: PACKAGE_NAME, version: "0.1.20" }, previousRelease: { tag: "v0.1.19", sha: "b".repeat(40), version: "0.1.19" },
-    range: { from: "v0.1.19", commits: 2, pullRequests: [302, 301] }, npm: { status: "NOT_PUBLISHED", latest: "0.1.19", stableVersions: ["0.1.19"] },
+  needs.candidate.outputs.record = JSON.stringify({ schemaVersion: 1, candidateSha: SHA, testScriptsSha: SHA, ref: "refs/heads/feat/investor-preview",
+    expectedSha: null, package: { name: PACKAGE_NAME, version: "0.1.20" }, previousRelease: { tag: "preview-v0.1.19", sha: "b".repeat(40), version: "0.1.19" },
+    range: { from: "preview-v0.1.19", commits: 2, pullRequests: [302, 301] }, npm: { status: "NOT_PUBLISHED", latest: "0.1.19", stableVersions: ["0.1.19"] },
     docsBase: { sha: "b".repeat(40), source: "previous-release" }, eligibility, notes: [] });
   Object.assign(needs.package.outputs, { "package-artifact-name": "memorax-code-package-attempt1", "package-artifact-id": "123",
     "package-artifact-digest": PACKAGE_DIGEST, "package-sha256": sha256, "codex-matrix": matrix("codex", "0.147.0"),
@@ -253,7 +270,7 @@ test("a releasable candidate passes only with every job and the exact package ve
   const record = run.decide();
   assert.equal(record.verdict, "PASS");
   assert.deepEqual(record.acceptance.issues, []);
-  assert.deepEqual(record.package, { file: "memorax-memorax-code-0.1.20.tgz", sha256: run.sha256,
+  assert.deepEqual(record.package, { file: "memorax-memorax-code-preview-0.1.20.tgz", sha256: run.sha256,
     packageJson: { name: PACKAGE_NAME, version: "0.1.20" },
     artifact: { name: "memorax-code-package-attempt1", id: "123", digest: PACKAGE_DIGEST } });
   assert.deepEqual(record.clients.codex, [{ os: "ubuntu-24.04", node: "24", channel: "baseline", version: "0.147.0" }]);
@@ -262,13 +279,13 @@ test("a releasable candidate passes only with every job and the exact package ve
   assert.match(record.clients.workbuddy.coverage, /^Coverage degraded/);
   assert.deepEqual(record.run.attempts, [{ attempt: 1, status: "COMPLETE", unsuccessfulJobs: [] }]);
   assert.equal(record.publish.length, 5);
-  assert.match(record.publish[2], /^npm publish memorax-memorax-code-0\.1\.20\.tgz --access public --tag latest$/);
+  assert.match(record.publish[2], /^npm publish memorax-memorax-code-preview-0\.1\.20\.tgz --access public --tag latest$/);
   assert.equal(record.run.url, "https://github.com/memorax-ai/memorax-code/actions/runs/999");
 });
 
 test("acceptance and eligibility are decided separately", { skip }, (t) => {
   for (const [eligibility, verdict] of [
-    [{ status: "NOT_RELEASABLE", reasons: ["REF_NOT_MAIN", "VERSION_ALREADY_PUBLISHED"], unconfirmed: [] }, "NOT_RELEASABLE"],
+    [{ status: "NOT_RELEASABLE", reasons: ["REF_NOT_PREVIEW_BRANCH", "VERSION_ALREADY_PUBLISHED"], unconfirmed: [] }, "NOT_RELEASABLE"],
     [{ status: "UNCONFIRMED", reasons: [], unconfirmed: ["NPM_QUERY_FAILED"] }, "UNCONFIRMED"],
   ]) {
     const record = acceptedRun(t, { eligibility }).decide();
@@ -277,11 +294,11 @@ test("acceptance and eligibility are decided separately", { skip }, (t) => {
     assert.equal(record.verdict, verdict);
     assert.deepEqual(record.publish, []);
   }
-  const run = acceptedRun(t, { eligibility: { status: "NOT_RELEASABLE", reasons: ["REF_NOT_MAIN"], unconfirmed: [] } });
+  const run = acceptedRun(t, { eligibility: { status: "NOT_RELEASABLE", reasons: ["REF_NOT_PREVIEW_BRANCH"], unconfirmed: [] } });
   run.needs["opencode-result"].result = "failure";
   const failed = run.decide();
   assert.equal(failed.verdict, "FAIL");
-  assert.deepEqual(failed.eligibility.reasons, ["REF_NOT_MAIN"]);
+  assert.deepEqual(failed.eligibility.reasons, ["REF_NOT_PREVIEW_BRANCH"]);
 });
 
 test("failed, cancelled, skipped or missing required jobs never pass", { skip }, (t) => {
@@ -301,7 +318,7 @@ test("the candidate package must be the recorded artifact, file, checksum and ve
   const cases = [
     ["checksum", (run) => { run.needs.package.outputs["package-sha256"] = "0".repeat(64); }, "FAIL", "PACKAGE_SHA256_MISMATCH"],
     ["no file", (run) => rmSync(run.packageDir, { recursive: true }), "INCOMPLETE", "PACKAGE_FILE_MISSING"],
-    ["two files", (run) => writeFileSync(join(run.packageDir, "memorax-memorax-code-0.1.21.tgz"), ""), "FAIL", "PACKAGE_FILE_AMBIGUOUS"],
+    ["two files", (run) => writeFileSync(join(run.packageDir, "memorax-memorax-code-preview-0.1.21.tgz"), ""), "FAIL", "PACKAGE_FILE_AMBIGUOUS"],
     ["no artifact record", (run) => ({ artifact: null }), "INCOMPLETE", "ARTIFACT_METADATA_MISSING"],
     ["digest", (run) => ({ artifact: { ...run.artifact, digest: `sha256:${"e".repeat(64)}` } }), "FAIL", "ARTIFACT_IDENTITY_MISMATCH"],
     ["malformed digests", (run) => {
@@ -312,7 +329,7 @@ test("the candidate package must be the recorded artifact, file, checksum and ve
     ["expired", (run) => ({ artifact: { ...run.artifact, expired: true } }), "FAIL", "ARTIFACT_IDENTITY_MISMATCH"],
     ["no package outputs", (run) => { delete run.needs.package.outputs["package-artifact-id"]; }, "INCOMPLETE", "PACKAGE_RECORD_MISSING"],
     ["unreadable metadata", (run) => {
-      const tgz = join(run.packageDir, "memorax-code-package-attempt1", "memorax-memorax-code-0.1.20.tgz");
+      const tgz = join(run.packageDir, "memorax-code-package-attempt1", "memorax-memorax-code-preview-0.1.20.tgz");
       writeFileSync(tgz, "not a tarball");
       run.needs.package.outputs["package-sha256"] = createHash("sha256").update("not a tarball").digest("hex");
     }, "INCOMPLETE", "PACKAGE_METADATA_UNREADABLE"],
@@ -495,7 +512,7 @@ test("WorkBuddy reports must be readable schema 2 reports of this run and cell",
 });
 
 test("the record CLI reads every attempt and exits 0 only for a passing releasable candidate", { skip }, async (t) => {
-  for (const [eligibility, code] of [[undefined, 0], [{ status: "NOT_RELEASABLE", reasons: ["REF_NOT_MAIN"], unconfirmed: [] }, 1]]) {
+  for (const [eligibility, code] of [[undefined, 0], [{ status: "NOT_RELEASABLE", reasons: ["REF_NOT_PREVIEW_BRANCH"], unconfirmed: [] }, 1]]) {
     const run = acceptedRun(t, eligibility ? { eligibility } : {});
     const api = join(run.root, "api");
     mkdirSync(api);

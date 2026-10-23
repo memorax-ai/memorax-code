@@ -1,7 +1,11 @@
-# @memorax/memorax-code
+# @memorax/memorax-code-preview
 
 MemoraX Code adds persistent coding memory to Codex, Claude Code,
 CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, Trae, Cursor, and Qoder.
+
+This is the preview edition. Its commands are `memorax-code` for setup and
+management and `memorax-cli` for memory operations. Manual and automatic updates
+follow `@memorax/memorax-code-preview`'s own npm `latest`.
 
 ## Requirements
 
@@ -12,7 +16,7 @@ CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, Trae, Cursor, and Qoder.
 ## Install
 
 ```bash
-npm install -g @memorax/memorax-code
+npm install -g @memorax/memorax-code-preview
 ```
 
 ### Connect a MemoraX Account (Recommended)

@@ -154,8 +154,8 @@ async function stageMainPackage(destination) {
 
 async function validateSourceManifest() {
   const manifest = await readJson(join(repoRoot, "packages/npm/memorax-code/package.json"));
-  if (manifest.name !== "@memorax/memorax-code") {
-    throw new Error("main npm package name must be @memorax/memorax-code");
+  if (manifest.name !== "@memorax/memorax-code-preview") {
+    throw new Error("main npm package name must be @memorax/memorax-code-preview");
   }
   if (typeof manifest.version !== "string" || !manifest.version) {
     throw new Error("main npm package version is required");

@@ -20,8 +20,8 @@
 
 <p align="center">
   <a href="https://code.memorax.net/"><img src="https://img.shields.io/badge/website-code.memorax.net-2563eb" alt="MemoraX Code 产品网站"></a>
-  <a href="https://www.npmjs.com/package/@memorax/memorax-code"><img src="https://img.shields.io/npm/v/@memorax/memorax-code.svg" alt="npm 版本"></a>
-  <img src="https://img.shields.io/npm/v/@memorax/memorax-code.svg?label=version&color=f59e0b" alt="npm 包版本">
+  <a href="https://www.npmjs.com/package/@memorax/memorax-code-preview"><img src="https://img.shields.io/npm/v/@memorax/memorax-code-preview.svg" alt="npm 版本"></a>
+  <img src="https://img.shields.io/npm/v/@memorax/memorax-code-preview.svg?label=version&color=f59e0b" alt="npm 包版本">
   <img src="https://img.shields.io/badge/node-%3E%3D20-339933?logo=node.js&logoColor=white" alt="Node.js 20 或更高版本">
 </p>
 
@@ -48,6 +48,9 @@ MemoraX Code 让 Codex、Claude Code、CodeBuddy CLI、WorkBuddy、DeepSeek Harn
 
 ## 快速开始
 
+此预览版的 npm 包名为 `@memorax/memorax-code-preview`。安装配置和管理命令仍为
+`memorax-code`，记忆操作命令为 `memorax-cli`。
+
 开始前，请确保已安装 Node.js 20 或更高版本（推荐 Node.js 24 LTS），以及 Codex、Claude Code、
 CodeBuddy CLI、WorkBuddy、DeepSeek Harness、OpenCode、Trae、Cursor 或 Qoder 中的至少一个。
 
@@ -65,7 +68,7 @@ Coding Agent 所在的同一环境中。MemoraX 搜索和写回需要网络访�
 #### 1. 安装 npm 包
 
 ```bash
-npm install -g @memorax/memorax-code
+npm install -g @memorax/memorax-code-preview
 ```
 
 此命令只安装包，不会启动交互式安装引导。请勿使用 `--ignore-scripts`：替换包时，npm 生命周期
@@ -293,6 +296,8 @@ MemoraX 云端不会接收模型服务商凭据或本地 Backend Token。
 [安全策略](SECURITY.md)。
 
 ## 更新
+
+手动和自动更新均跟随此预览包自己的 npm `latest`。
 
 全局 npm 安装使用：
 

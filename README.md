@@ -20,8 +20,8 @@
 
 <p align="center">
   <a href="https://code.memorax.net/"><img src="https://img.shields.io/badge/website-code.memorax.net-2563eb" alt="MemoraX Code website"></a>
-  <a href="https://www.npmjs.com/package/@memorax/memorax-code"><img src="https://img.shields.io/npm/v/@memorax/memorax-code.svg" alt="npm version"></a>
-  <img src="https://img.shields.io/npm/v/@memorax/memorax-code.svg?label=version&color=f59e0b" alt="npm package version">
+  <a href="https://www.npmjs.com/package/@memorax/memorax-code-preview"><img src="https://img.shields.io/npm/v/@memorax/memorax-code-preview.svg" alt="npm version"></a>
+  <img src="https://img.shields.io/npm/v/@memorax/memorax-code-preview.svg?label=version&color=f59e0b" alt="npm package version">
   <img src="https://img.shields.io/badge/node-%3E%3D20-339933?logo=node.js&logoColor=white" alt="Node.js 20 or newer">
 </p>
 
@@ -52,6 +52,9 @@ and validation sooner.
 
 ## Quick Start
 
+This preview edition installs as `@memorax/memorax-code-preview`. Use
+`memorax-code` for setup and management, and `memorax-cli` for memory commands.
+
 Prepare Node.js 20+ (Node.js 24 LTS recommended) and at least one of Codex,
 Claude Code, CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, Trae, Cursor, or Qoder.
 
@@ -73,7 +76,7 @@ as the coding agent. MemoraX search and writeback require network access.
 #### 1. Install the Package
 
 ```bash
-npm install -g @memorax/memorax-code
+npm install -g @memorax/memorax-code-preview
 ```
 
 This installs the package; it does not start interactive setup. Do not use
@@ -363,6 +366,8 @@ Read [Configuration](docs/configuration.md) for all settings and
 [Security](SECURITY.md) for network, local-data, and retention boundaries.
 
 ## Update
+
+Manual and automatic updates follow this preview package's own npm `latest`.
 
 For a global npm installation:
 

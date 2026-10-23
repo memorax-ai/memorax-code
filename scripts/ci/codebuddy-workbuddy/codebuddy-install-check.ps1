@@ -19,7 +19,7 @@ if ($Client -eq 'workbuddy') {
   throw 'Only WorkBuddy mode accepts a bundled command.'
 }
 $npmCommand = (Get-Command npm.cmd).Source
-$tarballs = @(Get-ChildItem -LiteralPath $TarballDirectory -File -Filter 'memorax-memorax-code-*.tgz')
+$tarballs = @(Get-ChildItem -LiteralPath $TarballDirectory -File -Filter 'memorax-memorax-code-preview-*.tgz')
 if ($tarballs.Count -ne 1) { throw 'Expected exactly one MemoraX Code tarball.' }
 $tarball = $tarballs[0].FullName
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ("memorax-$Client-install-" + [guid]::NewGuid())
@@ -94,22 +94,22 @@ Invoke-WithCodexTestUserPath -Prefix $prefix -Action {
       Write-Output "CodeBuddy Code requested: $CodeBuddyVersion; installed: $CodeBuddyVersion"
     }
     & node (Join-Path $repoRoot 'scripts/ci/codebuddy-workbuddy/codebuddy-lifecycle-check.mjs') `
-      (Join-Path $prefix 'node_modules/@memorax/memorax-code') $nativeCommand `
+      (Join-Path $prefix 'node_modules/@memorax/memorax-code-preview') $nativeCommand `
       $tarball $npmCommand $PreviousVersion (Join-Path $testRoot 'terminal/node_modules/node-pty') `
       (Join-Path $repoRoot 'scripts/ci/codebuddy-workbuddy/codebuddy-setup-pty.mjs') $CodeBuddyVersion $Client
     if ($LASTEXITCODE -ne 0) { throw 'The selected client lifecycle suite failed; isolated state retained.' }
     & node (Join-Path $repoRoot 'scripts/ci/codebuddy-workbuddy/codebuddy-install-interruption-check.mjs') `
-      (Join-Path $prefix 'node_modules/@memorax/memorax-code') $nativeCommand `
+      (Join-Path $prefix 'node_modules/@memorax/memorax-code-preview') $nativeCommand `
       (Join-Path $testRoot 'terminal/node_modules/node-pty') $CodeBuddyVersion $Client
     if ($LASTEXITCODE -ne 0) { throw 'The selected client setup interruption suite failed; isolated state retained.' }
     & node (Join-Path $repoRoot "scripts/ci/codebuddy-workbuddy/$Client-native-check.mjs") `
-      (Join-Path $prefix 'node_modules/@memorax/memorax-code') $nativeCommand $CodeBuddyVersion
+      (Join-Path $prefix 'node_modules/@memorax/memorax-code-preview') $nativeCommand $CodeBuddyVersion
     if ($LASTEXITCODE -ne 0) { throw 'The selected client native suite failed; isolated state retained.' }
     & node (Join-Path $repoRoot 'scripts/ci/codebuddy-workbuddy/codebuddy-background-check.mjs') `
-      (Join-Path $prefix 'node_modules/@memorax/memorax-code') $nativeCommand $CodeBuddyVersion $Client
+      (Join-Path $prefix 'node_modules/@memorax/memorax-code-preview') $nativeCommand $CodeBuddyVersion $Client
     if ($LASTEXITCODE -ne 0) { throw 'The selected client background suite failed; isolated state retained.' }
     & node (Join-Path $repoRoot 'scripts/ci/codebuddy-workbuddy/codebuddy-permissions-check.mjs') `
-      (Join-Path $prefix 'node_modules/@memorax/memorax-code') $nativeCommand $CodeBuddyVersion $Client
+      (Join-Path $prefix 'node_modules/@memorax/memorax-code-preview') $nativeCommand $CodeBuddyVersion $Client
     if ($LASTEXITCODE -ne 0) { throw 'The selected client permission suite failed; isolated state retained.' }
   } catch {
     $originalFailure = $_

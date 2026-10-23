@@ -1,5 +1,5 @@
 {
-  "name": "@memorax/memorax-code",
+  "name": "@memorax/memorax-code-preview",
   "version": "0.1.21",
   "description": "Persistent coding memory for Codex, Claude Code, CodeBuddy/WorkBuddy, DeepSeek Harness, OpenCode, Trae, Cursor, and Qoder.",
   "license": "MIT",
@@ -7,7 +7,7 @@
   "memoraxCode": {
     "updateRecoveryProtocol": 1
   },
-  "homepage": "https://github.com/memorax-ai/memorax-code#readme",
+  "homepage": "https://github.com/memorax-ai/memorax-code/tree/feat/investor-preview#readme",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/memorax-ai/memorax-code.git"

@@ -27,7 +27,7 @@ for version in "$codebuddy_version" "$previous_version"; do
     exit 1
   }
 done
-set -- "$tarball_dir"/memorax-memorax-code-*.tgz
+set -- "$tarball_dir"/memorax-memorax-code-preview-*.tgz
 if [[ $# -ne 1 || ! -f "$1" ]]; then
   echo 'Expected exactly one MemoraX Code tarball; run make npm-package-check first.' >&2
   exit 1
@@ -123,20 +123,20 @@ fi
 printf '%s runtime requested: %s; installed: %s\n' "$client" "$codebuddy_version" "$codebuddy_version"
 
 isolated node "$repo_root/scripts/ci/codebuddy-workbuddy/codebuddy-lifecycle-check.mjs" \
-  "$test_root/npm/lib/node_modules/@memorax/memorax-code" \
+  "$test_root/npm/lib/node_modules/@memorax/memorax-code-preview" \
   "$native_command" "$tarball" "$npm_command" "$previous_version" \
   "$test_root/terminal/node_modules/node-pty" "$repo_root/scripts/ci/codebuddy-workbuddy/codebuddy-setup-pty.mjs" "$codebuddy_version" "$client"
 isolated node "$repo_root/scripts/ci/codebuddy-workbuddy/codebuddy-install-interruption-check.mjs" \
-  "$test_root/npm/lib/node_modules/@memorax/memorax-code" \
+  "$test_root/npm/lib/node_modules/@memorax/memorax-code-preview" \
   "$native_command" "$test_root/terminal/node_modules/node-pty" "$codebuddy_version" "$client"
 isolated node "$repo_root/scripts/ci/codebuddy-workbuddy/$client-native-check.mjs" \
-  "$test_root/npm/lib/node_modules/@memorax/memorax-code" \
+  "$test_root/npm/lib/node_modules/@memorax/memorax-code-preview" \
   "$native_command" "$codebuddy_version"
 isolated node "$repo_root/scripts/ci/codebuddy-workbuddy/codebuddy-background-check.mjs" \
-  "$test_root/npm/lib/node_modules/@memorax/memorax-code" \
+  "$test_root/npm/lib/node_modules/@memorax/memorax-code-preview" \
   "$native_command" "$codebuddy_version" "$client"
 isolated node "$repo_root/scripts/ci/codebuddy-workbuddy/codebuddy-permissions-check.mjs" \
-  "$test_root/npm/lib/node_modules/@memorax/memorax-code" \
+  "$test_root/npm/lib/node_modules/@memorax/memorax-code-preview" \
   "$native_command" "$codebuddy_version" "$client"
 
 # Each suite confirms owned-process cleanup before removing this runtime.

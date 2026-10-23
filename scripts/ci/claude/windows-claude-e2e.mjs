@@ -62,7 +62,7 @@ async function main() {
   const claudeCommand = options["claude-command"] ?? "claude";
   const claudeHome = resolve(requiredEnv("CLAUDE_CONFIG_DIR"));
   const memoraxCodeHome = resolve(requiredEnv("MEMORAX_CODE_HOME"));
-  const packageRoot = join(prefix, "node_modules", "@memorax/memorax-code");
+  const packageRoot = join(prefix, "node_modules", "@memorax/memorax-code-preview");
   const memoraxCode = join(packageRoot, "bin", "memorax-code.mjs");
   const backendUrl = `http://127.0.0.1:${port}`;
   const childEnv = {

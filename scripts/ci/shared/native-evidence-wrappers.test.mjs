@@ -88,7 +88,7 @@ function fixture(t, client) {
   write("bin/npm-stub.mjs", npmStub);
   if (windows) write("bin/npm.cmd", "@echo off\r\nnode \"%~dp0npm-stub.mjs\" %*\r\nexit /b %ERRORLEVEL%\r\n");
   else write("bin/npm", "#!/bin/sh\nexec node \"$(dirname \"$0\")/npm-stub.mjs\" \"$@\"\n", 0o755);
-  write("tarballs/memorax-memorax-code-0.0.0.tgz", "fixture package\n");
+  write("tarballs/memorax-memorax-code-preview-0.0.0.tgz", "fixture package\n");
   // Same layout as CI: the wrapper writes into native-evidence/suites, the summary reads native-evidence.
   return { root, client, wrapper: join(root, wrapper), evidence: join(root, "native-evidence", "suites") };
 }

@@ -44,12 +44,12 @@ test("Cursor lifecycle environment does not inherit credentials, client commands
 });
 
 test("Cursor lifecycle scoped registry serves only the selected artifact and supports download failure and retry", async () => {
-  const manifest = { name: "@memorax/memorax-code", version: "0.1.19", scripts: { postinstall: "node original.mjs" } };
+  const manifest = { name: "@memorax/memorax-code-preview", version: "0.1.19", scripts: { postinstall: "node original.mjs" } };
   const artifact = Buffer.from("synthetic candidate");
   const registry = await createCursorLifecycleRegistry(manifest, artifact);
   try {
     assert.match(registry.url, /^http:\/\/127\.0\.0\.1:\d+$/);
-    const metadata = await (await fetch(`${registry.url}/@memorax%2fmemorax-code`)).json();
+    const metadata = await (await fetch(`${registry.url}/@memorax%2fmemorax-code-preview`)).json();
     assert.equal(metadata["dist-tags"].latest, manifest.version);
     assert.deepEqual(Object.keys(metadata.versions), [manifest.version]);
     assert.equal(metadata.versions[manifest.version].dist.shasum, createHash("sha1").update(artifact).digest("hex"));
@@ -59,7 +59,7 @@ test("Cursor lifecycle scoped registry serves only the selected artifact and sup
     registry.rejectDownload = false;
     assert.equal(await (await fetch(`${registry.url}/candidate.tgz`)).text(), artifact.toString());
     registry.setArtifact({ ...manifest, scripts: { postinstall: "node fault.mjs" } }, Buffer.from("fault candidate"));
-    const fault = await (await fetch(`${registry.url}/@memorax/memorax-code`)).json();
+    const fault = await (await fetch(`${registry.url}/@memorax/memorax-code-preview`)).json();
     assert.equal(fault.versions[manifest.version].scripts.postinstall, "node fault.mjs");
     assert.equal(await (await fetch(`${registry.url}/candidate.tgz`)).text(), "fault candidate");
     for (const path of ["/@foreign/package", "/private-canary", "/candidate.tgz/extra"]) {
@@ -76,7 +76,7 @@ test("replacement fault preserves real preinstall and emits evidence only after 
     const packageRoot = join(root, "package"), faultMarker = join(root, "fault.json");
     await mkdir(join(packageRoot, "bin"), { recursive: true });
     await mkdir(join(packageRoot, "node_modules/omitted"), { recursive: true });
-    const manifest = { name: "@memorax/memorax-code", version: "0.1.19",
+    const manifest = { name: "@memorax/memorax-code-preview", version: "0.1.19",
       scripts: { preinstall: "node bin/preinstall.mjs", postinstall: "node bin/postinstall.mjs" } };
     await writeFile(join(packageRoot, "package.json"), JSON.stringify(manifest));
     await writeFile(join(packageRoot, "bin/preinstall.mjs"), "original preinstall");

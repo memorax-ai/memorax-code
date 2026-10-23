@@ -8,7 +8,7 @@ $ErrorActionPreference = 'Stop'
 if (-not $IsWindows) { throw 'This wrapper requires Windows.' }
 $npmCommand = (Get-Command npm.cmd).Source
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
-$tarballs = @(Get-ChildItem -LiteralPath $TarballDirectory -Filter 'memorax-memorax-code-*.tgz')
+$tarballs = @(Get-ChildItem -LiteralPath $TarballDirectory -Filter 'memorax-memorax-code-preview-*.tgz')
 if ($tarballs.Count -ne 1) { throw 'Expected exactly one MemoraX Code tarball.' }
 $tarball = $tarballs[0].FullName
 $testRoot = Join-Path ([IO.Path]::GetTempPath()) ('memorax-opencode-install-' + [guid]::NewGuid())
@@ -68,7 +68,7 @@ Invoke-WithCodexTestUserPath -Prefix $prefix -Action {
     throw 'Installed OpenCode version does not match the requested version.'
   }
   Write-Output "OpenCode requested: $OpenCodeVersion; installed: $actualVersion"
-  $packageRoot = Join-Path $prefix 'node_modules/@memorax/memorax-code'
+  $packageRoot = Join-Path $prefix 'node_modules/@memorax/memorax-code-preview'
   $openCode = Join-Path $prefix 'node_modules/opencode-ai/bin/opencode.exe'
   # Only the test runners receive the evidence location; npm and product commands above do not.
   if ($CiEvidenceDir) { $env:MEMORAX_CI_EVIDENCE_DIR = $CiEvidenceDir }

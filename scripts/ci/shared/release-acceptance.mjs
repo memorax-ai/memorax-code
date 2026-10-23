@@ -7,7 +7,9 @@ import { appendFileSync, existsSync, lstatSync, mkdirSync, readdirSync, readFile
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
-export const PACKAGE_NAME = "@memorax/memorax-code";
+export const PACKAGE_NAME = "@memorax/memorax-code-preview";
+const TAG_PREFIX = "preview-v";
+const RELEASE_REF = "refs/heads/feat/investor-preview";
 const REGISTRY_URL = `https://registry.npmjs.org/${PACKAGE_NAME.replace("/", "%2F")}`;
 // Release acceptance supports stable versions only; a valid prerelease or build version is refused, never compared.
 const STABLE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
@@ -79,7 +81,7 @@ export async function collectCandidate({ root, sha, ref, expectedSha = "", runGi
   const stable = STABLE.test(version);
   if (packageJson.name !== PACKAGE_NAME || !SEMVER.test(version)) reasons.push("PACKAGE_IDENTITY_INVALID");
   else if (!stable) reasons.push("PRERELEASE_NOT_SUPPORTED");
-  if (ref !== "refs/heads/main") reasons.push("REF_NOT_MAIN");
+  if (ref !== RELEASE_REF) reasons.push("REF_NOT_PREVIEW_BRANCH");
   const expected = expectedSha.trim().toLowerCase();
   if (expected && !COMMIT.test(expected)) reasons.push("EXPECTED_SHA_INVALID");
   else if (expected && expected !== sha) reasons.push("CANDIDATE_SHA_MISMATCH");
@@ -92,20 +94,20 @@ export async function collectCandidate({ root, sha, ref, expectedSha = "", runGi
     const head = runGit(["rev-parse", "HEAD"]);
     if (head.status !== 0) throw new Error("GIT_QUERY_FAILED");
     if (head.stdout !== sha) reasons.push("CHECKOUT_MISMATCH");
-    const tag = runGit(["rev-parse", "-q", "--verify", `refs/tags/v${version}^{commit}`]);
+    const tag = runGit(["rev-parse", "-q", "--verify", `refs/tags/${TAG_PREFIX}${version}^{commit}`]);
     if (tag.status === 0) reasons.push("TAG_EXISTS");
     else if (tag.status !== 1) throw new Error("GIT_QUERY_FAILED");
-    const merged = runGit(["tag", "--merged", sha, "--list", "v*"]);
+    const merged = runGit(["tag", "--merged", sha, "--list", `${TAG_PREFIX}*`]);
     if (merged.status !== 0) throw new Error("GIT_QUERY_FAILED");
     // Only stable tags are release history; prerelease tags are neither previous releases nor compared.
-    const releases = merged.stdout.split("\n").filter((name) => name !== `v${version}` && STABLE.test(name.slice(1)));
-    const previous = releases.sort((left, right) => compareStable(right.slice(1), left.slice(1)))[0];
+    const releases = merged.stdout.split("\n").filter((name) => name !== `${TAG_PREFIX}${version}` && name.startsWith(TAG_PREFIX) && STABLE.test(name.slice(TAG_PREFIX.length)));
+    const previous = releases.sort((left, right) => compareStable(right.slice(TAG_PREFIX.length), left.slice(TAG_PREFIX.length)))[0];
     if (previous) {
       const commit = runGit(["rev-list", "-n", "1", previous]);
       const count = runGit(["rev-list", "--count", `${previous}..${sha}`]);
       const subjects = runGit(["log", "--first-parent", "--format=%s", `${previous}..${sha}`]);
       if ([commit, count, subjects].some((result) => result.status !== 0)) throw new Error("GIT_QUERY_FAILED");
-      previousRelease = { tag: previous, sha: commit.stdout, version: previous.slice(1) };
+      previousRelease = { tag: previous, sha: commit.stdout, version: previous.slice(TAG_PREFIX.length) };
       if (stable && compareStable(previousRelease.version, version) >= 0) reasons.push("VERSION_NOT_INCREASED");
       const pullRequests = [...subjects.stdout.matchAll(/^Merge pull request #(\d+) /gm)].map((match) => Number(match[1]));
       range = { from: previous, commits: Number(count.stdout), pullRequests };
@@ -175,7 +177,7 @@ function verifyPackage({ outputs, candidate, packageDir, artifact, runId }, fail
   else if (String(artifact.id) !== record.artifact.id || artifact.name !== record.artifact.name
     || !digestHex(record.artifact.digest) || digestHex(artifact.digest) !== digestHex(record.artifact.digest)
     || artifact.expired !== false || String(artifact.workflow_run?.id) !== String(runId)) fail("ARTIFACT_IDENTITY_MISMATCH");
-  const files = walk(packageDir).filter((path) => /(?:^|[\\/])memorax-memorax-code-[^\\/]+\.tgz$/.test(path));
+  const files = walk(packageDir).filter((path) => /(?:^|[\\/])memorax-memorax-code-preview-[^\\/]+\.tgz$/.test(path));
   if (files.length !== 1) {
     (files.length ? fail : incomplete)(files.length ? "PACKAGE_FILE_AMBIGUOUS" : "PACKAGE_FILE_MISSING");
     return record;
@@ -195,7 +197,7 @@ function verifyPackage({ outputs, candidate, packageDir, artifact, runId }, fail
   }
   record.packageJson = { name: metadata.name, version: metadata.version };
   if (candidate && (metadata.name !== PACKAGE_NAME || metadata.version !== candidate.package.version
-    || record.file !== `memorax-memorax-code-${candidate.package.version}.tgz`)) fail("PACKAGE_VERSION_MISMATCH");
+    || record.file !== `memorax-memorax-code-preview-${candidate.package.version}.tgz`)) fail("PACKAGE_VERSION_MISMATCH");
   return record;
 }
 
@@ -326,13 +328,13 @@ export function decideRelease({ needs, packageDir, workbuddyReportsDir, artifact
     run: { id: env.GITHUB_RUN_ID, attempt: runAttempt, url: runUrl,
       attempts: attempts.map(({ attempt, status, jobs: list }) => ({ attempt, status,
         unsuccessfulJobs: list ? list.filter((job) => UNSUCCESSFUL.includes(job.conclusion)).map((job) => `${job.name}: ${job.conclusion}`) : null })) },
-    upgradeCoverage: "Upgrade suites install fixed earlier MemoraX Code versions; upgrading from the previous release to this candidate is not exercised.",
+    upgradeCoverage: "Upgrade suites use synthetic preview fixtures repacked from fixed published formal versions, with only the outer npm package name changed. Their source integrity and both hashes are recorded by each lifecycle suite. Upgrading from a published preview release is not exercised.",
     publish: verdict !== "PASS" ? [] : [
       `Download ${packageRecord.artifact.name} (artifact ${packageRecord.artifact.id}) from ${runUrl}; do not rebuild.`,
       `Confirm that sha256 of ${packageRecord.file} is ${packageRecord.sha256}.`,
       `npm publish ${packageRecord.file} --access public --tag latest`,
       `Compare npm view ${PACKAGE_NAME}@${version} dist.integrity dist.shasum with the sha512 and sha1 of the same file.`,
-      `Tag v${version} at ${candidate.candidateSha} and attach the same file and its SHA256SUMS to the GitHub Release.`,
+      `Tag ${TAG_PREFIX}${version} at ${candidate.candidateSha} and attach the same file and its SHA256SUMS to the GitHub Release.`,
     ],
   };
 }

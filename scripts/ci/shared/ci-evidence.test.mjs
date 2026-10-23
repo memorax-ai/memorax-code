@@ -569,7 +569,7 @@ test("inputs and the manifest record package and client provenance with checksum
   const root = await workspace(t);
   const packages = join(root, "tarballs");
   await mkdir(packages);
-  await writeFile(join(packages, "memorax-memorax-code-0.1.20.tgz"), "candidate bytes");
+  await writeFile(join(packages, "memorax-memorax-code-preview-0.1.20.tgz"), "candidate bytes");
   const sha256 = "732d058fadd90c70f22429227ab5d9c74919217099efe737aa46835ce3a60856";
   const env = { GITHUB_REPOSITORY: "memorax-ai/memorax-code", GITHUB_SHA: "165c3c675f9702e70f34e3bdd8cf0cc83d730293",
     GITHUB_REF: "refs/heads/main", GITHUB_EVENT_NAME: "push", GITHUB_RUN_ID: "38858541095", GITHUB_RUN_ATTEMPT: "1",
@@ -579,7 +579,7 @@ test("inputs and the manifest record package and client provenance with checksum
     "package-artifact-name": "memorax-code-package-attempt1", "package-artifact-id": "12028286155",
     "package-artifact-digest": "sha256:83d6b7a0d1a58bbe91c4bc8ecaf9e864ff8e16049072d515cfbb4924d1d9044d",
     "expected-package-sha256": "0".repeat(64) }, env);
-  assert.equal(inputs.package.file, "memorax-memorax-code-0.1.20.tgz");
+  assert.equal(inputs.package.file, "memorax-memorax-code-preview-0.1.20.tgz");
   assert.equal(inputs.package.sha256, sha256);
   assert.equal(inputs.package.sha256Matches, false);
   assert.equal(inputs.runner.imageVersion, undefined);

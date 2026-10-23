@@ -7,7 +7,7 @@ import { auditMacosProcesses, captureMacosDescendants, createDevToolsEndpointRea
 const root = "/private/tmp/cursor run";
 const appBundle = `${root}/Cursor.app`;
 const appPath = `${appBundle}/Contents/MacOS/Cursor`;
-const packageRoot = `${root}/candidate/node_modules/@memorax/memorax-code`;
+const packageRoot = `${root}/candidate/node_modules/@memorax/memorax-code-preview`;
 const stateHome = `${root}/state`;
 const marker = `${root}/workspace/cancelled-shell-marker`;
 const nodePath = "/opt/node 24/bin/node";

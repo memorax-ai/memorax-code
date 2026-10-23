@@ -402,7 +402,7 @@ intentionally retains:
 - memories already stored in MemoraX.
 
 Delete retained local data and cloud memories separately after reviewing what
-you need. Running `npm uninstall -g @memorax/memorax-code` first is not
+you need. Running `npm uninstall -g @memorax/memorax-code-preview` first is not
 equivalent because npm may remove the product command before integration
 cleanup runs.
 

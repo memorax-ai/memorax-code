@@ -94,12 +94,12 @@ shipped_docs = json.loads(Path(sys.argv[2]).read_text())
 readme = (package_root / "README.md").read_text()
 license_text = (package_root / "LICENSE").read_text()
 package_manifest = json.loads((package_root / "package.json").read_text())
-assert "npm install -g @memorax/memorax-code" in readme
+assert "npm install -g @memorax/memorax-code-preview" in readme
 assert "```bash\nmemorax-code setup --existing-account\n```" in readme
 assert "```bash\nmemorax-code setup\n```" in readme
 assert "--foreground-scripts" not in readme
 assert license_text == Path("LICENSE").read_text()
-assert package_manifest["name"] == "@memorax/memorax-code"
+assert package_manifest["name"] == "@memorax/memorax-code-preview"
 assert package_manifest["license"] == "MIT"
 assert package_manifest.get("engines", {}).get("node") == ">=20"
 assert "LICENSE" in package_manifest["files"]
@@ -328,7 +328,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 const [prefix, home, beforePath] = process.argv.slice(2);
-const require = createRequire(join(prefix, "lib/node_modules/@memorax/memorax-code/package.json"));
+const require = createRequire(join(prefix, "lib/node_modules/@memorax/memorax-code-preview/package.json"));
 const { parse } = require("smol-toml");
 const before = readFileSync(beforePath, "utf8");
 const after = readFileSync(join(home, "config.toml"), "utf8");
@@ -347,7 +347,7 @@ if "$prefix/bin/memorax-code" >"$home_dir/before-setup.stdout" 2>"$home_dir/befo
 fi
 grep -Fq 'setup has not been completed' "$home_dir/before-setup.stderr"
 
-package_install_root="$prefix/lib/node_modules/@memorax/memorax-code"
+package_install_root="$prefix/lib/node_modules/@memorax/memorax-code-preview"
 cmp LICENSE "$package_install_root/LICENSE"
 python3 - <<'PY_INSTALLED_DOCS' "$package_install_root/docs" "packages/npm/memorax-code/shipped-docs.json"
 import json
@@ -556,11 +556,11 @@ if [[ "$package_version" == *-* ]]; then
 else
   default_update_channel="latest"
 fi
-test "$("$prefix/bin/memorax-code" update --dry-run)" = "npm install -g @memorax/memorax-code@${default_update_channel}"
-"$prefix/bin/memorax-code" update --preview --dry-run | grep -qx 'npm install -g @memorax/memorax-code@preview'
-"$prefix/bin/memorax-code" update --latest --dry-run | grep -qx 'npm install -g @memorax/memorax-code@latest'
-test "$("$prefix/bin/memorax-code" update --force --dry-run)" = "npm install -g @memorax/memorax-code@${default_update_channel} --force"
-"$prefix/bin/memorax-code" update --latest --force --dry-run | grep -qx 'npm install -g @memorax/memorax-code@latest --force'
+test "$("$prefix/bin/memorax-code" update --dry-run)" = "npm install -g @memorax/memorax-code-preview@${default_update_channel}"
+"$prefix/bin/memorax-code" update --preview --dry-run | grep -qx 'npm install -g @memorax/memorax-code-preview@preview'
+"$prefix/bin/memorax-code" update --latest --dry-run | grep -qx 'npm install -g @memorax/memorax-code-preview@latest'
+test "$("$prefix/bin/memorax-code" update --force --dry-run)" = "npm install -g @memorax/memorax-code-preview@${default_update_channel} --force"
+"$prefix/bin/memorax-code" update --latest --force --dry-run | grep -qx 'npm install -g @memorax/memorax-code-preview@latest --force'
 if "$prefix/bin/memorax-code" update --preview --latest --dry-run >"$home_dir/memorax-code-update-conflict.txt" 2>&1; then
   echo "npm-package-check: conflicting update channels unexpectedly succeeded" >&2
   exit 1
@@ -587,7 +587,7 @@ update_memorax_code_home="$update_cwd_root/custom memorax-code home"
     "$prefix/bin/memorax-code" update --home "$update_memorax_code_home" >/dev/null
 )
 grep -qx "$home_dir" "$update_cwd_root/cwd.txt"
-grep -Fqx "install -g @memorax/memorax-code@${default_update_channel}" "$update_cwd_root/args.txt"
+grep -Fqx "install -g @memorax/memorax-code-preview@${default_update_channel}" "$update_cwd_root/args.txt"
 grep -Fqx "$update_memorax_code_home" "$update_cwd_root/home.txt"
 "$prefix/bin/memorax-code-backend" --help >/dev/null
 "$prefix/bin/memorax-cli" --help >/dev/null

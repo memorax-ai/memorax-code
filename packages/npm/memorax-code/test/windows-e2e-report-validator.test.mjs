@@ -204,7 +204,7 @@ test("Windows Claude report accepts only the current plugin and Hook lifecycle s
 test("Windows package harness accepts kebab-case verification flags", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-package-harness-flags-"));
   const prefix = join(root, "prefix");
-  const packageRoot = join(prefix, "node_modules", "@memorax/memorax-code");
+  const packageRoot = join(prefix, "node_modules", "@memorax/memorax-code-preview");
   const workspace = join(root, "workspace");
   const memoraxCodeHome = join(root, "memorax-code-home");
   try {
@@ -214,7 +214,7 @@ test("Windows package harness accepts kebab-case verification flags", async () =
     );
     await mkdir(workspace, { recursive: true });
     await writeFile(join(packageRoot, "package.json"), `${JSON.stringify({
-      name: "@memorax/memorax-code",
+      name: "@memorax/memorax-code-preview",
       version: "0.0.1-preview.1",
     })}\n`);
     await writeFile(

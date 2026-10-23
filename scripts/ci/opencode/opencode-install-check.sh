@@ -20,7 +20,7 @@ for version in "$opencode_version" "$previous_version"; do
     exit 1
   }
 done
-set -- "$tarball_dir"/memorax-memorax-code-*.tgz
+set -- "$tarball_dir"/memorax-memorax-code-preview-*.tgz
 if [[ $# -ne 1 || ! -f "$1" ]]; then
   echo 'Expected exactly one MemoraX Code tarball; run make npm-package-check first.' >&2
   exit 1
@@ -102,7 +102,7 @@ actual_version="$(isolated "$test_root/npm/bin/opencode" --version)"
 }
 printf 'OpenCode requested: %s; installed: %s\n' "$opencode_version" "$actual_version"
 
-package_root="$test_root/npm/lib/node_modules/@memorax/memorax-code"
+package_root="$test_root/npm/lib/node_modules/@memorax/memorax-code-preview"
 opencode="$test_root/npm/bin/opencode"
 ledger phase suites
 run_suite opencode-install-smoke isolated_suite node "$repo_root/scripts/ci/opencode/opencode-install-smoke.mjs" \

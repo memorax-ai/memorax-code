@@ -10,7 +10,7 @@ import { promisify } from "node:util";
 const packageRoot = resolve(process.argv[2] ?? "");
 assert.ok(process.argv[2], "Usage: node scripts/ci/qoder/qoder-npm-package-smoke.mjs PACKAGE_ROOT");
 const packageManifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
-assert.equal(packageManifest.name, "@memorax/memorax-code");
+assert.equal(packageManifest.name, "@memorax/memorax-code-preview");
 assert.equal(packageManifest.bin["memorax-code-qoder"], "bin/memorax-code-qoder.mjs");
 const root = await realpath(await mkdtemp(join(tmpdir(), "memorax qoder package smoke-")));
 const home = join(root, "home");

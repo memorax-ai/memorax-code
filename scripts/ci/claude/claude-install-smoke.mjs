@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createPreviewUpgradeBaseline } from "../shared/preview-upgrade-baseline.mjs";
 import { createHash } from "node:crypto";
 import { projectTerminalDisposal } from "../codex/codex-setup-pty-evidence.mjs";
 import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
@@ -81,7 +82,7 @@ try {
   ({ resolveNpmInvocation } = await import(
     pathToFileURL(join(packageRoot, "lib", "npm-invocation.mjs")).href));
   const manifest = await readJson(join(packageRoot, "package.json"));
-  check(manifest.name === "@memorax/memorax-code", "The installed package has an unexpected identity");
+  check(manifest.name === "@memorax/memorax-code-preview", "The installed package has an unexpected identity");
   sourceRoot = join(packageRoot, "lib", pluginName);
   ({ parse } = createRequire(join(packageRoot, "package.json"))("smol-toml"));
   expectedPackageVersion = manifest.version;
@@ -264,18 +265,21 @@ try {
   report.checks.push("ordinary setup after native uninstall and npm reinstall restored the saved account without account input");
   await stopAndVerify();
 
-  // A second isolated home starts with the real previous published package.
+  // A second isolated home starts with the synthetic preview fixture from a fixed published formal package.
   // Serve only the candidate package from an isolated scoped npm registry so
   // the real public updater selects this PR artifact instead of a public release.
-  stage = "previous published version install";
+  stage = "synthetic preview baseline install";
   await prepareScenarioHome("upgrade user \u6d4b\u8bd5");
   preservedMemory.clear();
-  await npmInstall(`@memorax/memorax-code@${previousVersion}`);
+  const baseline = await createPreviewUpgradeBaseline({ directory: join(root, "synthetic-preview-baseline"),
+    version: previousVersion, runNpm: (args) => run(npmCommand, args) });
+  report.upgradeBaseline = baseline.record;
+  await npmInstall(baseline.tarball);
   check((await readJson(join(packageRoot, "package.json"))).version === previousVersion, "Previous version was not installed");
   await terminalSetup("complete");
   const previousStatus = await productJson(["status", "--clients", "claude", "--json"]);
   check(previousStatus.ok === true && previousStatus.backend?.ok === true && previousStatus.claudeAdapter?.ok === true,
-    "Previous published version did not start successfully");
+    "Synthetic preview baseline did not start successfully");
   await rememberPid();
   check((await readJson(completionPath())).completedByVersion === previousVersion,
     "Previous version did not record its own successful setup");
@@ -294,7 +298,7 @@ try {
   let registryUrl;
   registry = createServer((request, response) => {
     const path = decodeURIComponent(new URL(request.url, "http://localhost").pathname);
-    if (path === "/@memorax/memorax-code") {
+    if (path === "/@memorax/memorax-code-preview") {
       registryRequests.manifest += 1;
       const version = { ...servedManifest, dist: { tarball: `${registryUrl}/candidate.tgz`,
         shasum: createHash("sha1").update(servedArtifact).digest("hex") } };

@@ -19,7 +19,7 @@ for version in "$claude_version" "$previous_version"; do
     exit 1
   }
 done
-set -- "$tarball_dir"/memorax-memorax-code-*.tgz
+set -- "$tarball_dir"/memorax-memorax-code-preview-*.tgz
 if [[ $# -ne 1 || ! -f "$1" ]]; then
   echo 'Expected exactly one MemoraX Code tarball; run make npm-package-check first.' >&2
   exit 1
@@ -124,17 +124,17 @@ printf 'Claude Code requested: %s; installed: %s\n' "$claude_version" "$claude_v
 
 ledger phase suites
 run_suite claude-install-smoke isolated_suite node "$repo_root/scripts/ci/claude/claude-install-smoke.mjs" \
-  "$test_root/npm/lib/node_modules/@memorax/memorax-code" \
+  "$test_root/npm/lib/node_modules/@memorax/memorax-code-preview" \
   "$test_root/npm/bin/claude" "$tarball" "$npm_command" "$previous_version" \
   "$test_root/terminal/node_modules/node-pty" "$repo_root/scripts/ci/claude/claude-setup-pty.mjs" "$claude_version"
 run_suite claude-install-interruption-check isolated_suite node "$repo_root/scripts/ci/claude/claude-install-interruption-check.mjs" \
-  "$test_root/npm/lib/node_modules/@memorax/memorax-code" \
+  "$test_root/npm/lib/node_modules/@memorax/memorax-code-preview" \
   "$test_root/npm/bin/claude" "$test_root/terminal/node_modules/node-pty" "$claude_version"
 run_suite claude-native-check isolated_suite node "$repo_root/scripts/ci/claude/claude-native-check.mjs" \
-  "$test_root/npm/lib/node_modules/@memorax/memorax-code" \
+  "$test_root/npm/lib/node_modules/@memorax/memorax-code-preview" \
   "$test_root/npm/bin/claude" "$claude_version"
 run_suite claude-permissions-check isolated_suite node "$repo_root/scripts/ci/claude/claude-permissions-check.mjs" \
-  "$test_root/npm/lib/node_modules/@memorax/memorax-code" \
+  "$test_root/npm/lib/node_modules/@memorax/memorax-code-preview" \
   "$test_root/npm/bin/claude" "$claude_version"
 
 # Each suite confirms owned process cleanup before removing this runtime.
