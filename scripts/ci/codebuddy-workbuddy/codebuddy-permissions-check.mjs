@@ -6,7 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { check, createNativeHarness, fixtureKey, fixtureModel, fixtureUser, summarizeCleanupDiagnostic, waitFor } from "./codebuddy-native-support.mjs";
-import { assertCompleteText, assertNoForeignContent, assertWritebackMessages } from "../codex/codex-native-content-check.mjs";
+import { assertAutomaticWritebackPayload, assertCompleteText, assertNoForeignContent } from "../codex/codex-native-content-check.mjs";
 import { nativeHookPrompt, selectNativeTurnContent, summarizeNativeCompletion } from "./codebuddy-native-content-check.mjs";
 import { assertInitializedModel, assertNativeInterruption, assertPermissionDenialResult, assertPermissionDenialTerminal,
   assertPermissionInitializations, assertPermissionWritebacks, assertToolLineage,
@@ -331,13 +331,13 @@ async function verifyCompleted({ prompt, answer, tool, denied }) {
   check(requests.length === 1, "PERMISSION_TURN_WRITEBACK_COUNT_MISMATCH");
   const request = requests[0], body = request.body;
   check(request.method === "POST" && request.authorization === `Token ${fixtureKey}`, "PERMISSION_MEMORY_TRANSPORT_MISMATCH");
-  assertWritebackMessages(body.messages);
+  assertAutomaticWritebackPayload(body);
   assertCompleteText(body.messages[0].content, selected.user.content, "PERMISSION_NATIVE_PROMPT_INCOMPLETE");
   assertCompleteText(body.messages[1].content, selected.assistant.content, "PERMISSION_NATIVE_ANSWER_INCOMPLETE");
   check(body.metadata?.memorax_code_session_id === current.sessionId && body.user_id === `${fixtureUser}@${basename(harness.workspace)}`
     && body.metadata.memorax_code_base_user_id === fixtureUser && body.metadata.memorax_code_workspace === basename(harness.workspace)
     && body.metadata.memorax_code_memory_scope === "workspace-name.v1", "PERMISSION_MEMORY_SCOPE_MISMATCH");
-  check(body.metadata.idempotency_key === `automatic:${client}:${shortHash(body.user_id)}:${current.sessionId}:${shortHash(body.messages[0].content)}:${shortHash(body.messages[1].content)}`,
+  check(body.metadata.idempotency_key === `automatic:${client}:${shortHash(body.user_id)}:${current.sessionId}:${shortHash(body.messages[0].content)}:${shortHash(body.messages[1].content)}:auto`,
     "PERMISSION_AUTOMATIC_ADD_IDENTITY_MISMATCH");
   for (const [index, source] of [selected.user, selected.assistant].entries()) if (source.timestamp !== undefined) {
     check(body.messages[index].timestamp === source.timestamp && body.metadata.memorax_code_timestamp_sources?.[index] === "native",

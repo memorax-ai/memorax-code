@@ -37,7 +37,7 @@ function rejects(input, code) {
 
 test("Cursor Skill references preserve platform executable names and redact contract errors", () => {
   for (const operation of ["search", "add"]) {
-    const reference = `# MemoraX Code Coding Memory ${operation === "search" ? "Search" : "Add"}\n`
+    const reference = `# MemoraX Code Coding and Work Memory ${operation === "search" ? "Search" : "Add"}\n`
       + "On Windows PowerShell, use `memorax-cli.cmd`; on macOS and Linux, use `memorax-cli`.\n"
       + `memorax-cli ${operation} --json\nmemorax-cli.cmd ${operation} --json\n`;
     for (const platform of ["linux", "darwin", "win32"]) {

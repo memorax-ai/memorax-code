@@ -50,7 +50,7 @@ const rules = [
   },
   {
     name: "provider kernel stays independent from server and adapter lifecycle",
-    importers: ["provider/memorax/adapter.ts", "provider/memorax/http.ts", "provider/jev/adapter.ts"],
+    importers: ["provider/memorax/adapter.ts", "provider/memorax/http.ts", "provider/memorax/documents.ts", "provider/jev/adapter.ts"],
     forbidden: ["server-", "entrypoints/", "transport/http/", "clients/codex/plugin-install"],
   },
   {

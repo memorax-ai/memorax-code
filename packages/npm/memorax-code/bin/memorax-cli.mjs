@@ -11,8 +11,14 @@ if (args.length === 1 && (args[0] === "--help" || args[0] === "-h")) {
 
 Memory commands:
   status [--json] [--config-only]
-  search --query TEXT [--session-id ID] [--limit N] [--json]
-  add --memory TEXT --type TYPE --reason REASON [--session-id ID] [--content-type code]
+  search --query TEXT [--sources dialogue|document|dialogue,document] [--document-id ID]... [--session-id ID] [--limit N] [--json]
+  add --memory TEXT --type TYPE --reason REASON [--session-id ID] [--content-type auto|work|code|dialogue] [--mode default|raw|pre_summarized]
+  add --document-file PATH --document-id ID --input-id UUID --expected-revision INT [--sha256 HEX] [--json]
+  add --document-manifest PATH [--json]
+  add --content-type document --memory-file PATH --document-id ID --input-id UUID --expected-revision INT [--allow-empty]
+
+Ordinary Add defaults to auto/default. Binary uploads accept PDF/DOCX/XLSX/PPTX up to 150 MiB.
+Add returns after submission is accepted. MemoraX processes documents asynchronously; acceptance does not confirm search readiness.
 
 Run the command from the active task workspace so MemoraX Code can enforce its repository scope.`);
   process.exit(0);

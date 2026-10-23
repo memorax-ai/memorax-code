@@ -5,7 +5,7 @@ import { basename, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import { createNativeHarness, fixtureKey, fixtureModel, fixtureReviewerModel, fixtureUser, sendResponses, waitFor } from "./codex-native-support.mjs";
-import { assertCompleteText, assertNoForeignContent, assertWritebackMessages, selectNativeTurnContent } from "./codex-native-content-check.mjs";
+import { assertAutomaticWritebackPayload, assertCompleteText, assertNoForeignContent, selectNativeTurnContent } from "./codex-native-content-check.mjs";
 import { collectWritebackDiagnostics } from "./codex-writeback-diagnostics.mjs";
 
 // Native app-server protocol, checked with baseline and latest Codex. The fixtures only
@@ -284,13 +284,13 @@ async function verifyWriteback({ threadId, turnId, completed }) {
     && body.metadata.memorax_code_base_user_id === fixtureUser
     && body.metadata.memorax_code_workspace === basename(harness.workspace)
     && body.metadata.memorax_code_memory_scope === "workspace-name.v1", "PERMISSION_WRITEBACK_SCOPE_MISMATCH");
-  assertWritebackMessages(body.messages);
+  assertAutomaticWritebackPayload(body);
   assertNoForeignContent(body.messages, cases.filter((test) => test.id !== current.test.id).flatMap((test) => [
     `Run the isolated permission fixture ${test.id}, then report its result.`,
     `Permission case ${test.id} finished.`,
   ]));
   const hash = (text) => createHash("sha256").update(text).digest("hex").slice(0, 16);
-  check(body.metadata.idempotency_key === `automatic:codex:${hash(body.user_id)}:${threadId}:${hash(body.messages[0].content)}:${hash(body.messages[1].content)}`,
+  check(body.metadata.idempotency_key === `automatic:codex:${hash(body.user_id)}:${threadId}:${hash(body.messages[0].content)}:${hash(body.messages[1].content)}:auto`,
     "PERMISSION_WRITEBACK_IDEMPOTENCY_MISMATCH");
   const native = selectNativeTurnContent(records, { sessionId: threadId, turnId });
   const userCoverage = assertCompleteText(body.messages[0].content, native.user.content, "PERMISSION_NATIVE_USER_CONTENT_INCOMPLETE");

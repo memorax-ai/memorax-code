@@ -13,6 +13,7 @@ runMemoryCli(process.argv.slice(2)).then((result) => {
     console.error(result.diagnostic.recorded
       ? `Diagnostic file: ${result.diagnostic.path}`
       : `Diagnostic could not be saved (${result.diagnostic.recordingError}); keep this error output.`);
+    if (result.receipt) console.error(JSON.stringify({ receipt: result.receipt }));
     process.exitCode = 1;
     return;
   }

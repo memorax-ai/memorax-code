@@ -271,6 +271,7 @@ test("Backend memory hook endpoints write client-isolated trace events", async (
   const restoreEnv = withEnv({
     ...WRITEBACK_ENV,
     MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "true",
+      MEMORAX_CODE_MEMORAX_ADD_CONTENT_TYPE: "code",
     MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_TURNS: "1",
     MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_AGE_MS: "60000",
     MEMORAX_CODE_HOME: undefined,

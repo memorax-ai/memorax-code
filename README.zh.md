@@ -220,14 +220,17 @@ cd test-repo
 > MemoraX Code 会根据当前仓库和任务在后台写入相关记忆，并引导 Agent 在需要时搜索。
 > 本地活动与状态会以受内容控制的 trace 和 reconciliation 记录保存在 `MEMORAX_CODE_HOME` 下。
 
-## 四类 Memory，各有清晰边界
+## 五类 Memory，各有清晰边界
 
 | Memory | 回答的问题 | 典型内容 |
 | --- | --- | --- |
 | **Coding&nbsp;Memory** | 哪些工程经验值得带入下一次任务？ | 已验证的修复、失败方案、设计依据、常见陷阱和非回归检查 |
+| **Work&nbsp;Memory** | 哪些办公事实和需求应该指导当前任务？ | 通过 `--sources document`、`dialogue` 或 `dialogue,document` 召回的办公文档、制度和对话 |
 | **Repo&nbsp;Memory** | Agent 需要了解这个仓库的哪些信息？ | 架构地图、模块职责、代码入口，以及 Commit、PR、MR 和 Issue 等历史证据 |
 | **Personal&nbsp;Memory** | Agent 应该如何与你沟通和协作？ | User Profile 中记录的语言、语气、解释深度和结果呈现偏好 |
 | **Procedure&nbsp;Memory** | 这类任务应该如何执行？ | 可复用的步骤、检查清单、前置条件、例外情况和验证要求 |
+
+Work Memory 的检索和文档筛选方式见 [Search 指南](packages/ts/memorax-code-codex-adapter/skills/memorax-code/references/memorax-search.md)。共享 Skill 会通过 `memorax-cli add --document-file` 导入用户提供的 PDF、DOCX、XLSX 和 PPTX 附件，包括没有文字说明的附件，同时遵守明确不保存的要求并排除凭据文件。提交受理后即返回，由 MemoraX 异步解析和索引。当前的总结、分析和问答由 Agent 现有的文件读取工具完成，上传用于后续记忆检索。普通手动 Add 默认自动分类；可复用编码经验可以明确选择 code/pre_summarized。详见[上传配置](docs/configuration.md#binary-document-uploads)。
 
 Personal Memory 和 Procedure Memory 在用户级目录
 `$MEMORAX_CODE_HOME/personal-memory/`（默认 `~/.memorax-code/personal-memory/`）下：User
@@ -244,10 +247,10 @@ Profile 使用 `user-profile/preferences.md`，每个 Procedure 主题在
 
 | 能力 | 作用 |
 | --- | --- |
-| **后台写入记忆** | 任务完成后，在后台提取可复用知识并写入 Coding Memory。 |
+| **后台写入记忆** | 任务完成后，在后台提取并保存可复用知识。所有客户端优先使用显式配置的内容类型；未配置时默认为 `auto`，由 MemoraX 根据完整交互分类后提取记忆。 |
 | **用户偏好延续** | 在 User Profile 中记录用户偏好，并按设定周期将其带入后续任务。 |
 | **Procedure 自动复用** | 记录可复用的任务流程，并在后续任务中自动提醒 Agent 按流程执行。 |
-| **记忆作用反馈** | 在 Codex、Claude Code、CodeBuddy CLI、WorkBuddy、DeepSeek Harness、OpenCode、Trae、Cursor 和 Qoder 中，当本轮主动 Search 的 Coding Memory，或本轮读取、注入的 Repo、Procedure、Profile Memory 确实指导了任务时，Agent 会在最终回复开头用自然语言简要说明。 |
+| **记忆作用反馈** | 在 Codex、Claude Code、CodeBuddy CLI、WorkBuddy、DeepSeek Harness、OpenCode、Trae、Cursor 和 Qoder 中，当本轮主动 Search 的 Coding Memory 或 Work Memory，或本轮读取、注入的 Repo、Procedure、Profile Memory 确实指导了任务时，Agent 会在最终回复开头用自然语言简要说明。 |
 | **Repo Memory 后台整理** | 基于本地已知的默认分支维护一份共享基线。任意 worktree 都能触发构建或按策略更新，各分支复用地图并核对当前源码，无需逐 worktree 构建。已有本地产物会保留。Trae 仍仅支持 Skill；Cursor 和 Qoder 使用各自的原生后台子 Agent。 |
 | **主动记忆控制** | 使用内置的 MemoraX Code Skill 或 CLI，主动查找和添加记忆。 |
 | **客户端集成** | 与 Codex、Claude Code、CodeBuddy CLI、WorkBuddy、DeepSeek Harness、OpenCode、Trae、Cursor 和 Qoder 集成，支持 Skill 主动 Search、本地提醒和自动写回。目前 Codex、Claude Code、CodeBuddy CLI、WorkBuddy、OpenCode 和 Trae 支持自动额度提醒。 |

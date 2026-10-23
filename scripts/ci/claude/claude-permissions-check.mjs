@@ -5,7 +5,7 @@ import { basename, join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { isDeepStrictEqual } from "node:util";
 import { check, createNativeHarness, fixtureKey, fixtureModel, fixtureUser, waitFor } from "./claude-native-support.mjs";
-import { assertCompleteText, assertNoForeignContent, assertWritebackMessages } from "../codex/codex-native-content-check.mjs";
+import { assertAutomaticWritebackPayload, assertCompleteText, assertNoForeignContent } from "../codex/codex-native-content-check.mjs";
 import { selectNativeMemoraxPlugin, selectNativeTurnContent } from "./claude-native-content-check.mjs";
 import { ClaudeControlSession, inflightScript, permissionArguments, selectInterruptedTurn, summarizePermissionToolResult, textContent } from "./claude-permissions-support.mjs";
 
@@ -275,14 +275,14 @@ async function verifyCompleted({ prompt, answer, after = 0, tool, denied }) {
   check(requests.length === 1, "PERMISSION_SESSION_WRITEBACK_COUNT_MISMATCH");
   const request = requests[0], body = request.body;
   check(request.method === "POST" && request.authorization === `Token ${fixtureKey}`, "PERMISSION_MEMORY_TRANSPORT_MISMATCH");
-  assertWritebackMessages(body.messages);
+  assertAutomaticWritebackPayload(body);
   assertCompleteText(body.messages[0].content, selected.user.content, "PERMISSION_NATIVE_PROMPT_INCOMPLETE");
   assertCompleteText(body.messages[1].content, selected.assistant.content, "PERMISSION_NATIVE_ANSWER_INCOMPLETE");
   check(body.metadata?.memorax_code_session_id === current.sessionId
     && body.user_id === `${fixtureUser}@${basename(harness.workspace)}` && body.metadata.memorax_code_base_user_id === fixtureUser
     && body.metadata.memorax_code_workspace === basename(harness.workspace)
     && body.metadata.memorax_code_memory_scope === "workspace-name.v1", "PERMISSION_MEMORY_SCOPE_MISMATCH");
-  check(body.metadata.idempotency_key === `automatic:claude-code:${hash(body.user_id)}:${current.sessionId}:${hash(body.messages[0].content)}:${hash(body.messages[1].content)}`,
+  check(body.metadata.idempotency_key === `automatic:claude-code:${hash(body.user_id)}:${current.sessionId}:${hash(body.messages[0].content)}:${hash(body.messages[1].content)}:auto`,
     "PERMISSION_AUTOMATIC_ADD_IDENTITY_MISMATCH");
   check(body.messages[0].timestamp === selected.user.timestamp && body.messages[1].timestamp === selected.assistant.timestamp
     && JSON.stringify(body.metadata.memorax_code_timestamp_sources) === JSON.stringify(["native", "native"]),

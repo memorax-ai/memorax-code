@@ -68,6 +68,11 @@ test("memorax-code references keep authority and operation boundaries explicit",
   const repoUpdate = readSkillFile("references/repo-update.md");
 
   assert.match(memoraxSearch, /memorax-cli search --query '/);
+  assert.match(readSkillFile("SKILL.md"), /### Work Memory/);
+  assert.match(memoraxSearch, /--sources document/);
+  assert.match(memoraxSearch, /--sources dialogue/);
+  assert.match(memoraxSearch, /--document-id 'expense-policy'/);
+  assert.match(memoraxSearch, /do not\s+retry without the restriction/);
   assert.match(memoraxSearch, /`workspace_scope_mismatch` or `workspace_scope_unavailable`/);
   assert.match(memoraxSearch, /Do not change the CLI working directory and retry/);
   assert.match(memoraxSearch, /`workspaceScopeFallbackReason: git_metadata_invalid`/);
@@ -81,10 +86,74 @@ test("memorax-code references keep authority and operation boundaries explicit",
   assert.match(memoraxAdd, /`workspaceScopeFallbackReason: git_metadata_invalid`/);
   assert.match(memoraxAdd, /successful Add returns `quotaNotice`/);
   assert.match(memoraxAdd, /Never run `memorax-code account --show-mark-id` for the user/);
-  assert.doesNotMatch(memoraxAdd, /--memory-file/);
+  assert.doesNotMatch(memoraxAdd.split("## Eligible Knowledge")[1], /--memory-file/);
   assert.match(repoRead, /Current implementation claims and code edits still require live-code verification/);
   assert.match(repoBuild, /scripts\/repo-memory\.mjs collect/);
   assert.match(repoUpdate, /scripts\/repo-memory\.mjs detect-updates/);
+});
+
+test("work attachment routing covers bare files and keeps current answers independent of ingestion", () => {
+  const router = readSkillFile("SKILL.md");
+  const add = readSkillFile("references/memorax-add.md");
+  const search = readSkillFile("references/memorax-search.md");
+  const workRouter = router.split("### Work Memory")[1].split("### Repo Memory")[0];
+
+  assert.match(router.split("---")[1], /supplied or indexed office documents[\s\S]*attachments\s+without accompanying text/);
+  assert.match(workRouter, /PDF, DOCX, XLSX or PPTX[\s\S]*bare\s+attachment/);
+  assert.match(workRouter, /references\/memorax-add\.md[\s\S]*submit document Add/);
+  assert.match(workRouter, /No summary, analysis, question, or\s+separate storage instruction is required/);
+  assert.match(add, /Process\s+each eligible file in a multi-file submission independently/);
+  assert.match(add, /current summary, analysis or question[\s\S]*available file-reading tools/);
+  assert.match(search, /file-reading tools for the current answer/);
+  assert.match(search, /an accepted upload does not guarantee that its\s+content is searchable yet/);
+  assert.match(add, /A bare attachment or storage-only request needs\s+no Search/);
+});
+
+test("work imports reuse accepted receipts only for the same scope and unchanged file", () => {
+  const add = readSkillFile("references/memorax-add.md");
+  const binary = add.split("### Binary document imports")[1].split("### Full document snapshots")[0];
+
+  assert.match(binary, /current task's known receipts/);
+  assert.match(binary, /Reuse an accepted\s+receipt only when it belongs to the same account\/workspace scope and the same\s+unchanged file/);
+  assert.match(binary, /original upload or a matching SHA-256/);
+  assert.match(binary, /filename alone is not identity evidence/);
+  assert.match(binary, /Acceptance is enough to skip a duplicate\s+Add even while the backend is still processing/);
+  assert.match(binary, /no persistent file-to-document identity cache/);
+  assert.match(binary, /Acceptance alone does not confirm a new revision/);
+  assert.match(binary, /revision is unknown[\s\S]*do not guess a revision or silently create another document/);
+  assert.match(binary, /unchanged\s+user-authorized retry must reuse the exact file, input ID, revision, scope, output\s+language and optional checksum/);
+  assert.match(binary, /Do not retry\s+an uncertain submission automatically or generate a replacement ID/);
+  assert.match(binary, /On failure or `submission_unknown`[\s\S]*do not automatically retransmit the file/);
+});
+
+test("work document guidance stops at the upload response and exposes no task polling commands", () => {
+  const router = readSkillFile("SKILL.md");
+  const add = readSkillFile("references/memorax-add.md");
+  const search = readSkillFile("references/memorax-search.md");
+  const binary = add.split("### Binary document imports")[1].split("### Full document snapshots")[0];
+  const uploadCommands = [...binary.matchAll(/```bash\n([\s\S]*?)\n```/g)]
+    .map((match) => match[1].replace(/\\\r?\n\s*/g, " "));
+
+  assert.equal(uploadCommands.length, 1);
+  const command = uploadCommands[0];
+  assert.match(command, /^memorax-cli add --document-file /);
+  assert.match(command, /--expected-revision 0 --json/);
+  const documentId = command.match(/--document-id '([^']+)'/)?.[1];
+  const inputId = command.match(/--input-id '([^']+)'/)?.[1];
+  for (const identity of [documentId, inputId]) {
+    assert.match(identity ?? "", /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/);
+  }
+  assert.notEqual(documentId, inputId);
+  assert.match(binary, /nonempty[\s\S]*150 MiB/);
+  assert.match(binary, /Wait for the upload HTTP response/);
+  assert.match(binary, /Once accepted, retain the receipt and end the\s+import operation/);
+  assert.match(binary, /Do not query task status or\s+wait for backend processing/);
+  assert.match(binary, /`pending: true` confirms submission only/);
+  assert.match(binary, /Preserve the\s+returned task ID[\s\S]*does not confirm a completed revision/);
+  for (const guidance of [router, add, search]) {
+    assert.doesNotMatch(guidance, /memorax-cli(?:\.cmd)? add-status\b/);
+    assert.doesNotMatch(guidance, /--(?:wait(?:-timeout-ms)?|poll-interval-ms)\b/);
+  }
 });
 
 test("memorax-code keeps memory-impact attribution bounded and private", () => {

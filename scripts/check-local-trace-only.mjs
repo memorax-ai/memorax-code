@@ -38,6 +38,7 @@ const reviewedNetworkSources = new Set([
   "packages/ts/memorax-code-backend/src/provider/jev/adapter.ts",
   "packages/ts/memorax-code-backend/src/provider/memorax/adapter.ts",
   "packages/ts/memorax-code-backend/src/provider/memorax/http.ts",
+  "packages/ts/memorax-code-backend/src/provider/memorax/documents.ts",
   "packages/ts/memorax-code-backend/src/transport/http/health.ts",
   "packages/ts/memorax-code-backend/src/transport/http/json.ts",
   "packages/ts/memorax-code-backend/src/transport/http/memory-hook.ts",
@@ -82,6 +83,7 @@ const providerTransportSources = new Set([
   "packages/ts/memorax-code-backend/src/provider/jev/adapter.ts",
   "packages/ts/memorax-code-backend/src/provider/memorax/adapter.ts",
   "packages/ts/memorax-code-backend/src/provider/memorax/http.ts",
+  "packages/ts/memorax-code-backend/src/provider/memorax/documents.ts",
 ]);
 
 const reviewedTraceAwareOutboundSources = new Set([

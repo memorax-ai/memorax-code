@@ -66,17 +66,27 @@ export async function postMemoraxJson(
   payload: unknown,
   fetchImpl: typeof fetch,
 ): Promise<MemoraxJsonResponse> {
+  return requestMemorax(config, path, { method: "POST", body: JSON.stringify(payload), json: true }, fetchImpl);
+}
+
+export async function requestMemorax(
+  config: MemoraxAdapterConfig,
+  path: string,
+  request: { method: "POST"; body?: string | FormData; json?: boolean; requestId?: string },
+  fetchImpl: typeof fetch,
+): Promise<MemoraxJsonResponse> {
   const controller = new AbortController();
   // The deadline covers headers and body; HTTP success alone is not acceptance.
   const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
   try {
     const response = await fetchImpl(`${config.baseUrl}${path}`, {
-      method: "POST",
+      method: request.method,
       headers: {
-        "Content-Type": "application/json",
+        ...(request.json ? { "Content-Type": "application/json" } : {}),
+        ...(request.requestId ? { "x-request-id": request.requestId } : {}),
         Authorization: `Token ${config.apiKey}`,
       },
-      body: JSON.stringify(payload),
+      ...(request.body === undefined ? {} : { body: request.body }),
       signal: controller.signal,
     });
     if (!response.ok) {

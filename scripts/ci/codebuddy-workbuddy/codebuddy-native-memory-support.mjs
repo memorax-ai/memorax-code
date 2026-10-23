@@ -4,7 +4,7 @@ import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 import { check, createNativeHarness, fixtureKey, fixtureModel, fixtureUser, searchResult,
   summarizeCleanupDiagnostic, waitFor } from "./codebuddy-native-support.mjs";
-import { assertCompleteText, assertNoForeignContent, assertSearchResult, assertSkillReferenceContract,
+import { assertAutomaticWritebackPayload, assertCompleteText, assertNoForeignContent, assertSearchResult, assertSkillReferenceContract,
   assertWritebackMessages, expectedSearchAnswer } from "../codex/codex-native-content-check.mjs";
 import { assertNativeReadText, assertNativeToolCalls, nativeHookPrompt, selectNativeBashStdout, selectNativeTurnContent,
   summarizeWritebackTrace, toolResult } from "./codebuddy-native-content-check.mjs";
@@ -138,7 +138,7 @@ export async function runNativeMemoryCheck({ client, args }) {
       const memory = "The native Skill preserves parser validation before interpretation.";
       const reason = "Keep the verified parser validation lesson.";
       const args = operation === "search" ? ["search", "--query", query, "--json"]
-        : ["add", "--memory", memory, "--type", "procedural", "--reason", reason, "--json"];
+        : ["add", "--content-type", "code", "--mode", "pre_summarized", "--memory", memory, "--type", "procedural", "--reason", reason, "--json"];
       const command = shellCommand([executable, ...args]);
       const before = harness.memoryRequests.length;
       const answer = operation === "search" ? `Recalled Coding Memory: ${searchResult}` : "Native Skill Add accepted.";
@@ -173,7 +173,7 @@ export async function runNativeMemoryCheck({ client, args }) {
       const explicit = harness.memoryRequests.slice(before).filter((request) => operation === "search"
         ? request.path === "/v1/memories/search" : request.body.metadata?.source_detail === "memorax_code_memory_cli");
       check(explicit.length === 1, "NATIVE_SKILL_EXPLICIT_REQUEST_COUNT_MISMATCH");
-      verifyExplicitRequest(explicit[0], { operation, value: operation === "search" ? query : memory, reason, sessionId: "memorax-cli" });
+      verifyExplicitRequest(explicit[0], { operation, value: operation === "search" ? query : memory, reason, sessionId: "memorax-cli", contentType: "code" });
     }
     report.skillExecutionValidated = true;
     report.checks.push("real tools and Skill load complete installed instructions, execute PATH-discovered Search/Add and return scoped results");
@@ -276,12 +276,13 @@ export async function runNativeMemoryCheck({ client, args }) {
     const [request] = automatic, body = request.body;
     check(request.method === "POST" && request.path === "/v1/memories/add"
       && request.authorization === `Token ${fixtureKey}`, "NATIVE_AUTOMATIC_ADD_TRANSPORT_MISMATCH");
+    assertAutomaticWritebackPayload(body);
     assertNativeWritebackContent(body.messages, { client, prompt: expectedPrompt, answer });
     check(body.session_id === output.sessionId && body.metadata?.memorax_code_session_id === output.sessionId,
       "NATIVE_WRITEBACK_SESSION_MISMATCH");
     check(body.user_id === `${fixtureUser}@${basename(cwd)}` && body.metadata.memorax_code_workspace === basename(cwd)
       && body.metadata.memorax_code_memory_scope === "workspace-name.v1", "NATIVE_WRITEBACK_SCOPE_MISMATCH");
-    check(body.metadata.idempotency_key === `automatic:${client}:${shortHash(body.user_id)}:${output.sessionId}:${shortHash(body.messages[0].content)}:${shortHash(body.messages[1].content)}`,
+    check(body.metadata.idempotency_key === `automatic:${client}:${shortHash(body.user_id)}:${output.sessionId}:${shortHash(body.messages[0].content)}:${shortHash(body.messages[1].content)}:auto`,
       "NATIVE_WRITEBACK_IDEMPOTENCY_MISMATCH");
     const expected = { prompt, answer, expectedPrompt, sessionId: output.sessionId, cwd, body, kind, tools };
     if (workbuddy) await verifyNativeTranscript(expected, { record: false });
@@ -368,7 +369,7 @@ export async function runNativeMemoryCheck({ client, args }) {
       && result.workspace === basename(harness.workspace) && result.scopeKind === "local-directory"
       && result.workspaceScope === "bound", "EXPLICIT_MEMORY_SCOPE_RESULT_MISMATCH");
   }
-  function verifyExplicitRequest(request, { operation, value, reason, sessionId }) {
+  function verifyExplicitRequest(request, { operation, value, reason, sessionId, contentType = "auto" }) {
     check(request?.method === "POST" && request.path === `/v1/memories/${operation}`
       && request.authorization === `Token ${fixtureKey}`, "EXPLICIT_MEMORY_TRANSPORT_MISMATCH");
     const body = request.body;
@@ -377,13 +378,15 @@ export async function runNativeMemoryCheck({ client, args }) {
       check(body.query === value && !Object.hasOwn(body, "session_id") && !Object.hasOwn(body, "metadata"), "EXPLICIT_SEARCH_PAYLOAD_MISMATCH");
       return;
     }
+    check(body.content_type === contentType && body.mode === (contentType === "code" ? "pre_summarized" : "default")
+      && body.async_mode === true && !Object.hasOwn(body, "chunk"), "EXPLICIT_ADD_ROUTE_MISMATCH");
     check(body.session_id === sessionId && body.metadata?.memorax_code_session_id === sessionId, "EXPLICIT_ADD_SESSION_MISMATCH");
     check(body.metadata.memorax_code_base_user_id === fixtureUser
       && body.metadata.memorax_code_workspace === basename(harness.workspace)
       && body.metadata.memorax_code_memory_scope === "workspace-name.v1", "EXPLICIT_ADD_SCOPE_METADATA_MISMATCH");
     check(JSON.stringify(body.messages?.map(({ role, content }) => ({ role, content })))
       === JSON.stringify([{ role: "user", content: value }]), "EXPLICIT_ADD_CONTENT_MISMATCH");
-    check(body.metadata.idempotency_key === `memory-cli:${sessionId}:${shortHash(`procedural\n${reason}\n${value}`)}`
+    check(body.metadata.idempotency_key === `memory-cli:${sessionId}:${shortHash(`procedural\n${reason}\n${value}`)}${contentType === "code" ? "" : `:${contentType}`}`
       && body.metadata.source_detail === "memorax_code_memory_cli" && body.metadata.memory_type === "procedural"
       && body.metadata.memorax_code_memory_reason === reason, "EXPLICIT_ADD_METADATA_MISMATCH");
   }

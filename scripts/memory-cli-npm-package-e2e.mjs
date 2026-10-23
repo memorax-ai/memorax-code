@@ -24,24 +24,42 @@ const apiKey = "synthetic-api-key-canary-for-installed-cli";
 const responseCanary = "private-response-body-canary-for-installed-cli";
 const sessionId = "private-session-canary-for-installed-cli";
 const missingQueryFile = join(root, "private-query-file-canary.txt");
+const documentPath = join(root, "private-document-canary.pdf");
+const documentBytes = Buffer.from([37, 80, 68, 70, 45, 49, 46, 55, 10, 0, 255, 13, 10, 128]);
+const documentId = "travel-policy";
+const documentInputId = "12345678-1234-4234-8234-123456789abc";
+const documentItem = { content: "Travel requires advance approval.", content_type: "document",
+  metadata: { document_id: documentId, document_revision: 1, record_kind: "document_chunk", chunk_index: 0, chunk_count: 1 } };
 const requests = [];
 let responseMode;
 
 const server = createServer(async (request, response) => {
   const mode = responseMode;
-  let text = "";
-  for await (const chunk of request) text += chunk;
-  requests.push({ method: request.method, url: request.url, headers: request.headers, body: JSON.parse(text) });
+  const chunks = [];
+  for await (const chunk of request) chunks.push(chunk);
+  const bytes = Buffer.concat(chunks);
+  const multipart = /^multipart\/form-data\b/i.test(request.headers["content-type"] ?? "");
+  let body;
+  let file;
+  if (multipart) {
+    const form = await new Request("http://127.0.0.1", { method: "POST", headers: request.headers, body: bytes }).formData();
+    body = JSON.parse(form.get("request"));
+    const uploaded = form.get("file");
+    file = { name: uploaded.name, type: uploaded.type, bytes: Buffer.from(await uploaded.arrayBuffer()) };
+  } else body = bytes.length ? JSON.parse(bytes.toString("utf8")) : {};
+  requests.push({ method: request.method, url: request.url, headers: request.headers, body, ...(file ? { file } : {}) });
   if (mode === "timeout") return;
-  response.writeHead(mode === "http" ? 503 : 200, {
+  response.writeHead(mode === "http" ? 503 : mode === "document" ? 202 : 200, {
     "content-type": "application/json",
     ...(mode === "http" ? { "retry-after": "2" } : {}),
   });
-  response.end(mode === "json" ? `{${responseCanary}` : JSON.stringify(
+  response.end(mode === "json" ? "{" + responseCanary : JSON.stringify(
     mode === "http" ? { error: responseCanary }
       : mode === "shape" ? { data: { unexpected: responseCanary } }
         : mode === "add" ? { success: true, data: { task_id: "installed-cli-add", status: "queued" } }
-          : { success: true, data: { data: [] } },
+          : mode === "document" ? { success: true, data: { task_id: "installed-cli-document", status: "accepted",
+            document_id: documentId, input_id: documentInputId, revision: null } }
+            : { success: true, data: { data: mode === "document-search" ? [documentItem] : [] } },
   ));
 });
 
@@ -158,6 +176,68 @@ try {
   assert.ok(blockedResult.diagnostic.recordingError);
   assert.equal(await readFile(join(blockedState, "runtime", "diagnostics"), "utf8"), "not a directory\n");
 
+  await writeFile(documentPath, documentBytes);
+  const documentArgs = ["add", "--document-file", documentPath, "--document-id", documentId,
+    "--input-id", documentInputId, "--expected-revision", "0"];
+  const uploaded = await runCli("add", "document", env, true, { args: documentArgs, includeSessionId: false });
+  assert.equal(uploaded.code, 0);
+  assert.equal(uploaded.stderr, "");
+  const uploadResult = JSON.parse(uploaded.stdout);
+  assert.equal(uploadResult.ok, true);
+  assert.equal(uploadResult.action, "memory.add");
+  assert.deepEqual(uploadResult.receipt, { document_id: documentId, input_id: documentInputId, expected_revision: 0,
+    revision: null, status: "accepted", pending: true, task_id: "installed-cli-document" });
+  const uploadRequest = requests.at(-1);
+  assert.equal(uploadRequest.method, "POST");
+  assert.equal(uploadRequest.url, "/v1/memories/add");
+  assert.match(uploadRequest.headers["content-type"], /^multipart\/form-data; boundary=/);
+  assert.equal(uploadRequest.headers["x-request-id"], documentInputId);
+  assert.deepEqual(uploadRequest.file, { name: "private-document-canary.pdf", type: "application/pdf", bytes: documentBytes });
+  assert.deepEqual(uploadRequest.body, { user_id: "installed-cli-user@private-workspace-canary", document_id: documentId,
+    input_id: documentInputId, expected_revision: 0, memory_output_language: "zh", content_type: "document", async_mode: true });
+
+  const searchedDocument = await runCli("search", "document-search", env, true, {
+    args: ["search", "--query", query, "--sources", "document", "--document-id", documentId],
+  });
+  assert.equal(searchedDocument.code, 0);
+  assert.equal(searchedDocument.stderr, "");
+  const documentSearchResult = JSON.parse(searchedDocument.stdout);
+  assert.deepEqual(documentSearchResult.items, [documentItem]);
+  assert.match(documentSearchResult.answer, /travel-policy/);
+  assert.deepEqual(requests.at(-1).body.sources, ["document"]);
+  assert.deepEqual(requests.at(-1).body.document_ids, [documentId]);
+
+  for (const flags of [["--wait"], ["--wait-timeout-ms", "1000"], ["--poll-interval-ms", "1"]]) {
+    const removed = await runCli("add", "document", env, true, {
+      args: [...documentArgs, ...flags], includeSessionId: false, expectedRequestCount: 0,
+    });
+    assert.equal(removed.code, 1);
+    assert.equal(removed.stderr, "");
+    const result = JSON.parse(removed.stdout);
+    assert.equal(result.ok, false);
+    assert.equal(result.errorCode, "MEMORY_INPUT_INVALID");
+    assert.equal(result.stage, "input");
+    assert.match(result.error, /unsupported add flag/);
+    recorded.push(await assertDiagnostic(result, "The memory command arguments are invalid."));
+  }
+  const removedStatus = await runCli("add-status", "document", env, true, {
+    args: ["add-status", "--task-id", "installed-cli-document"], includeSessionId: false, expectedRequestCount: 0,
+  });
+  assert.equal(removedStatus.code, 1);
+  assert.equal(removedStatus.stderr, "");
+  const removedStatusResult = JSON.parse(removedStatus.stdout);
+  assert.equal(removedStatusResult.ok, false);
+  assert.match(removedStatusResult.error, /unknown memory command: add-status/);
+
+  const help = await runCli("help", "empty", env, false, {
+    args: ["--help"], includeSessionId: false, expectedRequestCount: 0,
+  });
+  assert.equal(help.code, 0);
+  assert.equal(help.stderr, "");
+  assert.match(help.stdout, /--document-file/);
+  assert.match(help.stdout, /--sources/);
+  assert.doesNotMatch(help.stdout, /add-status|--wait|--poll-interval-ms/);
+
   await assert.rejects(readdir(join(state, "debug", "traces")), { code: "ENOENT" });
   for (const request of requests) {
     assert.equal(request.method, "POST");
@@ -169,10 +249,13 @@ try {
     if (request.url === "/v1/memories/search") assert.equal(request.body.query, query);
     else {
       assert.equal(request.url, "/v1/memories/add");
-      assert.ok(payload.includes(memory));
+      if (request.file) {
+        assert.equal(request.body.content_type, "document");
+        assert.deepEqual(request.file.bytes, documentBytes);
+      } else assert.ok(payload.includes(memory));
     }
   }
-  console.log("Installed memory CLI diagnostics E2E passed (debug off, trace off, local mock only).");
+  console.log("Installed memory CLI diagnostics and Work E2E passed (debug off, trace off, local mock only).");
 } finally {
   server.closeAllConnections();
   await new Promise((done) => server.close(done));
@@ -198,6 +281,8 @@ function isolatedEnv(endpoint) {
     MEMORAX_CODE_MEMORAX_API_KEY: apiKey,
     MEMORAX_CODE_MEMORAX_USER_ID: "installed-cli-user",
     MEMORAX_CODE_MEMORAX_TIMEOUT_MS: "1000",
+    MEMORAX_CODE_MEMORAX_ADD_TIMEOUT_MS: "1000",
+    MEMORAX_CODE_MEMORAX_UPLOAD_TIMEOUT_MS: "1000",
     MEMORAX_CODE_AUTO_UPDATE: "false",
     CODEX_HOME: join(home, ".codex"),
     CLAUDE_CONFIG_DIR: join(home, ".claude"),
@@ -226,9 +311,9 @@ function isolatedEnv(endpoint) {
 async function runCli(operation, mode, env, json = true, options = {}) {
   responseMode = mode;
   const count = requests.length;
-  const args = options.args ?? (operation === "search" ? ["search", "--query", query]
-    : ["add", "--memory", memory, "--type", "procedural", "--reason", reason]);
-  args.push("--session-id", sessionId);
+  const args = [...(options.args ?? (operation === "search" ? ["search", "--query", query]
+    : ["add", "--memory", memory, "--type", "procedural", "--reason", reason]))];
+  if (options.includeSessionId !== false) args.push("--session-id", sessionId);
   if (json) args.push("--json");
   let output;
   try {
@@ -270,7 +355,7 @@ async function assertDiagnostic(result, expectedError = result.error) {
 }
 
 function assertContentFree(text) {
-  for (const value of [workspace, missingQueryFile, query, memory, reason, apiKey, responseCanary, sessionId]) {
+  for (const value of [workspace, missingQueryFile, documentPath, query, memory, reason, apiKey, responseCanary, sessionId]) {
     assert.equal(text.includes(value), false, "Diagnostics must not expose input, response content, credentials, or workspace paths");
   }
   assert.equal(text.includes("[memorax-code-backend:debug]"), false);
