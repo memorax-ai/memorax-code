@@ -91,7 +91,8 @@ try {
         return;
       }
       // These are exact product prompt contracts, not a semantic success judge.
-      if (!report.usernamePromptSeen && /Username from your existing MemoraX Code setup[^\r\n]*:/.test(visible)) {
+      // Preview and synthetic historical upgrade baselines use different wording.
+      if (!report.usernamePromptSeen && /Username (?:from your existing MemoraX Code setup|\(used for your memories\))(?: \[[^\]\r\n]+\])?:/.test(visible)) {
         report.usernamePromptSeen = true;
         report.accountInputSent = true;
         writeTerminal(`${input.username}\r`);

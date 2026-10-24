@@ -13,7 +13,7 @@ const fixtureKey = "sk_" + "T".repeat(43);
 const privateText = "private-terminal-output /private/fixture/account " + fixtureKey;
 
 // Execute the actual helper with an in-memory node-pty boundary. No client,
-// subprocess, signal or real timer is involved in these fault cases.
+// subprocess, signal or real timer is involved in these cases.
 async function runHelper(options = {}) {
   const logs = [], writes = [], timers = new Map();
   let killCalls = 0, onData, onExit, nextTimer = 0;
@@ -25,7 +25,16 @@ async function runHelper(options = {}) {
     onData(callback) {
       onData = callback;
       queueMicrotask(() => {
-        for (const data of options.data ?? ["Checking local setup state..."]) callback(data);
+        for (const data of options.data ?? ["Checking local setup state..."]) {
+          callback(data);
+          if (options.flushInputTimer) {
+            for (const [id, timer] of timers) {
+              if (timer.ms !== 30) continue;
+              timers.delete(id);
+              timer.callback();
+            }
+          }
+        }
         if (!options.noExit) onExit({ exitCode: options.exitCode ?? 0, signal: options.signal ?? 0 });
         for (const data of options.afterExitData ?? []) callback(data);
       });
@@ -63,6 +72,67 @@ async function runHelper(options = {}) {
   assert.equal(logs[0].includes(fixtureKey), false);
   assert.equal(logs[0].includes("/private/fixture/account"), false);
   return { report: JSON.parse(logs[0]), exitCode: process.exitCode ?? 0, killCalls, writes, timers, onData, onExit };
+}
+
+// Capture the product's actual prompt so a later wording change breaks this
+// contract test before the native-client matrix waits for unanswered input.
+const setupSource = await readFile(new URL("../../../packages/npm/memorax-code/bin/memorax-code-setup.mjs", import.meta.url), "utf8");
+const accountQuestion = setupSource.match(/^async function questionAccountUserId\([^]*?^\}/m)?.[0];
+assert.ok(accountQuestion, "Expected the product account-question function");
+async function previewUsernamePrompt(detectedUserId) {
+  let prompt;
+  await runInNewContext("(" + accountQuestion + ")(rl, detectedUserId)", {
+    PREFIX: "[memorax-code]", detectedUserId,
+    rl: { question: async (value) => { prompt = value; return "fixture-user"; } },
+  });
+  return prompt;
+}
+
+const usernamePrompts = [
+  ["preview", await previewUsernamePrompt("")],
+  ["preview with default", await previewUsernamePrompt("saved-user")],
+  ["historical baseline", "[memorax-code] Username from your existing MemoraX Code setup: "],
+  ["historical baseline with default", "[memorax-code] Username from your existing MemoraX Code setup [saved-user]: "],
+];
+for (const [label, prompt] of usernamePrompts) {
+  for (const mode of ["complete", "cancel"]) {
+    test(label + " supports " + mode + " with split, styled and repeated prompts", async () => {
+      const split = Math.floor(prompt.length / 2);
+      const result = await runHelper({ mode, flushInputTimer: true, exitCode: mode === "cancel" ? 1 : 0,
+        data: ["\x1b[32m" + prompt.slice(0, split), prompt.slice(split) + "\x1b[0m",
+          "\r\n" + prompt, "\r\nPreferred language [ZH/en] (used for Memory extraction): ",
+          "\r\nMemoraX API key: ", ...(mode === "complete" ? ["*".repeat(fixtureKey.length)] : [])] });
+      assert.equal(result.report.status, "PASS");
+      assert.equal(result.exitCode, 0);
+      assert.equal(result.report.usernamePromptSeen, true);
+      assert.equal(result.report.accountInputSent, true);
+      assert.equal(result.report.keyPromptSeen, true);
+      assert.equal(result.report.languagePromptSeen, true);
+      assert.deepEqual(result.writes, ["fixture-user\r", "en\r", mode === "cancel" ? "\x03" : fixtureKey + "\r"]);
+      assert.equal(result.report.credentialNotEchoed, true);
+      assert.equal(result.report.maskedInputObserved, mode === "complete");
+      assert.equal(result.report.cancellationSent, mode === "cancel");
+      assert.equal(result.timers.size, 0);
+    });
+  }
+  for (const mode of ["reuse", "update", "force-update"]) {
+    test(label + " rejects unexpected account input during " + mode, async () => {
+      const result = await runHelper({ mode, data: [prompt], noExit: true, killEmitsExit: true });
+      assert.equal(result.report.status, "FAIL");
+      assert.equal(result.report.error, "SAVED_ACCOUNT_UNEXPECTEDLY_REQUESTED_INPUT");
+      assert.deepEqual(result.writes, []);
+    });
+  }
+}
+
+for (const prompt of ["Username for another service:", "Username (used for your memories) changed:",
+  "Username (used for your memories) [saved\nuser]:"]) {
+  test("unrecognized username prompt receives no fixture account input: " + JSON.stringify(prompt), async () => {
+    const result = await runHelper({ mode: "cancel", data: [prompt], exitCode: 1 });
+    assert.equal(result.report.status, "FAIL");
+    assert.equal(result.report.error, "EXPECTED_INTERACTIVE_PROMPTS_NOT_OBSERVED");
+    assert.deepEqual(result.writes, []);
+  });
 }
 
 test("successful Windows exit with failed disposal reports failure and safe disposal cause", async () => {
