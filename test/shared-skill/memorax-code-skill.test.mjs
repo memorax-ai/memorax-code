@@ -15,6 +15,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { runMemoryCli } from "../../packages/ts/memorax-code-backend/dist/memory/cli.js";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../packages/ts/memorax-code-codex-adapter");
 const skillsRoot = join(packageRoot, "skills");
@@ -71,7 +72,7 @@ test("memorax-code references keep authority and operation boundaries explicit",
   assert.match(readSkillFile("SKILL.md"), /### Work Memory/);
   assert.match(memoraxSearch, /--sources document/);
   assert.match(memoraxSearch, /--sources dialogue/);
-  assert.match(memoraxSearch, /--document-id 'expense-policy'/);
+  assert.doesNotMatch(memoraxSearch, /--document-id\b|\bdocument_ids\b/);
   assert.match(memoraxSearch, /do not\s+retry without the restriction/);
   assert.match(memoraxSearch, /`workspace_scope_mismatch` or `workspace_scope_unavailable`/);
   assert.match(memoraxSearch, /Do not change the CLI working directory and retry/);
@@ -101,7 +102,10 @@ test("work attachment routing covers bare files and keeps current answers indepe
   const workRouter = router.split("### Work Memory")[1].split("### Repo Memory")[0];
 
   assert.match(router.split("---")[1], /supplied or indexed office documents[\s\S]*attachments\s+without accompanying text/);
-  assert.match(workRouter, /PDF, DOCX, XLSX or PPTX[\s\S]*bare\s+attachment/);
+  for (const format of ["PDF", "DOCX", "XLSX", "PPTX", ".md", ".txt"]) {
+    assert.ok(workRouter.includes(format), `${format} should have a document import route`);
+  }
+  assert.match(workRouter, /bare\s+attachment/);
   assert.match(workRouter, /references\/memorax-add\.md[\s\S]*submit document Add/);
   assert.match(workRouter, /No summary, analysis, question, or\s+separate storage instruction is required/);
   assert.match(add, /Process\s+each eligible file in a multi-file submission independently/);
@@ -110,6 +114,70 @@ test("work attachment routing covers bare files and keeps current answers indepe
   assert.match(search, /an accepted upload does not guarantee that its\s+content is searchable yet/);
   assert.match(add, /A bare attachment or storage-only request needs\s+no Search/);
 });
+
+for (const extension of ["md", "txt"]) {
+  test(`work ${extension} snapshot example submits the full document once and returns an accepted receipt`, async (t) => {
+    const add = readSkillFile("references/memorax-add.md");
+    const snapshots = add.split("### Full document snapshots")[1].split("## Eligible Knowledge")[0];
+    const commands = [...snapshots.matchAll(/```bash\n([\s\S]*?)\n```/g)]
+      .map((match) => match[1].replace(/\\\r?\n\s*/g, " "));
+    assert.equal(commands.length, 1);
+    const tokens = commands[0].match(/'[^']*'|\S+/g)
+      .map((token) => token.startsWith("'") ? token.slice(1, -1) : token);
+    assert.equal(tokens.shift(), "memorax-cli");
+    const args = tokens;
+    const option = (flag) => args[args.indexOf(flag) + 1];
+    assert.equal(args[0], "add");
+    assert.equal(option("--content-type"), "document");
+    assert.equal(option("--memory-file"), "./policy.md");
+    assert.equal(option("--expected-revision"), "0");
+    assert.ok(args.includes("--json"));
+    const documentId = option("--document-id");
+    const inputId = option("--input-id");
+    for (const identity of [documentId, inputId]) {
+      assert.match(identity, /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/);
+    }
+    assert.notEqual(documentId, inputId);
+
+    const root = mkdtempSync(join(tmpdir(), `memorax-skill-${extension}-snapshot-`));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const file = join(root, `policy.${extension}`);
+    const content = `\uFEFF  # Office policy\r\n${"文😀".repeat(2500)}\r\n  `;
+    writeFileSync(file, content);
+    args[args.indexOf("--memory-file") + 1] = file;
+    const requests = [];
+    const result = await runMemoryCli(args, {
+      cwd: root,
+      env: {
+        MEMORAX_CODE_HOME: join(root, "state"),
+        MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+        MEMORAX_CODE_MEMORAX_API_KEY: "synthetic-test-key",
+        MEMORAX_CODE_MEMORAX_USER_ID: "skill-test-user",
+      },
+      fetchImpl: async (url, init) => {
+        requests.push({ url, method: init.method, body: JSON.parse(init.body) });
+        return Response.json({ success: true, data: { task_id: "skill-document-import", status: "accepted" } }, { status: 202 });
+      },
+    });
+
+    assert.equal(result.ok, true, result.error);
+    assert.equal(result.receipt.accepted, true);
+    assert.equal(result.receipt.pending, true);
+    assert.equal(result.receipt.task_id, "skill-document-import");
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].url, "http://memorax.test/v1/memories/add");
+    assert.equal(requests[0].method, "POST");
+    assert.equal(requests[0].body.content_type, "document");
+    assert.equal(requests[0].body.async_mode, true);
+    assert.deepEqual(requests[0].body.documents, [{
+      document_id: documentId,
+      input_id: inputId,
+      expected_revision: 0,
+      content,
+    }]);
+    assert.deepEqual(Buffer.from(requests[0].body.documents[0].content), readFileSync(file));
+  });
+}
 
 test("work imports reuse accepted receipts only for the same scope and unchanged file", () => {
   const add = readSkillFile("references/memorax-add.md");

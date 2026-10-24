@@ -81,8 +81,8 @@ agent's available file-reading tools. Upload prepares memory for later retrieval
 the current answer must not depend on immediate Search results from the new
 upload. If local reading cannot cover the request, explain the limitation.
 For a later request about already indexed documents, follow
-[memorax-search.md](memorax-search.md) and preserve the requested source and
-document restrictions. Retrieved chunks do not establish full-document coverage.
+[memorax-search.md](memorax-search.md) for source selection and query
+construction. Retrieved chunks do not establish full-document coverage.
 
 This sends the original bytes for server-side parsing. Keep `--memory-file` for
 complete UTF-8 text snapshots. Binary upload does not require `--type` or `--reason`.
@@ -106,23 +106,44 @@ report the result, and do not automatically retransmit the file.
 
 ### Full document snapshots
 
-For an explicitly requested document import or replacement, send a complete
-UTF-8 text file with caller-supplied stable identity and revision:
+Use this workflow whenever the user sends a UTF-8 Markdown (`.md`) or plain-text
+(`.txt`) attachment, including a bare attachment with no accompanying request.
+Sending an eligible file triggers document Add without a separate import
+instruction. Apply the same no-save requests, credential-file exclusions,
+per-file processing, receipt reuse, scope and retry rules as binary imports above.
+Only import files the user supplies; do not scan the workspace.
+
+For a first import, generate a new opaque document UUID and a separate input
+UUID, and use `expected_revision=0`. Preserve both IDs and the receipt in the
+current task. For a replacement, use the confirmed document ID and revision;
+do not infer an existing identity from the filename. Other complete UTF-8 text
+snapshots may be imported when explicitly requested.
+
+Send the original text file through `--content-type document --memory-file`;
+MD and TXT do not use the binary `--document-file` route. Replace the sample
+UUIDs below with the actual generated identities:
 
 ```bash
-memorax-cli add --content-type document --memory-file './policy.txt' \
-  --document-id 'policy' --input-id '12345678-1234-4234-8234-123456789abc' \
-  --expected-revision 0
+memorax-cli add --content-type document --memory-file './policy.md' \
+  --document-id '22345678-1234-4234-8234-123456789abc' \
+  --input-id '12345678-1234-4234-8234-123456789abc' --expected-revision 0 --json
 ```
 
-Use a fresh UUID for a new snapshot and the last confirmed document revision
+Use a fresh input UUID for a new snapshot and the last confirmed document revision
 (`0` when creating it). The file's full text is preserved, including BOM,
-whitespace and line endings, up to 2,000,000 Unicode characters. This path does
+whitespace and line endings, up to 2,000,000 Unicode characters and 8,000,000
+UTF-8 bytes. This path does
 not need `--type` or `--reason` and bypasses the ordinary memory size limit.
 Never summarize, trim, prefix, truncate, or wrap the document in a coding card.
 Do not infer IDs or revisions, parse binary files, scrape tool output, watch
 files, or simulate indexing by sending document text as dialogue. Empty text
 requires explicit `--allow-empty` and user intent to clear that document.
+
+Wait for the Add HTTP response, retain any accepted receipt, and end the import
+operation. Acceptance does not confirm completed extraction or indexing. Do not
+poll status or require an immediate Search result. Use the agent's available
+file-reading tools for any current summary, analysis or question; never use that
+summary in place of the complete document snapshot.
 
 A user-authorized retry of the identical snapshot must reuse the exact input
 ID, expected revision, text, scope, and output language. Do not automatically

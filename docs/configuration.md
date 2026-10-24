@@ -937,6 +937,14 @@ size limit. Search behavior and its timeout are unchanged.
 Document Add sends one full UTF-8 text snapshot through MemoraX's existing
 revision-aware ingestion path:
 
+The shared Skill uses this route automatically for user-supplied Markdown
+(`.md`) and plain-text (`.txt`) attachments, including bare attachments. It
+respects explicit no-save requests and credential-file exclusions, reuses a
+matching accepted receipt within the current task, and preserves the complete
+original text. For a first import it generates separate document and input UUIDs
+with revision `0`; replacements require the confirmed document ID and revision.
+It does not send MD or TXT files through the binary upload route below.
+
 ```bash
 memorax-cli add --content-type document --memory-file ./policy.txt \
   --document-id policy --input-id 12345678-1234-4234-8234-123456789abc \

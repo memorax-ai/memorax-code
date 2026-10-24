@@ -18,7 +18,7 @@ If the selected platform command is not on `PATH`, or memory is disabled, unconf
 
 ## Work Memory Search
 
-Whenever the user sends a supported PDF, DOCX, XLSX or PPTX, first follow the
+Whenever the user sends a supported PDF, DOCX, XLSX, PPTX, MD or TXT file, first follow the
 document workflow in [memorax-add.md](memorax-add.md), even for a bare attachment.
 If the user also asks a question, requests a summary or analysis, reuse a
 matching accepted receipt to avoid another upload and use the agent's available
@@ -36,9 +36,9 @@ Choose the source from the evidence needed to answer the request, not from where
 - Use `--sources dialogue,document` only when the answer needs both kinds of evidence. Keep document facts and dialogue claims distinct when explaining the result.
 - For coding memory, omit `--sources` to preserve the existing search behavior. Omission does not explicitly select work documents or dialogue.
 
-When the user or available document metadata supplies an exact indexed document ID, add `--document-id` with that ID. Do not invent IDs from titles, filenames, or local paths. Repeat `--document-id` to select multiple known documents, up to 100 non-empty IDs. Document IDs are valid only with `--sources document`; they cannot be combined with dialogue-only or mixed-source search. If both a particular document and prior dialogue are needed, use separate document and dialogue queries within the search budget below.
+Search using the query and selected sources without document-ID filters. When the request concerns a particular document, include its known title, subject, or date in the query and check the returned evidence against that context.
 
-Use `--sources` once, with unique comma-separated values, and a space between each flag and its value. Source and document restrictions are required boundaries: if a restricted search fails or returns no relevant facts, do not retry without the restriction. Report the missing evidence or failure; do not substitute chat recollections for document facts.
+Use `--sources` once, with unique comma-separated values, and a space between each flag and its value. Source restrictions are required boundaries: if a restricted search fails or returns no relevant facts, do not retry without the restriction. Report the missing evidence or failure; do not substitute chat recollections for document facts.
 
 Construct a short question from the user's work requirement, preserving the policy, business entity, condition, and requested detail. Work queries do not need a coding identifier or engineering invariant. Apply the query budget, shell quoting, and transport rules below, but use work evidence in place of coding-scene criteria.
 
@@ -47,9 +47,6 @@ On macOS and Linux:
 ```bash
 # Recall policy facts from indexed documents.
 memorax-cli search --query '差旅报销：审批额度要求是多少？' --sources document
-
-# Restrict to a known indexed document.
-memorax-cli search --query '差旅报销：审批额度要求及例外是什么？' --sources document --document-id 'expense-policy'
 
 # Recall the earlier office requirement, not the policy answer.
 memorax-cli search --query '差旅报销：之前提出了什么审批额度查询需求？' --sources dialogue
@@ -60,7 +57,7 @@ memorax-cli search --query '差旅报销：之前的审批额度需求与文档�
 
 On Windows PowerShell, preserve the arguments and use `memorax-cli.cmd`.
 
-The CLI sends these restrictions as API `sources` and `document_ids` and selects `output_mode: facts` for source-scoped searches. The service maps `sources` to internal retrieval `content_sources`. Do not pass internal controller state such as `content_sources`, `project_id`, or `force_retrieval` as CLI flags. Authentication and the bound workspace still determine the accessible scope; source selection does not switch accounts or bypass workspace binding. Search recalls already indexed content and does not index a document or persist the current chat.
+The CLI sends the source selection as API `sources` and selects `output_mode: facts` for source-scoped searches. The service maps `sources` to internal retrieval `content_sources`. Do not pass internal controller state such as `content_sources`, `project_id`, or `force_retrieval` as CLI flags. Authentication and the bound workspace still determine the accessible scope; source selection does not switch accounts or bypass workspace binding. Search recalls already indexed content and does not index a document or persist the current chat.
 
 Accept work results only when they match the requested source, business subject, and relevant conditions and supply the needed fact. Preserve thresholds, units, exceptions, and any stated effective dates. Use available provenance to distinguish a document rule from a dialogue requirement. Visible results include supplied document IDs and revisions; JSON items retain document chunk metadata. Cite those supplied identifiers when they identify the evidence, and never replace them with guessed filenames; do not invent citations, document IDs, or missing policy details. An empty result means the search supplied no matching evidence, not that no policy exists.
 

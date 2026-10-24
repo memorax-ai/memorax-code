@@ -39,13 +39,15 @@ Use MemoraX Code coding memory for reusable engineering knowledge learned across
 
 ### Work Memory
 
-When the user sends a supported PDF, DOCX, XLSX or PPTX, including a bare
-attachment with no accompanying request, read
+When the user sends a supported PDF, DOCX, XLSX, PPTX, Markdown (`.md`) or
+plain-text (`.txt`) file, including a bare attachment with no accompanying request, read
 [references/memorax-add.md](references/memorax-add.md) for the document import
 workflow first and submit document Add. No summary, analysis, question, or
 separate storage instruction is required. Respect explicit no-save requests
 and credential-file exclusions. Process each eligible file the user sends;
 do not scan the workspace or import files merely visible in an editor.
+Use binary upload for PDF, DOCX, XLSX and PPTX, and a full UTF-8 document
+snapshot for MD and TXT; preserve the complete original text.
 Reuse a matching accepted receipt from the current task instead of submitting
 the same unchanged file again. Wait for the upload HTTP response, then end the
 import operation; MemoraX handles parsing and indexing asynchronously. Use the
