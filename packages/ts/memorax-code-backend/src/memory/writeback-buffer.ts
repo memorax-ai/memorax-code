@@ -12,7 +12,7 @@ import {
 import type { TraceContext } from "../trace/context.js";
 
 export type MemoryWritebackBufferDecision = {
-  contentType?: "code" | "dialogue";
+  contentType?: "auto" | "code" | "dialogue";
   client: "codex" | "claude-code" | "opencode" | "dsh" | "codebuddy" | "workbuddy" | "trae" | "cursor" | "qoder";
   sessionKey: string;
   idempotencyKey: string;
@@ -85,7 +85,7 @@ type MemoryWritebackBufferedTurn = {
 };
 
 type MemoryWritebackBuffer = {
-  contentType?: "code" | "dialogue";
+  contentType?: "auto" | "code" | "dialogue";
   bufferKey: string;
   client: MemoryWritebackBufferDecision["client"];
   sessionKey: string;
@@ -316,7 +316,7 @@ function flushMemoryWritebackBuffer(
   const sessionKey = buffer.sessionKey;
   const messages = bufferedMessages(buffer);
   const scopeHash = deps.hashText(buffer.repositoryScope.effectiveUserId);
-  const idempotencyKey = `automatic-buffer:v1:${buffer.client}:${scopeHash}:${sessionKey}:${deps.hashText(messages.map((message) => `${message.role}:${message.content}`).join("\n"))}${buffer.contentType === "dialogue" ? ":dialogue" : ""}`;
+  const idempotencyKey = `automatic-buffer:v1:${buffer.client}:${scopeHash}:${sessionKey}:${deps.hashText(messages.map((message) => `${message.role}:${message.content}`).join("\n"))}${buffer.contentType && buffer.contentType !== "code" ? `:${buffer.contentType}` : ""}`;
   const dedupeKeys = [idempotencyKey, ...buffer.turns.map((turn) => turn.idempotencyKey)];
   if (dedupeKeys.some((key) => deps.hasPendingWriteback(key))) return false;
   deps.reservePendingWritebacks(dedupeKeys);

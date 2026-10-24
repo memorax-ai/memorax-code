@@ -193,7 +193,7 @@ function enqueueAutomaticMemoryWritebackForRuntime(
         ? { accepted: true }
         : { accepted: false, reason: decision.skipReason };
     }
-    if (decision.contentType !== "auto" && decision.contentType !== "work"
+    if (decision.contentType !== "work"
       && memoryWritebackBufferEnabled(options.env ?? process.env)) {
       state.writebackBuffer.enqueue({ ...decision, contentType: decision.contentType }, options, {
         debug: redactAutomaticMemoryWritebackDiagnosticIdentifiers(state.diagnosticLogger),

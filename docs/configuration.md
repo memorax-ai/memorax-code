@@ -916,14 +916,18 @@ selecting another language. The setting affects newly generated content;
 Command arguments override the other Add defaults. Automatic writeback uses
 `mode: default` and resolves `content_type` from the environment override, then
 `memory.add.content_type`, then `auto` for every client. With `auto`, MemoraX
-classifies each completed turn as code or work before extraction. `work` uses
-Chat extraction; explicit `code` and `dialogue` keep their existing routes.
-Auto and work send each completed turn separately, without buffering multiple
-turns or code chunk metadata. They preserve existing redaction rules and reject
-messages exceeding `max_message_chars` instead of clipping them for classification.
-Explicit code and dialogue retain their buffering behavior; only code uses
-code chunks. Automatic conversation writeback rejects `document` because it
-requires an explicit full snapshot.
+classifies the submitted conversation as code or work before extraction. Auto
+honors the writeback buffer settings: by default, up to 8 completed turns from
+one client, session, and scope are submitted together, preserving each turn's
+ordered user/assistant messages and timestamps. Idle, size, and graceful Backend
+shutdown flushes can submit fewer turns; setting `buffer_enabled = false`
+submits each turn immediately. The outgoing content type remains `auto`.
+Explicit `code` and `dialogue` retain buffering. Explicit `work` uses Chat
+extraction and submits each turn separately. Auto and work preserve redaction
+rules and reject messages exceeding `max_message_chars` instead of clipping
+them; neither uses code chunk metadata. Only code uses code chunks. Automatic
+conversation writeback rejects `document` because it requires an explicit full
+snapshot.
 
 Explicit Add resolves `--content-type` before configuration. With neither,
 it selects `auto`/`default` in every client. Unless `--mode` is supplied, code uses `pre_summarized` and

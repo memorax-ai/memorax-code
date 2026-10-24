@@ -789,12 +789,15 @@ that recover do not produce terminal failure records.
   point. Interrupted Turns can instead discard metadata with an explicit reason.
   Unbuffered dispatch starts during enqueue. Buffering defers dispatch until a
   flush; turn or size limits can trigger that flush during enqueue.
-- Automatic Add defaults to `auto` for all clients. MemoraX classifies one
-  completed turn as code or work; configured `code`, `dialogue`, or `work` bypass
-  classification. The local provider performs no content classification.
-  Auto and work dispatch each turn separately without code chunking and reject
-  oversized content rather than clipping it. Explicit code and dialogue retain
-  their existing buffers; code alone uses the code chunk protocol.
+- Automatic Add defaults to `auto` for all clients. MemoraX classifies the
+  submitted conversation as code or work; configured `code`, `dialogue`, or `work`
+  bypass classification. The local provider performs no content classification.
+  Auto uses the configured writeback buffer, retaining each completed turn's
+  ordered messages and timestamps. Buffers and batch idempotency keys remain
+  isolated by content type, client, session, and scope. Explicit code and
+  dialogue also retain buffering; explicit work dispatches each turn separately.
+  Auto and work reject oversized turns rather than clipping them and do not use
+  code chunking; code alone uses the code chunk protocol.
   Ordinary manual Add also defaults to auto/default in every client; explicit
   code uses pre_summarized unless a supported mode is specified. It retains a validated client binding when
   missing or stale current-turn state requires cwd scope, without fabricating

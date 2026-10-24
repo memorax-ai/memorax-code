@@ -928,35 +928,150 @@ test("automatic code writes preserve legacy deduplication keys in immediate and 
 });
 
 for (const client of ["codex", "workbuddy", "qoder"]) {
-  test(`auto and work dispatch each completed ${client} turn independently without code chunks`, async () => {
-    for (const route of [undefined, "auto", "work"]) {
+  test("default and explicit auto buffer eight completed " + client + " turns without code chunks", async () => {
+    for (const route of [undefined, "auto"]) {
       const requests = [];
       const runtime = createAutomaticMemoryWritebackRuntime();
+      const env = { ...WRITEBACK_ENV, MEMORAX_CODE_MEMORAX_ADD_CONTENT_TYPE: route,
+        MEMORAX_CODE_MEMORY_WRITEBACK_CHUNK_MAX_CHARS: "5" };
+      delete env.MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED;
+      const turns = Array.from({ length: 8 }, (_, index) => ({
+        client, sessionKey: "auto-default-buffer", repositoryScope: REPOSITORY_SCOPE,
+        userText: "Discuss turn " + (index + 1) + ".\nKeep the full prompt.",
+        assistantText: "Answer turn " + (index + 1) + ".\nKeep the full reply.",
+        userTimestamp: 1788000000000 + index * 60000,
+        assistantTimestamp: 1788000030000 + index * 60000,
+        env, fetchImpl: memoraxFetch(requests),
+      }));
       try {
-        for (const turn of ["one", "two"]) {
-          assert.deepEqual(runtime.enqueue({ client, sessionKey: "auto-session",
-            userText: `Discuss ${turn}`, assistantText: `Answer ${turn}`, repositoryScope: REPOSITORY_SCOPE,
-            env: { ...WRITEBACK_ENV, MEMORAX_CODE_MEMORAX_ADD_CONTENT_TYPE: route,
-              MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "true", MEMORAX_CODE_MEMORY_WRITEBACK_CHUNK_MAX_CHARS: "5" },
-            fetchImpl: memoraxFetch(requests),
-          }), { accepted: true });
+        for (const turn of turns.slice(0, 7)) {
+          assert.deepEqual(runtime.enqueue(turn), { accepted: true });
+          await new Promise((resolve) => setImmediate(resolve));
+          assert.equal(requests.length, 0, "auto must not dispatch before the default eighth turn");
         }
+        assert.deepEqual(runtime.enqueue(turns[0]), { accepted: true });
+        await new Promise((resolve) => setImmediate(resolve));
+        assert.equal(requests.length, 0, "a duplicate turn must not advance the buffer count");
+        assert.deepEqual(runtime.enqueue(turns[7]), { accepted: true });
+        await waitFor(() => requests.length === 1, "default auto writeback buffer did not flush");
         await runtime.drain();
-        assert.equal(requests.length, 2);
-        for (const { body } of requests) {
-          assert.equal(body.content_type, route ?? "auto");
-          assert.equal(body.mode, "default");
-          assert.equal(body.chunk, undefined);
-          assert.equal(body.code_extraction_instructions, undefined);
-          assert.equal(body.messages.length, 2);
-          assert.ok(body.messages.every((message) => Number.isFinite(message.timestamp)));
-          assert.equal(body.session_id, "auto-session");
-          assert.equal(body.metadata.source, "memorax-code");
-        }
+        assert.equal(requests.length, 1);
+        const { body } = requests[0];
+        assert.equal(body.content_type, "auto");
+        assert.equal(body.mode, "default");
+        assert.equal(body.chunk, undefined);
+        assert.equal(body.code_extraction_instructions, undefined);
+        assert.deepEqual(body.messages.map(({ role, content, timestamp }) => ({ role, content, timestamp })),
+          turns.flatMap((turn) => [
+            { role: "user", content: turn.userText, timestamp: turn.userTimestamp },
+            { role: "assistant", content: turn.assistantText, timestamp: turn.assistantTimestamp },
+          ]));
+        assert.deepEqual(body.metadata.memorax_code_timestamp_sources, Array(16).fill("native"));
+        assert.match(body.metadata.idempotency_key, /^automatic-buffer:v1:/);
+        assert.match(body.metadata.idempotency_key, /:auto$/);
+        assert.equal(body.session_id, "auto-default-buffer");
+        assert.equal(body.metadata.source, "memorax-code");
       } finally { runtime.close(); }
     }
   });
+
+  test("explicit work dispatches each completed " + client + " turn independently without code chunks", async () => {
+    const requests = [];
+    const runtime = createAutomaticMemoryWritebackRuntime();
+    try {
+      for (const turn of ["one", "two"]) {
+        assert.deepEqual(runtime.enqueue({ client, sessionKey: "work-session",
+          userText: "Discuss " + turn, assistantText: "Answer " + turn, repositoryScope: REPOSITORY_SCOPE,
+          env: { ...WRITEBACK_ENV, MEMORAX_CODE_MEMORAX_ADD_CONTENT_TYPE: "work",
+            MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "true", MEMORAX_CODE_MEMORY_WRITEBACK_CHUNK_MAX_CHARS: "5" },
+          fetchImpl: memoraxFetch(requests),
+        }), { accepted: true });
+      }
+      await waitFor(() => requests.length === 2, "explicit work writeback did not dispatch immediately");
+      await runtime.drain();
+      assert.equal(requests.length, 2);
+      for (const { body } of requests) {
+        assert.equal(body.content_type, "work");
+        assert.equal(body.mode, "default");
+        assert.equal(body.chunk, undefined);
+        assert.equal(body.code_extraction_instructions, undefined);
+        assert.equal(body.messages.length, 2);
+        assert.ok(body.messages.every((message) => Number.isFinite(message.timestamp)));
+        assert.equal(body.session_id, "work-session");
+        assert.equal(body.metadata.source, "memorax-code");
+      }
+    } finally { runtime.close(); }
+  });
 }
+
+test("auto writeback honors a configured buffer turn limit", async () => {
+  const requests = [];
+  const runtime = createAutomaticMemoryWritebackRuntime();
+  const options = {
+    client: "codex", sessionKey: "auto-configured-buffer", repositoryScope: REPOSITORY_SCOPE,
+    env: { ...WRITEBACK_ENV, MEMORAX_CODE_MEMORAX_ADD_CONTENT_TYPE: "auto",
+      MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "true", MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_TURNS: "2" },
+    fetchImpl: memoraxFetch(requests),
+  };
+  try {
+    assert.deepEqual(runtime.enqueue({ ...options, userText: "First prompt", assistantText: "First answer" }), { accepted: true });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(requests.length, 0);
+    assert.deepEqual(runtime.enqueue({ ...options, userText: "Second prompt", assistantText: "Second answer" }), { accepted: true });
+    await waitFor(() => requests.length === 1, "configured auto writeback buffer did not flush");
+    assert.equal(requests[0].body.content_type, "auto");
+    assert.deepEqual(requests[0].body.messages.map(({ content }) => content), [
+      "First prompt", "First answer", "Second prompt", "Second answer",
+    ]);
+  } finally { runtime.close(); }
+});
+
+test("auto writeback dispatches each turn when buffering is disabled", async () => {
+  const requests = [];
+  const runtime = createAutomaticMemoryWritebackRuntime();
+  try {
+    for (const turn of ["one", "two"]) {
+      assert.deepEqual(runtime.enqueue({
+        client: "codex", sessionKey: "auto-unbuffered", repositoryScope: REPOSITORY_SCOPE,
+        userText: "Discuss " + turn, assistantText: "Answer " + turn,
+        env: { ...WRITEBACK_ENV, MEMORAX_CODE_MEMORAX_ADD_CONTENT_TYPE: "auto" },
+        fetchImpl: memoraxFetch(requests),
+      }), { accepted: true });
+    }
+    await waitFor(() => requests.length === 2, "disabled auto buffer did not dispatch immediately");
+    await runtime.drain();
+    assert.equal(requests.length, 2);
+    assert.ok(requests.every(({ body }) => body.content_type === "auto" && body.messages.length === 2));
+    assert.ok(requests.every(({ body }) => body.chunk === undefined));
+  } finally { runtime.close(); }
+});
+
+test("buffered auto, code, and dialogue keep identical turns in separate batches", async () => {
+  const requests = [];
+  const runtime = createAutomaticMemoryWritebackRuntime();
+  const enqueue = (route, turn) => runtime.enqueue({
+    client: "codex", sessionKey: "auto-route-isolation", repositoryScope: REPOSITORY_SCOPE,
+    userText: "Prompt " + turn, assistantText: "Answer " + turn,
+    env: { ...WRITEBACK_ENV, MEMORAX_CODE_MEMORAX_ADD_CONTENT_TYPE: route,
+      MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "true", MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_TURNS: "2" },
+    fetchImpl: memoraxFetch(requests),
+  });
+  try {
+    for (const route of ["auto", "code", "dialogue"]) assert.deepEqual(enqueue(route, "one"), { accepted: true });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(requests.length, 0, "content types must not contribute to each other's turn limit");
+    for (const route of ["auto", "code", "dialogue"]) assert.deepEqual(enqueue(route, "two"), { accepted: true });
+    await waitFor(() => requests.length === 3, "content-type buffers did not flush independently");
+    await runtime.drain();
+    assert.equal(requests.length, 3);
+    assert.deepEqual(requests.map(({ body }) => body.content_type).sort(), ["auto", "code", "dialogue"]);
+    assert.equal(new Set(requests.map(({ body }) => body.metadata.idempotency_key)).size, 3);
+    for (const { body } of requests) {
+      assert.deepEqual(body.messages.map(({ content }) => content), ["Prompt one", "Answer one", "Prompt two", "Answer two"]);
+    }
+    assert.match(requests.find(({ body }) => body.content_type === "auto").body.metadata.idempotency_key, /:auto$/);
+  } finally { runtime.close(); }
+});
 
 test("auto and work reject oversized completed turns before clipping or dispatch", async () => {
   for (const route of ["auto", "work"]) {
