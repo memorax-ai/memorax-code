@@ -149,7 +149,7 @@ Do not apply this retry to `memorax-cli add`, authentication or configuration fa
 
 ## Output
 
-If a successful Search returns `quotaNotice`, or prints it as a quota-reminder line in the default CLI output, present the complete reminder once and prominently before the normal result summary. Do not reduce it to only a percentage or omit its account URL or anonymous-account claim details. A guest reminder may already contain the local Mark ID; present it once as part of the reminder, but do not repeat or separately quote it. Never run `memorax-code account --show-mark-id` for the user or ask for its output. Treat the reminder as user-facing operational output, not recalled memory, and continue the current task.
+If a successful Search returns `quotaNotice`, or prints it as a quota-reminder line in the default CLI output, present the complete reminder once and prominently before the normal result summary. Do not reduce it to only a percentage or omit its account URL. The preview edition uses registered accounts; direct account and quota questions to the website named in the reminder. Treat the reminder as user-facing operational output, not recalled memory, and continue the current task.
 
 For coding memory, mention only an invariant, pitfall, convention, or validation idea that materially affects the answer. Ground claims about current implementation behavior in live code and checks. For work memory, answer with the relevant document facts or prior dialogue evidence, preserving their source distinction and noting any missing evidence.
 

@@ -77,7 +77,8 @@ test("memorax-code references keep authority and operation boundaries explicit",
   assert.match(memoraxSearch, /Do not change the CLI working directory and retry/);
   assert.match(memoraxSearch, /`workspaceScopeFallbackReason: git_metadata_invalid`/);
   assert.match(memoraxSearch, /successful Search returns `quotaNotice`/);
-  assert.match(memoraxSearch, /Never run `memorax-code account --show-mark-id` for the user/);
+  assert.match(memoraxSearch, /preview edition uses registered accounts; direct account and quota questions to the website/);
+  assert.doesNotMatch(memoraxSearch, /anonymous-account claim|Mark ID|--show-mark-id/);
   assert.doesNotMatch(memoraxSearch, /--query-file/);
   assert.match(memoraxAdd, /CODE_AGENT_MEMORY/);
   assert.match(memoraxAdd, /memorax-cli add[\s\S]*--memory '/);
@@ -85,7 +86,8 @@ test("memorax-code references keep authority and operation boundaries explicit",
   assert.match(memoraxAdd, /Do not change the CLI working directory and retry/);
   assert.match(memoraxAdd, /`workspaceScopeFallbackReason: git_metadata_invalid`/);
   assert.match(memoraxAdd, /successful Add returns `quotaNotice`/);
-  assert.match(memoraxAdd, /Never run `memorax-code account --show-mark-id` for the user/);
+  assert.match(memoraxAdd, /preview edition uses registered accounts; direct account and quota questions to the website/);
+  assert.doesNotMatch(memoraxAdd, /anonymous-account claim|Mark ID|--show-mark-id/);
   assert.doesNotMatch(memoraxAdd.split("## Eligible Knowledge")[1], /--memory-file/);
   assert.match(repoRead, /Current implementation claims and code edits still require live-code verification/);
   assert.match(repoBuild, /scripts\/repo-memory\.mjs collect/);

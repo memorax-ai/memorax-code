@@ -163,6 +163,11 @@ an existing account's username and API key, then writes the connection to
 reuse and request the account details again. The preview edition does not
 create or restore guest credentials.
 
+`memorax-code account` and `memorax-code account --help` print the preview
+website and registered-account setup instructions without reading local
+credentials. The legacy `--show-mark-id` option is unavailable and is rejected
+before any trial credential access. Existing trial records are left unchanged.
+
 The explicit `--non-interactive` mode works without a terminal; see
 [its input and configuration rules](#existing-account-setup-without-a-terminal).
 

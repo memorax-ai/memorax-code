@@ -48,7 +48,7 @@ function printMainHelp() {
 
 Commands:
   setup       Run or repair setup
-  account     Manage local MemoraX account information
+  account     Show preview account and API Key setup guidance
   start       Reconcile selected integrations and start the Backend
   status      Show Backend/integration status and recent failures
   stop        Stop the Backend and selected integrations
@@ -63,16 +63,18 @@ Run \`memorax-code\` with no command to show setup guidance or current status.
 Run \`memorax-code <command> --help\` for command-specific options.`);
 }
 
-function printAccountHelp() {
-  console.log(`Usage: memorax-code account --show-mark-id [--home DIR]
+async function printAccountHelp() {
+  const { MEMORAX_ACCOUNT_URL } = await import(
+    pathToFileURL(join(packageRoot(), "lib", "memorax-code-adapter-common", "src", "memorax-defaults.mjs")).href
+  );
+  console.log(`Usage: memorax-code account
 
-Show the Mark ID for the ready local trial identity. Run this command directly
-in your local terminal and keep its output private.
+Register or sign in at ${MEMORAX_ACCOUNT_URL} and create an API Key.
+Run \`memorax-code setup --existing-account\` to configure it locally.
+Guest accounts and local trial identity lookup are disabled in the preview edition.
 
 Options:
-  --show-mark-id  Show the complete local trial Mark ID
-  --home DIR      Read the specified MemoraX Code home
-  -h, --help      Show this help message`);
+  -h, --help  Show this help message`);
 }
 
 function printSetupHelp() {
@@ -95,36 +97,18 @@ function printCommand(command, args) {
 }
 
 async function runAccountCommand(args) {
-  if (args.includes("--help") || args.includes("-h")) {
-    printAccountHelp();
-    return 0;
-  }
-  let memoraxCodeHome;
-  try {
-    memoraxCodeHome = requestedMemoraxCodeHome(args);
-    assertAccountArgs(args);
-  } catch (error) {
-    console.error(`memorax-code account: ${error instanceof Error ? error.message : String(error)}`);
-    printAccountHelp();
+  if (args.includes("--show-mark-id")) {
+    console.error("memorax-code account: --show-mark-id is disabled in the preview edition");
+    await printAccountHelp();
     return 2;
   }
-
-  try {
-    const { loadReadyTrialSetupCredential } = await loadTrialSetupApi();
-    const credential = await loadReadyTrialSetupCredential({
-      memoraxCodeHome,
-      env: process.env,
-    });
-    if (!credential) {
-      console.error("memorax-code account: no ready local trial identity was found");
-      return 1;
-    }
-    console.log(`Mark ID: ${credential.markId}`);
-    return 0;
-  } catch {
-    console.error("memorax-code account: unable to read the secure local trial identity");
-    return 1;
+  if (args.some((arg) => arg !== "--help" && arg !== "-h")) {
+    console.error("memorax-code account: unsupported option; see --help for preview account setup");
+    await printAccountHelp();
+    return 2;
   }
+  await printAccountHelp();
+  return 0;
 }
 
 async function runUpdateCommand(args) {
@@ -418,24 +402,6 @@ async function routeDefaultCommand() {
   }
 }
 
-function assertAccountArgs(args) {
-  let showMarkId = false;
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
-    if (arg === "--show-mark-id") {
-      showMarkId = true;
-    } else if (arg === "--home") {
-      const value = args[++index];
-      if (!value || value.startsWith("--")) throw new Error("--home requires a directory");
-    } else if (arg.startsWith("--home=")) {
-      if (!arg.slice("--home=".length).trim()) throw new Error("--home requires a directory");
-    } else {
-      throw new Error(`unknown option ${arg}`);
-    }
-  }
-  if (!showMarkId) throw new Error("--show-mark-id is required");
-}
-
 function parseSetupMode(args) {
   let setupMode = "automatic";
   let nonInteractive = false;
@@ -475,10 +441,6 @@ async function loadSetupCompletionApi() {
     "setup-completion.mjs",
   );
   return await import(pathToFileURL(modulePath).href);
-}
-
-async function loadTrialSetupApi() {
-  return await import(pathToFileURL(join(packageRoot(), "lib", "trial-setup.mjs")).href);
 }
 
 function hasReadyMemoraxConfiguration(memoraxCodeHome) {

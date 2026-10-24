@@ -519,10 +519,14 @@ Preview setup accepts an API key created on the preview account website and
 stores it in private configuration. The shared MemoraX defaults own both the
 service origin and account website address. Default setup reuses a complete
 effective connection; explicit account setup and reconfiguration accept new
-credentials. Trial utilities remain in the source tree, but preview setup does
-not call provisioning or the secure trial credential store. Quota reminders
-use the configured connection and normalized balances without reading trial
-identity or selecting guest-account guidance.
+credentials. Trial utilities remain in the source tree, but the preview public
+CLI does not load them, provision guest accounts, generate device identity, or
+read the secure trial credential store. `memorax-code account` prints the
+preview website and registered-account setup guidance; legacy
+`--show-mark-id` requests are rejected before any trial access. Existing trial
+records are neither migrated nor deleted. Quota reminders use the configured
+connection and normalized balances without reading trial identity or selecting
+guest-account guidance.
 
 ### 3.2 Hook and retrieval data flow
 

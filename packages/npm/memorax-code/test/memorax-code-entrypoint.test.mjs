@@ -328,7 +328,7 @@ test("root help documents setup and update", async () => {
     assert.equal(result.error, undefined);
     assert.match(result.stdout, /^Usage: memorax-code \[command\] \[options\]/);
     assert.match(result.stdout, /^  setup\s+Run or repair setup$/m);
-    assert.match(result.stdout, /^  account\s+Manage local MemoraX account information$/m);
+    assert.match(result.stdout, /^  account\s+Show preview account and API Key setup guidance$/m);
     assert.match(result.stdout, /^  update\s+Update the globally installed npm package$/m);
     assert.doesNotMatch(result.stdout, /repo-memory|user-profile/);
     assert.match(result.stdout, /Run `memorax-code setup` to complete first-time setup/);
@@ -363,26 +363,54 @@ test("user-profile preserves piped helper output and exit status without requiri
   }
 });
 
-test("account command reveals only the requested local trial Mark ID", async () => {
-  const fixture = await createPackageFixture();
-  const markId = `mk_${"a".repeat(64)}`;
-  const apiKey = `sk_${"S".repeat(43)}`;
-  try {
-    const result = runCli(fixture, ["account", "--show-mark-id"], {
-      extraEnv: {
-        MEMORAX_CODE_TEST_MARK_ID: markId,
-        MEMORAX_CODE_TEST_API_KEY: apiKey,
-      },
+test("account command provides preview account guidance without accessing trial credentials", async (t) => {
+  for (const args of [[], ["--help"], ["-h"]]) {
+    await t.test(args.join(" ") || "no options", async () => {
+      const fixture = await createPackageFixture("@memorax/memorax-code-preview");
+      try {
+        const result = runCli(fixture, ["account", ...args]);
+        assert.equal(result.status, 0, result.stderr);
+        assert.equal(result.error, undefined);
+        assert.match(result.stdout, /Register or sign in at http:\/\/preview\.memorax\.net\//);
+        assert.match(result.stdout, /memorax-code setup --existing-account/);
+        assert.doesNotMatch(result.stdout, /--show-mark-id/);
+        assert.equal(await pathExists(fixture.trialLogPath), false);
+        assert.equal(await pathExists(fixture.setupLogPath), false);
+        assert.equal(await pathExists(fixture.backendLogPath), false);
+        assert.equal(await pathExists(fixture.memoraxCodeHome), false);
+      } finally {
+        await fixture.cleanup();
+      }
     });
+  }
+});
 
-    assert.equal(result.status, 0, result.stderr);
-    assert.equal(result.error, undefined);
-    assert.equal(result.stdout, `Mark ID: ${markId}\n`);
-    assert.doesNotMatch(`${result.stdout}\n${result.stderr}`, new RegExp(apiKey));
-    assert.equal(await pathExists(fixture.setupLogPath), false);
-    assert.equal(await pathExists(fixture.backendLogPath), false);
-  } finally {
-    await fixture.cleanup();
+test("account command rejects legacy trial lookup without reading or exposing an identity", async (t) => {
+  for (const options of [["--show-mark-id"], ["--show-mark-id", "--help"], ["--show-mark-id", "--home", "legacy-home"], ["--show-mark-id", "--home=legacy-home"], ["--unknown"]]) {
+    await t.test(options.join(" "), async () => {
+      const fixture = await createPackageFixture("@memorax/memorax-code-preview");
+      const markId = `mk_${"a".repeat(64)}`;
+      const apiKey = `sk_${"S".repeat(43)}`;
+      try {
+        const result = runCli(fixture, ["account", ...options], {
+          extraEnv: { MEMORAX_CODE_TEST_MARK_ID: markId, MEMORAX_CODE_TEST_API_KEY: apiKey },
+        });
+        assert.equal(result.status, 2, result.stderr);
+        assert.equal(result.error, undefined);
+        assert.match(result.stderr, /disabled in the preview edition|unsupported option/);
+        assert.match(result.stdout, /http:\/\/preview\.memorax\.net\//);
+        assert.equal(result.stdout.includes(markId), false);
+        assert.equal(result.stderr.includes(markId), false);
+        assert.equal(result.stdout.includes(apiKey), false);
+        assert.equal(result.stderr.includes(apiKey), false);
+        assert.equal(await pathExists(fixture.trialLogPath), false);
+        assert.equal(await pathExists(fixture.setupLogPath), false);
+        assert.equal(await pathExists(fixture.backendLogPath), false);
+        assert.equal(await pathExists(fixture.memoraxCodeHome), false);
+      } finally {
+        await fixture.cleanup();
+      }
+    });
   }
 });
 
@@ -531,6 +559,7 @@ async function createPackageFixture(packageName = "@memorax/memorax-code-entrypo
   const home = join(root, "home");
   const setupLogPath = join(root, "setup-calls.jsonl");
   const backendLogPath = join(root, "backend-calls.jsonl");
+  const trialLogPath = join(root, "trial-access.log");
   const copiedFiles = [
     "bin/memorax-code.mjs",
     "lib/automatic-update.mjs",
@@ -546,9 +575,6 @@ async function createPackageFixture(packageName = "@memorax/memorax-code-entrypo
     "lib/run-entrypoint.mjs",
     "lib/setup-api-key-input.mjs",
     "lib/setup-diagnostics.mjs",
-    "lib/trial-provision-client.mjs",
-    "lib/trial-provision-flow.mjs",
-    "lib/trial-plugin-mark.mjs",
     "lib/vscode-extension-command.mjs",
     "lib/windows-cli-invocation.mjs",
     "lib/windows-user-path.mjs",
@@ -576,6 +602,7 @@ async function createPackageFixture(packageName = "@memorax/memorax-code-entrypo
     "windows-directory-retry.mjs",
     "package-recovery.mjs",
     "setup-completion.mjs",
+    "memorax-defaults.mjs",
   ]) {
     const target = join(root, "lib", "memorax-code-adapter-common", "src", relativePath);
     await mkdir(dirname(target), { recursive: true });
@@ -599,19 +626,10 @@ async function createPackageFixture(packageName = "@memorax/memorax-code-entrypo
     "",
   ].join("\n"));
   await writeFile(join(root, "lib", "trial-setup.mjs"), [
-    "export { trialProvisionFailureDetails as trialSetupFailureDetails } from './trial-provision-flow.mjs';",
-    "export async function loadReadyTrialSetupCredential(options = {}) {",
-    "  if (options.memoraxCodeHome !== process.env.MEMORAX_CODE_TEST_EXPECTED_ACCOUNT_HOME) {",
-    "    throw new Error('unexpected MemoraX Code home');",
-    "  }",
-    "  const markId = process.env.MEMORAX_CODE_TEST_MARK_ID;",
-    "  if (!markId) return undefined;",
-    "  return {",
-    "    status: 'ready',",
-    "    markId,",
-    "    apiKey: process.env.MEMORAX_CODE_TEST_API_KEY,",
-    "  };",
-    "}",
+    "import { appendFileSync } from 'node:fs';",
+    "appendFileSync(process.env.MEMORAX_CODE_TEST_TRIAL_LOG, 'loaded\\n');",
+    "throw new Error('Preview CLI must not access guest credentials');",
+    "export async function loadReadyTrialSetupCredential() {}",
     "",
   ].join("\n"));
   await writeFile(join(root, "bin", "memorax-code-setup.mjs"), [
@@ -654,6 +672,7 @@ async function createPackageFixture(packageName = "@memorax/memorax-code-entrypo
     home,
     setupLogPath,
     backendLogPath,
+    trialLogPath,
     cleanup: () => rm(root, { recursive: true, force: true }),
   };
 }
@@ -680,7 +699,7 @@ function runCli(fixture, args = [], {
     MEMORAX_CODE_TEST_BACKEND_LOG: fixture.backendLogPath,
     MEMORAX_CODE_TEST_SETUP_EXIT_CODE: String(setupExitCode),
     MEMORAX_CODE_TEST_BACKEND_EXIT_CODE: String(backendExitCode),
-    MEMORAX_CODE_TEST_EXPECTED_ACCOUNT_HOME: fixture.memoraxCodeHome,
+    MEMORAX_CODE_TEST_TRIAL_LOG: fixture.trialLogPath,
     MEMORAX_CODE_TEST_MARK_ID: "",
     MEMORAX_CODE_TEST_API_KEY: "",
   };

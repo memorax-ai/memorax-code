@@ -178,9 +178,10 @@ lease expires. Cursor does not use a standalone Agent CLI for these jobs.
 ### MemoraX memory traffic
 
 Preview setup accepts an API key created by the user on the preview account
-website and writes it to private `config.toml`. It does not provision guest
-accounts or read platform trial credentials. Retained trial utility modules
-are not part of the preview setup path. API keys must not be logged or published.
+website and writes it to private `config.toml`. The preview public CLI does not
+load the retained trial utility modules, provision guest accounts, generate
+device identity, or read platform trial credentials. Existing trial records
+are neither migrated nor deleted. API keys must not be logged or published.
 
 Account setup can accept a raw API key through stdin with
 `--non-interactive`, without an interactive terminal. It writes the key to private
@@ -194,8 +195,9 @@ Quota-reminder deduplication is stored separately in a private local runtime
 record containing a one-way connection fingerprint and reminder levels, never
 a raw API key or Mark ID. Preview reminders link to the account website without
 reading trial credentials or inferring account registration from quota limits.
-The retained `memorax-code account --show-mark-id` utility can inspect a legacy
-local trial identity only when explicitly invoked; its output remains sensitive.
+`memorax-code account` prints the preview website and registered-account setup
+guidance without inspecting local account state. The legacy `--show-mark-id`
+option is rejected before accessing trial credentials.
 
 MemoraX-backed Search, Add, and automatic writeback require a Base User ID, API
 key, and network access. Foreground setup discloses automatic writeback before

@@ -503,7 +503,9 @@ paths, and error details. After collecting the needed evidence, set the debug
 variable to `false` and restart the Backend again. Share only a redacted excerpt,
 not raw logs or native history.
 
-## Quota reminder and Mark ID
+<a id="quota-reminder-and-mark-id"></a>
+
+## Quota reminders and account setup
 
 Memory write and memory search reminders are tracked independently. A reminder
 is emitted when the corresponding remaining quota reaches 10% or less and
@@ -517,6 +519,10 @@ Preview reminders direct you to your account on the
 [preview website](http://preview.memorax.net/). They do not use Mark IDs or
 request guest-account activation. If your key or account configuration needs
 to change, run `memorax-code setup --existing-account`.
+
+Run `memorax-code account` to show the account website and setup instructions.
+The legacy `memorax-code account --show-mark-id` option is unavailable in
+preview; it returns account setup guidance without reading local credentials.
 
 ## Backend does not start
 
