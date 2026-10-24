@@ -6,10 +6,27 @@ behavior.
 
 ## Unreleased
 
-## [0.1.21] - 2026-10-21
+## [0.1.21] - 2026-10-24
+
+Initial investor preview for `@memorax/memorax-code-preview`, based on the
+main distribution's 0.1.21 release. The Qoder and DSH changes below are inherited
+from that release; earlier entries record the main distribution's history.
 
 ### Added
 
+- Added a separate preview npm package while retaining the `memorax-code`
+  command. Stable updates follow this package's `latest` tag.
+- Added Work Memory routing for office discussions and documents, with
+  `auto` and `work` Add types, document/dialogue Search source selection,
+  document ID filters, and document version and chunk references. Failed
+  filters do not silently broaden the search.
+- Added full UTF-8 document snapshots, plus original-file uploads for PDF,
+  DOCX, XLSX, and PPTX, up to 150 MiB per binary file. File manifests return
+  individual submission receipts. Add and file uploads have separate timeouts.
+- Updated the shared Skill to import user-supplied office attachments, including
+  bare attachments, after a brief notice. Explicit no-save instructions and
+  credential exclusions still apply. Within the current task, unchanged files
+  in the same account/workspace scope reuse accepted receipts.
 - Added Qoder Desktop integration with managed Hooks, shared Skill Search/Add,
   personal-memory reminders, and automatic writeback from verified native
   turns. Recognized default chat directories use General memory scope.
@@ -18,6 +35,17 @@ behavior.
 
 ### Changed
 
+- Changed the default API endpoint and account website to
+  [the preview environment](http://preview.memorax.net/). Users register there
+  and obtain an API Key; setup does not create or restore guest credentials.
+  `memorax-code account` shows website and setup guidance, and the legacy
+  `--show-mark-id` option is disabled without accessing local trial credentials.
+- Defaulted ordinary Add and automatic writeback to `auto/default`. Automatic
+  `auto`/`work` writeback submits a complete turn without cross-turn buffering
+  or code chunking; over-limit turns are skipped instead of truncated. Automatic
+  writeback configured as code or dialogue retains its existing buffering behavior.
+- Supported API Key input through stdin with plain
+  `memorax-code setup --non-interactive`, as well as explicit account setup.
 - DSH status now reports CLI and Desktop versions and integration readiness.
   Removed tested/untested labels and the `dshVersionTested` and
   `testedDshVersions` JSON fields.
@@ -34,6 +62,13 @@ behavior.
 
 ### Upgrade notes
 
+Install `@memorax/memorax-code-preview`, register on the preview website, then
+run `memorax-code setup --existing-account` and enter the username and API Key
+locally. Existing endpoint configuration and environment overrides retain their
+precedence; installation does not silently switch an already configured
+connection. See [account setup](docs/configuration.md#setup-automatic-update-and-package-transition-state)
+and [document uploads](docs/configuration.md#binary-document-uploads).
+
 For DSH Desktop, open the application once to initialize its Profile, then
 fully quit it before changing plugins. Run `memorax-code start --clients dsh`
 after changing the runtime or Profiles. Start a new Session after changing its
@@ -47,6 +82,14 @@ is absent; an explicit `qoder = false` remains disabled.
 See [Qoder configuration](docs/configuration.md#qoder-integration-paths).
 
 ### Known limitations
+
+Work document ingestion and source-scoped retrieval require the matching preview
+server capabilities. Uploads wait only for the HTTP submission response; an
+accepted receipt does not confirm completed parsing, indexing, or immediate
+searchability. This package has no `add-status`, `--wait`, or status polling.
+Uncertain submissions are not automatically retried. Agents use their native
+file-reading tools for questions about the current attachment, and do not
+assume a cross-session cache of file identities or accepted receipts.
 
 Qoder's complete native Repo Memory build and publication flow remains
 unverified. The native probe stopped at `Unknown agent type` before the worker
