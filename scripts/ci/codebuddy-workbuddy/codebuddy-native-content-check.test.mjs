@@ -355,6 +355,13 @@ test("both CodeBuddy Bash formats reject mismatched, duplicated or reordered cal
   }
 });
 
+test("a consistent commandless CodeBuddy Bash call still fails for a different expected command", () => {
+  const { command, stdout, output, options } = commandlessBashFixture();
+  assert.equal(selectNativeBashStdout(output, command, options), stdout);
+  assert.throws(() => selectNativeBashStdout(output, "'fixture-node' '-e' 'OTHER_EXPECTED_COMMAND'", options),
+    (error) => error.nativeCode === "NATIVE_BASH_CALL_MISMATCH" && error.message === "NATIVE_BASH_CALL_MISMATCH");
+});
+
 test("commandless Bash results reject malformed framing, failed status and ambiguous stdout", () => {
   const original = commandlessBashFixture();
   for (const output of [bashEnvelope("different-command", original.stdout), `prefix\n${original.output}`,
