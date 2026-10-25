@@ -44,9 +44,12 @@ from that release; earlier entries record the main distribution's history.
   `memorax-code account` shows website and setup guidance, and the legacy
   `--show-mark-id` option is disabled without accessing local trial credentials.
 - Defaulted ordinary Add and automatic writeback to `auto/default`. Automatic
-  `auto`/`work` writeback submits a complete turn without cross-turn buffering
-  or code chunking; over-limit turns are skipped instead of truncated. Automatic
-  writeback configured as code or dialogue retains its existing buffering behavior.
+  `auto` writeback honors the buffer settings, grouping up to 8 completed turns
+  by default; idle, size, and graceful shutdown flushes can submit fewer turns.
+  Explicit `work` writeback submits each turn separately. Both preserve complete
+  turns without code chunking and skip over-limit turns instead of truncating
+  them. Automatic writeback configured as `code` or `dialogue` retains its
+  existing buffering behavior.
 - Supported API Key input through stdin with plain
   `memorax-code setup --non-interactive`, as well as explicit account setup.
 - DSH status now reports CLI and Desktop versions and integration readiness.
@@ -575,7 +578,7 @@ Later upgrades do not require this workaround.
 - Required a non-empty MemoraX user ID and API key during interactive setup,
   with clearer registration guidance.
 
-[0.1.21]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.21
+[0.1.21]: https://www.npmjs.com/package/@memorax/memorax-code-preview/v/0.1.21
 [0.1.20]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.20
 [0.1.19]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.19
 [0.1.18]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.18
