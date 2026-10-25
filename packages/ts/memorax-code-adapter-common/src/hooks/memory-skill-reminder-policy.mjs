@@ -22,7 +22,7 @@ export const MEMORY_IMPACT_REMINDER_CONTEXT = [
 
 export function memorySkillReminderContext(memorySkillInvocation) {
   const invocation = nonEmptyString(memorySkillInvocation) ?? DEFAULT_MEMORY_SKILL_INVOCATION;
-  return `MemoraX Code reminder: proactively invoke ${invocation} whenever coding memory might help, even when uncertain; follow the skill's router to decide whether any memory operation is needed. Also use ${invocation} for global personal memory, including working rules or preferences the user wants kept, and classify the authority before reading or writing. ${PERSONAL_MEMORY_SAVE_TIMING_CONTEXT}`;
+  return `MemoraX Code reminder: proactively invoke ${invocation} whenever memory might help, even when uncertain; follow the skill's router to decide whether any memory operation is needed. Also use ${invocation} for global personal memory, including working rules or preferences the user wants kept, and classify the authority before reading or writing. ${PERSONAL_MEMORY_SAVE_TIMING_CONTEXT}`;
 }
 
 export function memorySearchGuidanceContext(memorySkillInvocation) {
