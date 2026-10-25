@@ -318,7 +318,7 @@ complete model of GitHub Actions execution.
 
 ### Release Acceptance
 
-The `feat/investor-preview` branch builds `@memorax/memorax-code-preview` for
+The `memorax-code-preview` branch builds `@memorax/memorax-code-preview` for
 occasional investor releases. Start its CI manually on this branch. Select
 reviewed changes from `main` when another preview is needed, then validate the
 resulting candidate before publishing.
@@ -336,7 +336,7 @@ release.
 The `Release candidate` job records the dispatched commit as both the candidate
 and the test-script commit; an optional `expected_sha` must equal it. It records
 release eligibility separately from acceptance: the ref must be
-`feat/investor-preview`, versions must be consistent, `CHANGELOG.md` needs a dated
+`memorax-code-preview`, versions must be consistent, `CHANGELOG.md` needs a dated
 entry for the version, no `preview-v<version>` tag may exist, the version must be
 newer than the previous preview release tag, and npm must show that the version
 was never published. Only stable

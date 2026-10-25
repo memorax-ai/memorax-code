@@ -9,7 +9,7 @@ import { pathToFileURL } from "node:url";
 
 export const PACKAGE_NAME = "@memorax/memorax-code-preview";
 const TAG_PREFIX = "preview-v";
-const RELEASE_REF = "refs/heads/feat/investor-preview";
+const RELEASE_REF = "refs/heads/memorax-code-preview";
 const REGISTRY_URL = `https://registry.npmjs.org/${PACKAGE_NAME.replace("/", "%2F")}`;
 // Release acceptance supports stable versions only; a valid prerelease or build version is refused, never compared.
 const STABLE = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;

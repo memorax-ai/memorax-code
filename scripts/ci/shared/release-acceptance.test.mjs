@@ -33,7 +33,7 @@ function writeRelease(root, version, changelogVersions) {
 // A repository whose first commit is the preview-v0.1.19 release and whose HEAD prepares 0.1.20 after two merged pull requests.
 function releaseRepository(t, { tagPrevious = true } = {}) {
   const root = temporary(t, "release-candidate-");
-  git(root, "init", "-q", "-b", "feat/investor-preview");
+  git(root, "init", "-q", "-b", "memorax-code-preview");
   writeRelease(root, "0.1.19", ["0.1.19"]);
   git(root, "add", "-A");
   git(root, "commit", "-q", "-m", "chore:(release) prepare 0.1.19");
@@ -48,7 +48,7 @@ function releaseRepository(t, { tagPrevious = true } = {}) {
   return { root, previous, head: git(root, "rev-parse", "HEAD"), parent: git(root, "rev-parse", "HEAD^1") };
 }
 
-const candidate = (root, sha, options = {}) => collectCandidate({ root, sha, ref: "refs/heads/feat/investor-preview", checkVersions: () => true,
+const candidate = (root, sha, options = {}) => collectCandidate({ root, sha, ref: "refs/heads/memorax-code-preview", checkVersions: () => true,
   fetchImpl: published(["0.1.18", "0.1.19"]), ...options });
 
 test("a preview branch candidate with an unpublished, consistent and documented version is releasable", { skip }, async (t) => {
@@ -249,7 +249,7 @@ function acceptedRun(t, { version = "0.1.20", eligibility = { status: "RELEASABL
   for (const row of WORKBUDDY_ROWS) writeReport(reports, row, 1);
   const matrix = (key, value) => JSON.stringify({ include: [{ os: "ubuntu-24.04", node: "24", channel: "baseline", [key]: value }] });
   const needs = Object.fromEntries(REQUIRED_JOBS.map((id) => [id, { result: "success", outputs: {} }]));
-  needs.candidate.outputs.record = JSON.stringify({ schemaVersion: 1, candidateSha: SHA, testScriptsSha: SHA, ref: "refs/heads/feat/investor-preview",
+  needs.candidate.outputs.record = JSON.stringify({ schemaVersion: 1, candidateSha: SHA, testScriptsSha: SHA, ref: "refs/heads/memorax-code-preview",
     expectedSha: null, package: { name: PACKAGE_NAME, version: "0.1.20" }, previousRelease: { tag: "preview-v0.1.19", sha: "b".repeat(40), version: "0.1.19" },
     range: { from: "preview-v0.1.19", commits: 2, pullRequests: [302, 301] }, npm: { status: "NOT_PUBLISHED", latest: "0.1.19", stableVersions: ["0.1.19"] },
     docsBase: { sha: "b".repeat(40), source: "previous-release" }, eligibility, notes: [] });
