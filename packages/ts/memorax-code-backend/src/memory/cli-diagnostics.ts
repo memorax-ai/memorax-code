@@ -85,6 +85,14 @@ function recoveryAction(code: string, failure: MemoryCliFailureDetails): string 
   if (code === "MEMORY_ADD_DISABLED") return "Check the explicit Add and writeback settings with memorax-cli status.";
   if (code === "MEMORY_CONFIG_MISSING") return "Run memorax-code setup, then check memorax-cli status.";
   if (code.startsWith("MEMORY_SCOPE_")) return "Start a new session in the intended workspace and verify that its repository metadata is readable.";
+  if (code === "INVALID_TEXT_ENCODING") return "Ask the user for a UTF-8 copy before an explicitly requested retry.";
+  if (["INVALID_PARSED_DOCUMENT", "EMPTY_PARSED_DOCUMENT", "INVALID_FILE_FORMAT", "ENCRYPTED_FILE", "EMPTY_FILE"].includes(code)) {
+    return "Check that the original file is a supported, nonempty PDF, Office document or UTF-8 text file.";
+  }
+  if (["FILE_TOO_LARGE", "ARCHIVE_TOO_LARGE", "PARSED_DOCUMENT_TOO_LARGE"].includes(code)) {
+    return "Ask the user for a smaller document before an explicitly requested retry.";
+  }
+  if (code === "HASH_MISMATCH") return "Verify the file contents and SHA-256 before submitting it again.";
   if (failure.httpStatus === 401 || failure.httpStatus === 403) return "Check the configured MemoraX API key and account permissions.";
   if (failure.httpStatus === 429) return "Check account limits and retry after the indicated delay, if provided.";
   if (failure.httpStatus !== undefined) return "Check MemoraX service availability and share the diagnostic if the rejection persists.";

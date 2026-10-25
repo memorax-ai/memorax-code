@@ -212,7 +212,7 @@ cd test-repo
 | **Personal&nbsp;Memory** | Agent 应该如何与你沟通和协作？ | User Profile 中记录的语言、语气、解释深度和结果呈现偏好 |
 | **Procedure&nbsp;Memory** | 这类任务应该如何执行？ | 可复用的步骤、检查清单、前置条件、例外情况和验证要求 |
 
-Work Memory 的检索方式见 [Search 指南](packages/ts/memorax-code-codex-adapter/skills/memorax-code/references/memorax-search.md)。共享 Skill 会通过 `memorax-cli add --document-file` 导入用户提供的 PDF、DOCX、XLSX 和 PPTX 附件，通过 `--content-type document --memory-file` 导入 Markdown（`.md`）和纯文本（`.txt`）附件的完整原文。没有文字说明的附件也会触发导入，同时遵守明确不保存的要求并排除凭据文件。提交受理后即返回，由 MemoraX 异步解析和索引。当前的总结、分析和问答由 Agent 现有的文件读取工具完成，上传用于后续记忆检索。普通手动 Add 默认自动分类；可复用编码经验可以明确选择 code/pre_summarized。详见[上传配置](docs/configuration.md#binary-document-uploads)。
+Work Memory 的检索方式见 [Search 指南](packages/ts/memorax-code-codex-adapter/skills/memorax-code/references/memorax-search.md)。共享 Skill 统一通过 `memorax-cli add --document-file` 导入用户提供的 PDF、DOCX、XLSX、PPTX 和文本附件（包括 Markdown、TXT、CSV 和 JSON），保留原始文件字节。文件格式与文本编码由 MemoraX 校验，其他文本后缀及无后缀文本文件也受支持。没有文字说明的附件也会触发导入，同时遵守明确不保存的要求并排除凭据文件。提交受理后即返回，由 MemoraX 异步解析和索引。当前的总结、分析和问答由 Agent 现有的文件读取工具完成，上传用于后续记忆检索。普通手动 Add 默认自动分类；可复用编码经验可以明确选择 code/pre_summarized。详见[上传配置](docs/configuration.md#binary-document-uploads)。
 
 Personal Memory 和 Procedure Memory 在用户级目录
 `$MEMORAX_CODE_HOME/personal-memory/`（默认 `~/.memorax-code/personal-memory/`）下：User

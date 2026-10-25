@@ -941,13 +941,10 @@ size limit. Search behavior and its timeout are unchanged.
 Document Add sends one full UTF-8 text snapshot through MemoraX's existing
 revision-aware ingestion path:
 
-The shared Skill uses this route automatically for user-supplied Markdown
-(`.md`) and plain-text (`.txt`) attachments, including bare attachments. It
-respects explicit no-save requests and credential-file exclusions, reuses a
-matching accepted receipt within the current task, and preserves the complete
-original text. For a first import it generates separate document and input UUIDs
-with revision `0`; replacements require the confirmed document ID and revision.
-It does not send MD or TXT files through the binary upload route below.
+This explicit snapshot route remains available when the input is already text
+or a complete text snapshot is explicitly requested. User-supplied attachments,
+including Markdown (`.md`) and plain-text (`.txt`) files, use the original-file
+upload route below instead; they do not need local decoding or conversion.
 
 ```bash
 memorax-cli add --content-type document --memory-file ./policy.txt \
@@ -977,13 +974,28 @@ to search already indexed facts.
 
 ### Binary document uploads
 
-The shared Skill imports PDF, DOCX, XLSX and PPTX files supplied by the user,
-including bare attachments.
-It briefly announces the import and respects explicit no-save requests and
-credential-file exclusions. Files must be nonempty regular files no larger
-than 150 MiB. The client streams the original file bytes for server-side parsing
-and never uploads its local path, trace, or diagnostic records. File mutation
+This original-file route handles both binary documents and text attachments.
+The shared Skill imports user-supplied PDF, DOCX, XLSX, PPTX and candidate text
+files, including bare attachments. Text examples include MD, TXT, CSV, TSV,
+JSON, YAML, HTML and source code; unknown suffixes and extensionless text files
+are also eligible. It briefly announces the import and respects explicit
+no-save requests and credential-file exclusions.
+
+The client checks readability, regular-file status, nonempty size and the
+150 MiB limit, without an extension whitelist, text decoding or content-format
+validation. It streams original bytes and the filename for server-side
+validation, never its local path, trace or diagnostic records. File mutation
 after preparation fails the request instead of silently changing the snapshot.
+
+MemoraX validates PDF/Office formats before remote parsing; a damaged file with
+one of those suffixes is rejected rather than treated as text. Other files must
+pass strict UTF-8 validation (including UTF-8 BOM support), contain non-whitespace
+text and no binary control characters, and stay within 2,000,000 Unicode
+characters. Text is stored as document content after removing an initial BOM.
+This does not add image, archive or legacy DOC/XLS/PPT parsing. HTML tags,
+Notebook JSON and code remain raw document text: no code execution, structured
+format interpretation or embedded-attachment extraction occurs. Server
+validation errors end the submission without automatic conversion or retry.
 
 ```bash
 memorax-cli add --document-file ./policy.pdf --document-id policy \
@@ -996,8 +1008,10 @@ ID, UUID input ID, expected revision, output language, `content_type: document`
 and `async_mode: true`. Optional `--sha256` supplies a lowercase 64-character
 SHA-256 value for server validation. `x-request-id` is the input ID, including
 when the user explicitly retries the identical submission. This route is separate
-from `--memory-file`, which keeps its existing UTF-8 text meaning. No binary
-parsing, attachment scanning, document-ID guessing or revision cache runs locally.
+from `--memory-file`, which keeps its existing explicit UTF-8 text-snapshot
+meaning. All supplied file attachments use this same upload path, including MD
+and TXT. No content-format parsing, attachment scanning, document-ID guessing
+or revision cache runs locally.
 
 The CLI waits for the upload HTTP response within `upload_timeout_ms`, then ends
 the import operation. An accepted receipt remains `pending: true` and retains
@@ -1028,7 +1042,7 @@ For multiple files, `--document-manifest uploads.json` accepts a JSON array of
 ```json
 [
   {"path":"policy.pdf","document_id":"policy","input_id":"12345678-1234-4234-8234-123456789abc","expected_revision":0},
-  {"path":"budget.xlsx","document_id":"budget","input_id":"22345678-1234-4234-8234-123456789abc","expected_revision":0}
+  {"path":"notes.md","document_id":"notes","input_id":"22345678-1234-4234-8234-123456789abc","expected_revision":0}
 ]
 ```
 

@@ -591,7 +591,7 @@ async function memoryDocumentUpload(args: string[], options: MemoryCliOptions, m
   const invalid = (error: string): MemoryCliResult => ({ ok: false, action: "memory.add", error, errorCode: "MEMORY_INPUT_INVALID", stage: "input" });
   if (["--memory", "--memory-file", "--allow-empty", "--type", "--reason", "--session-id"].some(flag => args.includes(flag))
     || (argValue(args, "--content-type") && argValue(args, "--content-type") !== "document")
-    || (argValue(args, "--mode") && argValue(args, "--mode") !== "default")) return invalid("Binary document uploads cannot be mixed with message or text snapshot options");
+    || (argValue(args, "--mode") && argValue(args, "--mode") !== "default")) return invalid("Original attachment uploads cannot be mixed with message or text snapshot options");
   const manifest = argValue(args, "--document-manifest");
   if (manifest && ["--document-file", "--document-id", "--input-id", "--expected-revision", "--sha256"].some(flag => args.includes(flag))) return invalid("A document manifest supplies every file identity independently");
   let inputs: unknown[];

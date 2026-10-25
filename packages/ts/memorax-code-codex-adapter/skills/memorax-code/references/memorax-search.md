@@ -18,8 +18,11 @@ If the selected platform command is not on `PATH`, or memory is disabled, unconf
 
 ## Work Memory Search
 
-Whenever the user sends a supported PDF, DOCX, XLSX, PPTX, MD or TXT file, first follow the
-document workflow in [memorax-add.md](memorax-add.md), even for a bare attachment.
+Whenever the user sends a PDF/Office or text attachment, first follow the
+original-file upload workflow in [memorax-add.md](memorax-add.md), even for a
+bare attachment. This includes MD/TXT, other text formats, and unknown or
+missing extensions when the attachment is a text candidate; the service
+validates format and UTF-8 content.
 If the user also asks a question, requests a summary or analysis, reuse a
 matching accepted receipt to avoid another upload and use the agent's available
 file-reading tools for the current answer. Do not wait for parsing or indexing,

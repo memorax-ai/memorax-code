@@ -23,17 +23,24 @@ ordinary completed discussion as code or work. Auto and work accept only default
 mode. Omitted content type defaults to auto/default in every client. Do not add a
 coding card or code extraction instructions to auto/work content.
 
-### Binary document imports
+### Document attachment imports
 
-Use this workflow whenever the user sends a supported PDF, DOCX, XLSX or PPTX.
+Use this workflow whenever the user sends a PDF, DOCX, XLSX, PPTX or text file.
+Text examples include Markdown (`.md`/`.markdown`), TXT, CSV, TSV, JSON, YAML,
+HTML and source code. Unknown extensions and extensionless text files also
+qualify; these examples are not an extension whitelist. Use the attachment's
+available name, type and context to identify document or text candidates, without
+implementing local format or encoding validation. This does not add parsing for
+images, archives, legacy DOC/XLS/PPT or other unsupported binary formats.
 Sending an eligible file triggers document Add, including a bare attachment
 without any accompanying text. Do not ask its purpose or require a summary,
 analysis, question, or "save to MemoraX" instruction before importing it. Process
 each eligible file in a multi-file submission independently. Apply these
 boundaries before uploading:
 
-- The original file must be readable, nonempty, in a supported format and no
-  larger than 150 MiB. Skip unsupported or invalid files with a clear reason;
+- The original file must be a readable, nonempty regular file no larger than
+  150 MiB. The CLI checks these local conditions; the service validates the
+  format, encoding and content. Report local failures or server rejections and
   continue processing the other eligible files.
 - If the user says not to save, or requests temporary-only use, do not Add the
   document or route its contents through dialogue Add. Use available local
@@ -45,8 +52,19 @@ boundaries before uploading:
 
 Briefly tell the user that the document will be imported into MemoraX for parsing
 and later retrieval, then proceed without another confirmation. Use the original
-file bytes, up to 150 MiB. If the host has not exposed a readable local file,
-ask for access to the file; do not invent a path or upload scraped tool output.
+file bytes, up to 150 MiB, through `--document-file` for every format, including
+MD and TXT. Do not decode, convert, summarize, trim or rewrite the attachment
+before upload. If the host has not exposed a readable local file, ask for access
+to the file; do not invent a path or upload scraped tool output.
+
+The service validates PDF/Office formats before parsing them. All other files
+must pass strict UTF-8 text validation (UTF-8 BOM is accepted), be nonblank,
+contain no binary control characters, and have at most 2,000,000 Unicode
+characters. GBK and UTF-16 are not accepted. These are service-side rules, not
+instructions to read or validate the entire file locally. Text attachments are
+stored as `document` content, including source code. HTML tags, CSV/JSON syntax
+and Notebook JSON remain raw text; the service does not execute code, extract
+embedded attachments, or convert them into formatted document content.
 
 Before a new upload, check the current task's known receipts. Reuse an accepted
 receipt only when it belongs to the same account/workspace scope and the same
@@ -84,8 +102,10 @@ For a later request about already indexed documents, follow
 [memorax-search.md](memorax-search.md) for source selection and query
 construction. Retrieved chunks do not establish full-document coverage.
 
-This sends the original bytes for server-side parsing. Keep `--memory-file` for
-complete UTF-8 text snapshots. Binary upload does not require `--type` or `--reason`.
+The same command uploads PDF/Office and text attachments as original bytes;
+replace the example path with the actual supplied file. Attachment upload does
+not require `--type` or `--reason`. Keep `--memory-file` only for explicit
+complete-text snapshots described below, not as the MD/TXT attachment route.
 For multiple files use `--document-manifest` with a JSON array; each entry contains
 `path`, `document_id`, `input_id`, `expected_revision` and optional `sha256`.
 Paths are relative to the manifest; every input ID must be unique. Each entry
@@ -102,29 +122,29 @@ an uncertain submission automatically or generate a replacement ID for it.
 An accepted receipt with `pending: true` confirms submission only. Preserve the
 returned task ID as part of the receipt; it does not confirm a completed revision.
 On failure or `submission_unknown`, keep the original IDs, file and any receipt,
-report the result, and do not automatically retransmit the file.
+report the result, and do not automatically retransmit the file. A server format
+or encoding rejection is not permission to convert the file, fall back to a text
+snapshot, or save its contents as dialogue.
 
 ### Full document snapshots
 
-Use this workflow whenever the user sends a UTF-8 Markdown (`.md`) or plain-text
-(`.txt`) attachment, including a bare attachment with no accompanying request.
-Sending an eligible file triggers document Add without a separate import
-instruction. Apply the same no-save requests, credential-file exclusions,
-per-file processing, receipt reuse, scope and retry rules as binary imports above.
-Only import files the user supplies; do not scan the workspace.
+Use this separate workflow only when the requested input is already a complete
+text snapshot or the user explicitly requests a text snapshot. File attachments,
+including MD and TXT, use the original-file upload workflow above. Apply the
+same no-save requests, credential-file exclusions, receipt reuse, scope and
+retry rules. Do not read or convert attachments merely to select this route.
 
 For a first import, generate a new opaque document UUID and a separate input
 UUID, and use `expected_revision=0`. Preserve both IDs and the receipt in the
 current task. For a replacement, use the confirmed document ID and revision;
-do not infer an existing identity from the filename. Other complete UTF-8 text
-snapshots may be imported when explicitly requested.
+do not infer an existing identity from the filename.
 
-Send the original text file through `--content-type document --memory-file`;
-MD and TXT do not use the binary `--document-file` route. Replace the sample
-UUIDs below with the actual generated identities:
+Send the supplied complete text snapshot through
+`--content-type document --memory-file`. Replace the sample path and UUIDs
+below with the actual snapshot and generated identities:
 
 ```bash
-memorax-cli add --content-type document --memory-file './policy.md' \
+memorax-cli add --content-type document --memory-file './document-snapshot.txt' \
   --document-id '22345678-1234-4234-8234-123456789abc' \
   --input-id '12345678-1234-4234-8234-123456789abc' --expected-revision 0 --json
 ```

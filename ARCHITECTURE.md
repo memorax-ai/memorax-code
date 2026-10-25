@@ -696,9 +696,13 @@ composition, but it reuses the repository-scope, MemoraX-provider, and
 local-trace components. Ordinary manual Add additionally validates user-supplied
 `--reason` metadata. Explicit document Add validates one full UTF-8 snapshot with
 caller-supplied document ID, input UUID and expected revision; it preserves the
-text and sends no message or volatile timestamp metadata. Binary document Add
-uses `memory/document-input.ts` for explicit local file/manifest validation and
-file-backed snapshots. `provider/memorax/documents.ts` owns multipart upload,
+text and sends no message or volatile timestamp metadata. Attachment Add uses
+`memory/document-input.ts` for local file/manifest readability, regular-file,
+nonempty, size, identity and revision checks and file-backed snapshots. It
+accepts any filename extension and preserves original bytes without decoding
+text or validating document formats. MemoraX owns file-format, encoding and
+content validation and selects remote parsing or direct UTF-8 ingestion.
+`provider/memorax/documents.ts` owns multipart upload,
 request idempotency, scoped upload validation and safe submission receipts; its
 HTTP boundary remains `provider/memorax/http.ts`. The CLI waits for the upload
 response and returns after acceptance; remote parsing and indexing continue
@@ -707,9 +711,12 @@ are not provider payload authority. The direct entrypoint is not permission to f
 unscoped provider calls or to reconstruct identity from unrelated process
 state.
 
-The shared Skill routes every eligible PDF, DOCX, XLSX or PPTX sent by the user
-to document Add, including bare attachments without accompanying text. No
-separate processing or storage instruction is required. The agent announces
+The shared Skill routes user-supplied PDF, DOCX, XLSX, PPTX and candidate text
+attachments (including MD, TXT, CSV, code and extensionless text files) through
+the same original-file document Add path, including bare attachments without
+accompanying text. Explicit full-text snapshots retain their separate JSON Add
+path; they are not the default route for text attachments. No separate processing
+or storage instruction is required. The agent announces
 the import, reuses an accepted receipt for the same unchanged file and scope
 within the current task, and returns after submission. For questions, summaries
 or analysis of the current attachment, the agent uses its existing document

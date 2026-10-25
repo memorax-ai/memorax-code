@@ -33,8 +33,8 @@ export function validateDocumentUploadInput(value: unknown): value is DocumentUp
 export async function prepareDocumentUpload(input: DocumentUploadInput): Promise<PreparedDocumentUpload> {
   if (!validateDocumentUploadInput(input)) throw new Error("Document upload requires a file, document ID, input UUID and nonnegative revision");
   const extension = extname(input.path).toLowerCase();
-  const type = MIME_TYPES[extension];
-  if (!type) throw new Error("Document uploads support only PDF, DOCX, XLSX and PPTX");
+  // The service owns format and text validation; MIME is only a transport hint.
+  const type = MIME_TYPES[extension] ?? "application/octet-stream";
   try {
     const info = await stat(input.path);
     if (!info.isFile()) throw new Error("not_regular");

@@ -20,9 +20,12 @@ from that release; earlier entries record the main distribution's history.
   `auto` and `work` Add types, document/dialogue Search source selection,
   document ID filters, and document version and chunk references. Failed
   filters do not silently broaden the search.
-- Added full UTF-8 document snapshots, plus original-file uploads for PDF,
-  DOCX, XLSX, and PPTX, up to 150 MiB per binary file. File manifests return
-  individual submission receipts. Add and file uploads have separate timeouts.
+- Added full UTF-8 document snapshots and a unified original-file upload route
+  for PDF, DOCX, XLSX, PPTX and text attachments, including MD, TXT, CSV, JSON,
+  code and extensionless text files. Uploads preserve original bytes up to
+  150 MiB per file; MemoraX owns content, encoding and format validation. File
+  manifests return individual submission receipts. Add and file uploads have
+  separate timeouts.
 - Updated the shared Skill to import user-supplied office attachments, including
   bare attachments, after a brief notice. Explicit no-save instructions and
   credential exclusions still apply. Within the current task, unchanged files

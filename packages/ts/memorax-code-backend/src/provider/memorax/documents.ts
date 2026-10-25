@@ -20,6 +20,19 @@ function validScope(config: MemoraxAdapterConfig, scope: RepositoryMemoryScope |
   return Boolean(scope && scope.baseUserId === config.userId && scope.effectiveUserId.trim());
 }
 
+const DOCUMENT_ERROR_MESSAGES: Readonly<Record<string, string>> = {
+  INVALID_TEXT_ENCODING: "MemoraX rejected the document: text must use UTF-8 encoding.",
+  INVALID_PARSED_DOCUMENT: "MemoraX rejected the document: unsupported binary content or text control characters.",
+  EMPTY_PARSED_DOCUMENT: "MemoraX rejected the document: no non-whitespace text was found.",
+  PARSED_DOCUMENT_TOO_LARGE: "MemoraX rejected the document: decoded text exceeds the service character limit.",
+  INVALID_FILE_FORMAT: "MemoraX rejected the document: the PDF or Office file format is invalid.",
+  FILE_TOO_LARGE: "MemoraX rejected the document: the file exceeds the service size limit.",
+  ARCHIVE_TOO_LARGE: "MemoraX rejected the document: the Office archive exceeds the service expansion limit.",
+  ENCRYPTED_FILE: "MemoraX rejected the document: encrypted files are not supported.",
+  EMPTY_FILE: "MemoraX rejected the document: the file is empty.",
+  HASH_MISMATCH: "MemoraX rejected the document: its contents do not match the supplied SHA-256.",
+};
+
 export async function uploadMemoraxDocument(
   config: MemoraxAdapterConfig, scope: RepositoryMemoryScope | undefined, input: PreparedDocumentUpload, fetchImpl: typeof fetch = fetch,
 ): Promise<DocumentOperationResult> {
@@ -33,7 +46,7 @@ export async function uploadMemoraxDocument(
   form.append("file", input.file, input.filename);
   try {
     const response = await requestMemorax({ ...config, timeoutMs: config.uploadTimeoutMs ?? 300_000 }, "/v1/memories/add",
-      { method: "POST", body: form, requestId: identity.input_id }, fetchImpl);
+      { method: "POST", body: form, requestId: identity.input_id, errorMessages: DOCUMENT_ERROR_MESSAGES }, fetchImpl);
     const data = isRecord(response.body) && isRecord(response.body.data) ? response.body.data : {};
     const validRevision = data.revision === null || (Number.isSafeInteger(data.revision)
       && Number(data.revision) > 0 && data.revision === input.expected_revision + 1);

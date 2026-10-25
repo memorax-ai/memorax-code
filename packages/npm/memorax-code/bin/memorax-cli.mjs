@@ -17,7 +17,8 @@ Memory commands:
   add --document-manifest PATH [--json]
   add --content-type document --memory-file PATH --document-id ID --input-id UUID --expected-revision INT [--allow-empty]
 
-Ordinary Add defaults to auto/default. Binary uploads accept PDF/DOCX/XLSX/PPTX up to 150 MiB.
+Ordinary Add defaults to auto/default. Upload original attachments with --document-file or --document-manifest (up to 150 MiB per file).
+MemoraX validates PDF/DOCX/XLSX/PPTX and other UTF-8 text files regardless of suffix. --memory-file remains available for explicit text snapshots.
 Add returns after submission is accepted. MemoraX processes documents asynchronously; acceptance does not confirm search readiness.
 
 Run the command from the active task workspace so MemoraX Code can enforce its repository scope.`);

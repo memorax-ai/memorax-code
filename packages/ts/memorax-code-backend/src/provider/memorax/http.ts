@@ -72,7 +72,7 @@ export async function postMemoraxJson(
 export async function requestMemorax(
   config: MemoraxAdapterConfig,
   path: string,
-  request: { method: "POST"; body?: string | FormData; json?: boolean; requestId?: string },
+  request: { method: "POST"; body?: string | FormData; json?: boolean; requestId?: string; errorMessages?: Readonly<Record<string, string>> },
   fetchImpl: typeof fetch,
 ): Promise<MemoraxJsonResponse> {
   const controller = new AbortController();
@@ -91,10 +91,14 @@ export async function requestMemorax(
     });
     if (!response.ok) {
       const retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
-      // Error bodies may echo private input. Let the caller retry from status
-      // and Retry-After without including that content in diagnostics.
-      await response.arrayBuffer().catch(() => undefined);
-      throw new MemoraxRequestError(`MemoraX HTTP ${response.status}`, "http", "MEMORAX_HTTP_ERROR", {
+      // Upload callers may opt into fixed messages for known validation codes.
+      // Never expose server messages, unknown codes, or echoed private content.
+      const safeError = request.errorMessages && response.status < 500
+        ? await readSafeHttpError(response, request.errorMessages)
+        : undefined;
+      if (!request.errorMessages) await response.arrayBuffer().catch(() => undefined);
+      else if (!response.bodyUsed) await response.body?.cancel().catch(() => undefined);
+      throw new MemoraxRequestError(safeError?.message ?? `MemoraX HTTP ${response.status}`, "http", safeError?.code ?? "MEMORAX_HTTP_ERROR", {
         httpStatus: response.status,
         ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
       });
@@ -119,6 +123,31 @@ export async function requestMemorax(
     throw normalizeMemoraxRequestError(error, controller.signal.aborted);
   } finally {
     clearTimeout(timeout);
+  }
+}
+
+async function readSafeHttpError(response: Response, messages: Readonly<Record<string, string>>): Promise<{ code: string; message: string } | undefined> {
+  const reader = response.body?.getReader();
+  if (!reader) return undefined;
+  const chunks: Uint8Array[] = [];
+  let length = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      length += value.byteLength;
+      if (length > 4096) return undefined;
+      chunks.push(value);
+    }
+    const body: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"));
+    const code = isRecord(body) && isRecord(body.error) ? body.error.code : undefined;
+    return typeof code === "string" && Object.hasOwn(messages, code)
+      ? { code, message: messages[code]! }
+      : undefined;
+  } catch {
+    return undefined;
+  } finally {
+    await reader.cancel().catch(() => undefined);
   }
 }
 

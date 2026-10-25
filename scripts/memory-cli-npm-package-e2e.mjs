@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
@@ -26,6 +27,17 @@ const sessionId = "private-session-canary-for-installed-cli";
 const missingQueryFile = join(root, "private-query-file-canary.txt");
 const documentPath = join(root, "private-document-canary.pdf");
 const documentBytes = Buffer.from([37, 80, 68, 70, 45, 49, 46, 55, 10, 0, 255, 13, 10, 128]);
+const textAttachments = [
+  { name: "private-document-canary.md", bytes: Buffer.from("\ufeff# Document\r\n\r\nKeep original text.\r\n") },
+  { name: "private-document-canary.txt", bytes: Buffer.from("Original text\nwith whitespace.\t\n") },
+  { name: "private-document-canary.csv", bytes: Buffer.from('name,notes\r\nAlice,"first line\nsecond line"\r\n') },
+  { name: "private-document-canary.unlisted", bytes: Buffer.from('{"document":"unchanged"}\n') },
+  { name: "PRIVATE_DOCUMENT_CANARY", bytes: Buffer.from("Text without a filename extension.\n") },
+];
+const uploadedBytes = new Map([
+  ["private-document-canary.pdf", documentBytes],
+  ...textAttachments.map(({ name, bytes }) => [name, bytes]),
+]);
 const documentId = "travel-policy";
 const documentInputId = "12345678-1234-4234-8234-123456789abc";
 const documentItem = { content: "Travel requires advance approval.", content_type: "document",
@@ -58,7 +70,7 @@ const server = createServer(async (request, response) => {
       : mode === "shape" ? { data: { unexpected: responseCanary } }
         : mode === "add" ? { success: true, data: { task_id: "installed-cli-add", status: "queued" } }
           : mode === "document" ? { success: true, data: { task_id: "installed-cli-document", status: "accepted",
-            document_id: documentId, input_id: documentInputId, revision: null } }
+            document_id: body.document_id, input_id: body.input_id, revision: null } }
             : { success: true, data: { data: mode === "document-search" ? [documentItem] : [] } },
   ));
 });
@@ -196,6 +208,27 @@ try {
   assert.deepEqual(uploadRequest.body, { user_id: "installed-cli-user@private-workspace-canary", document_id: documentId,
     input_id: documentInputId, expected_revision: 0, memory_output_language: "zh", content_type: "document", async_mode: true });
 
+  for (const { name, bytes } of textAttachments) {
+    const attachmentPath = join(root, name);
+    await writeFile(attachmentPath, bytes);
+    const args = [...documentArgs];
+    args[2] = attachmentPath;
+    args[4] = randomUUID();
+    args[6] = randomUUID();
+    const uploadedText = await runCli("add", "document", env, true, { args, includeSessionId: false });
+    assert.equal(uploadedText.code, 0, name);
+    assert.equal(uploadedText.stderr, "", name);
+    const result = JSON.parse(uploadedText.stdout);
+    assert.equal(result.ok, true, name);
+    assert.deepEqual(result.receipt, { ...uploadResult.receipt, document_id: args[4], input_id: args[6] }, name);
+    const request = requests.at(-1);
+    assert.equal(request.url, "/v1/memories/add");
+    assert.match(request.headers["content-type"], /^multipart\/form-data; boundary=/);
+    assert.deepEqual(request.file, { name, type: "application/octet-stream", bytes });
+    assert.equal(request.headers["x-request-id"], args[6]);
+    assert.deepEqual(request.body, { ...uploadRequest.body, document_id: args[4], input_id: args[6] });
+  }
+
   const searchedDocument = await runCli("search", "document-search", env, true, {
     args: ["search", "--query", query, "--sources", "document", "--document-id", documentId],
   });
@@ -251,7 +284,7 @@ try {
       assert.equal(request.url, "/v1/memories/add");
       if (request.file) {
         assert.equal(request.body.content_type, "document");
-        assert.deepEqual(request.file.bytes, documentBytes);
+        assert.deepEqual(request.file.bytes, uploadedBytes.get(request.file.name));
       } else assert.ok(payload.includes(memory));
     }
   }
@@ -355,7 +388,8 @@ async function assertDiagnostic(result, expectedError = result.error) {
 }
 
 function assertContentFree(text) {
-  for (const value of [workspace, missingQueryFile, documentPath, query, memory, reason, apiKey, responseCanary, sessionId]) {
+  for (const value of [workspace, missingQueryFile, documentPath, ...textAttachments.map(({ name }) => join(root, name)),
+    query, memory, reason, apiKey, responseCanary, sessionId]) {
     assert.equal(text.includes(value), false, "Diagnostics must not expose input, response content, credentials, or workspace paths");
   }
   assert.equal(text.includes("[memorax-code-backend:debug]"), false);

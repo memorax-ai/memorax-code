@@ -20,17 +20,27 @@ async function fixture(t, fetchImpl) {
 const uploadArgs = path => ["add", "--document-file", path, "--document-id", "policy", "--input-id", inputId, "--expected-revision", "0"];
 const accepted = () => Response.json({ success: true, data: { task_id: "task-1", status: "accepted", data: null, document_id: "policy", input_id: inputId, revision: null } }, { status: 202 });
 
-for (const extension of ["pdf", "docx", "xlsx", "pptx"]) {
-  test(`document upload sends complete ${extension} bytes with explicit identity and no local path`, async t => {
+const uploadFixtures = [
+  ...[
+    ["pdf", "application/pdf"],
+    ["docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"],
+    ["xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"],
+    ["pptx", "application/vnd.openxmlformats-officedocument.presentationml.presentation"],
+  ].map(([extension, mime]) => ({ name: `private-file.${extension}`, mime, bytes: Buffer.from([0, 255, 32, 13, 10, 128]) })),
+  ...["notes.md", "notes.txt", "people.csv", "data.json", "main.py", "custom.unlisted", ".editorconfig", "README"]
+    .map(name => ({ name, mime: "application/octet-stream", bytes: Buffer.from("\ufeff# 完整原文\r\n\r\nname,value\r\nalpha,1\r\n") })),
+];
+
+for (const { name, mime, bytes } of uploadFixtures) {
+  test(`document upload sends complete ${name} bytes with explicit identity and no local path`, async t => {
     const calls = [];
     const { root, options } = await fixture(t, async (url, init) => {
       const request = JSON.parse(init.body.get("request"));
       const file = init.body.get("file");
-      calls.push({ url, init, request, name: file.name, bytes: Buffer.from(await file.arrayBuffer()) });
+      calls.push({ url, init, request, name: file.name, mime: file.type, bytes: Buffer.from(await file.arrayBuffer()) });
       return accepted();
     });
-    const path = join(root, `private-file.${extension}`);
-    const bytes = Buffer.from([0, 255, 32, 13, 10, 128]);
+    const path = join(root, name);
     await writeFile(path, bytes);
     const result = await runMemoryCli(uploadArgs(path), options);
     assert.equal(result.ok, true, result.error);
@@ -46,11 +56,13 @@ for (const extension of ["pdf", "docx", "xlsx", "pptx"]) {
     assert.deepEqual(calls[0].request, { user_id: "test-user@workspace", document_id: "policy", input_id: inputId,
       expected_revision: 0, memory_output_language: "zh", content_type: "document", async_mode: true });
     assert.deepEqual(calls[0].bytes, bytes);
+    assert.equal(calls[0].name, name);
+    assert.equal(calls[0].mime, mime);
     assert.equal(calls[0].name.includes(root), false);
   });
 }
 
-test("document upload rejects unsupported files, oversized files and ambiguous identity without dispatch", async t => {
+test("document upload rejects inaccessible, empty, nonregular, oversized files and ambiguous identity without dispatch", async t => {
   let calls = 0;
   const { root, options } = await fixture(t, async () => { calls++; return accepted(); });
   const path = join(root, "input.pdf");
@@ -63,9 +75,7 @@ test("document upload rejects unsupported files, oversized files and ambiguous i
     uploadArgs(path).map(x => x === inputId ? "not-a-uuid" : x),
     [...uploadArgs(path), "--sha256", "invalid"],
   ]) assert.equal((await runMemoryCli(args, options)).ok, false);
-  const unsupported = join(root, "input.exe");
-  await writeFile(unsupported, "file");
-  assert.equal((await runMemoryCli(uploadArgs(unsupported), options)).ok, false);
+  assert.equal((await runMemoryCli(uploadArgs(join(root, "missing.csv")), options)).ok, false);
   await writeFile(path, "");
   assert.equal((await runMemoryCli(uploadArgs(path), options)).ok, false);
   const directory = join(root, "directory.pdf");
@@ -90,22 +100,34 @@ test("upload timeout reports unknown submission and retains its identity without
   assert.equal(calls, 1);
 });
 
-test("manifest submissions keep per-file success and failure receipts independently", async t => {
-  let calls = 0;
-  const { root, options } = await fixture(t, async () => { calls++; return accepted(); });
-  await writeFile(join(root, "input.pdf"), "pdf");
+test("manifest submits original text and binary files with independent local and server failures", async t => {
+  const calls = [];
+  const { root, options } = await fixture(t, async (_url, init) => {
+    const identity = JSON.parse(init.body.get("request"));
+    const file = init.body.get("file");
+    const bytes = Buffer.from(await file.arrayBuffer());
+    calls.push({ name: file.name, bytes });
+    if (file.name === "invalid.txt") return Response.json({ error: { code: "INVALID_TEXT_ENCODING", message: "private text" } }, { status: 422 });
+    return Response.json({ success: true, data: { task_id: "task-" + identity.document_id, status: "accepted", ...identity, revision: null } }, { status: 202 });
+  });
+  const entries = ["missing.docx", "input.pdf", "notes.md", "invalid.txt", "people.csv", "README"].map((name, index) => ({
+    path: name, document_id: "document-" + index, input_id: `${index + 1}2345678-1234-4234-8234-123456789abc`, expected_revision: 0,
+  }));
+  const originals = new Map(entries.slice(1).map(entry => [entry.path, entry.path === "invalid.txt"
+    ? Buffer.from([255, 0, 128]) : Buffer.from("\ufeff  original bytes\r\n\r\n" + entry.path)]));
+  for (const [name, bytes] of originals) await writeFile(join(root, name), bytes);
   const manifest = join(root, "uploads.json");
-  await writeFile(manifest, JSON.stringify([
-    { path: "missing.docx", document_id: "missing", input_id: "22345678-1234-4234-8234-123456789abc", expected_revision: 0 },
-    { path: "input.pdf", document_id: "policy", input_id: inputId, expected_revision: 0 },
-  ]));
+  await writeFile(manifest, JSON.stringify(entries));
   const result = await runMemoryCli(["add", "--document-manifest", manifest], options);
   assert.equal(result.ok, false);
-  assert.equal(result.results.length, 2);
-  assert.equal(result.results[0].ok, false);
-  assert.equal(result.results[1].ok, true);
-  assert.equal(result.results[1].receipt.input_id, inputId);
-  assert.equal(calls, 1);
+  assert.equal(result.results.length, entries.length);
+  assert.deepEqual(result.results.map(item => item.ok), [false, true, true, false, true, true]);
+  assert.equal(result.results[3].errorCode, "INVALID_TEXT_ENCODING");
+  assert.equal(result.results[3].receipt.status, "failed");
+  for (let index = 0; index < entries.length; index++) assert.equal(result.results[index].receipt.input_id, entries[index].input_id);
+  assert.equal(calls.length, originals.size);
+  for (const call of calls) assert.deepEqual(call.bytes, originals.get(call.name));
+  assert.equal(JSON.stringify(result).includes("private text"), false);
 });
 
 test("removed wait flags reject every Add input before sending a request", async t => {
@@ -147,7 +169,7 @@ test("add-status is rejected as an unknown command without contacting MemoraX", 
 });
 
 test("upload rejection and server uncertainty preserve identity without exposing response bodies or retrying", async t => {
-  for (const httpStatus of [400, 401, 409, 429, 500, 503]) {
+  for (const httpStatus of [400, 401, 409, 422, 429, 500, 503]) {
     let calls = 0;
     const { root, options } = await fixture(t, async () => {
       calls++;
@@ -324,4 +346,73 @@ test("manifest input UUID uniqueness is case independent before network submissi
   assert.equal(result.results[0].ok, true);
   assert.equal(result.results[1].errorCode, "MEMORY_INPUT_INVALID");
   assert.equal(calls, 1);
+});
+
+
+test("upload delegates text and format validation to MemoraX and exposes only known safe errors", async t => {
+  for (const [name, bytes, code, message, action, status] of [
+    ["invalid.txt", Buffer.from([255, 0, 128]), "INVALID_TEXT_ENCODING", /UTF-8 encoding/, /Ask the user.*UTF-8.*explicitly requested retry/, 422],
+    ["archive.zip", Buffer.from([80, 75, 3, 4]), "INVALID_PARSED_DOCUMENT", /binary content/, /supported/, 422],
+    ["empty.csv", Buffer.from(" \r\n\t"), "EMPTY_PARSED_DOCUMENT", /non-whitespace text/, /nonempty/, 422],
+    ["broken.pdf", Buffer.from("not a PDF"), "INVALID_FILE_FORMAT", /format is invalid/, /supported/, 422],
+    ["large.txt", Buffer.from("small fixture"), "PARSED_DOCUMENT_TOO_LARGE", /character limit/, /Ask the user.*smaller document.*explicitly requested retry/, 422],
+    ["large.docx", Buffer.from("small fixture"), "FILE_TOO_LARGE", /size limit/, /Ask the user.*smaller document.*explicitly requested retry/, 413],
+  ]) {
+    let calls = 0;
+    const { root, options } = await fixture(t, async (_url, init) => {
+      calls++;
+      assert.ok(init.body instanceof FormData);
+      assert.deepEqual(Buffer.from(await init.body.get("file").arrayBuffer()), bytes);
+      return Response.json({ error: { code, message: "private document body", reason: "private path" } }, { status });
+    });
+    const path = join(root, name);
+    await writeFile(path, bytes);
+    const result = await runMemoryCli(uploadArgs(path), options);
+    assert.equal(result.ok, false);
+    assert.equal(result.errorCode, code);
+    assert.equal(result.httpStatus, status);
+    assert.match(result.error, message);
+    assert.match(result.userAction, action);
+    assert.equal(result.receipt.status, "failed");
+    assert.equal(result.receipt.pending, false);
+    assert.equal(result.receipt.input_id, inputId);
+    assert.equal(result.receipt.expected_revision, 0);
+    assert.equal(JSON.stringify(result).includes("private"), false);
+    assert.equal(calls, 1);
+  }
+});
+
+test("upload keeps unknown, malformed and oversized validation responses private", async t => {
+  for (const body of [
+    { error: { code: "private document text", message: "private response" } },
+    { error: { code: "toString", message: "private response" } },
+    { error: { code: "INVALID_TEXT_ENCODING", message: "private response".repeat(500) } },
+    "private non-JSON response",
+  ]) {
+    let calls = 0;
+    const { root, options } = await fixture(t, async () => {
+      calls++;
+      return new Response(typeof body === "string" ? body : JSON.stringify(body), { status: 422 });
+    });
+    const path = join(root, "input.txt");
+    await writeFile(path, "original");
+    const result = await runMemoryCli(uploadArgs(path), options);
+    assert.equal(result.errorCode, "MEMORAX_HTTP_ERROR");
+    assert.equal(result.error, "MemoraX HTTP 422");
+    assert.equal(result.receipt.status, "failed");
+    assert.equal(JSON.stringify(result).includes("private"), false);
+    assert.equal(calls, 1);
+  }
+});
+
+test("ordinary JSON Add does not interpret upload-only validation codes", async t => {
+  const { options } = await fixture(t, async (_url, init) => {
+    assert.equal(typeof init.body, "string");
+    return Response.json({ error: { code: "INVALID_TEXT_ENCODING", message: "private response" } }, { status: 422 });
+  });
+  const result = await runMemoryCli(["add", "--memory", "Discussed the policy.", "--type", "episodic", "--reason", "Requested record"], options);
+  assert.equal(result.ok, false);
+  assert.equal(result.errorCode, "MEMORAX_HTTP_ERROR");
+  assert.equal(result.error, "MemoraX HTTP 422");
+  assert.equal(JSON.stringify(result).includes("private"), false);
 });

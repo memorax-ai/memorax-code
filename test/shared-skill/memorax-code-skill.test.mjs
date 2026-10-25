@@ -102,7 +102,7 @@ test("work attachment routing covers bare files and keeps current answers indepe
   const workRouter = router.split("### Work Memory")[1].split("### Repo Memory")[0];
 
   assert.match(router.split("---")[1], /supplied or indexed office documents[\s\S]*attachments\s+without accompanying text/);
-  for (const format of ["PDF", "DOCX", "XLSX", "PPTX", ".md", ".txt"]) {
+  for (const format of ["PDF", "DOCX", "XLSX", "PPTX", ".md", ".txt", "CSV", "TSV", "JSON", "YAML", "HTML", "source code"]) {
     assert.ok(workRouter.includes(format), `${format} should have a document import route`);
   }
   assert.match(workRouter, /bare\s+attachment/);
@@ -115,8 +115,85 @@ test("work attachment routing covers bare files and keeps current answers indepe
   assert.match(add, /A bare attachment or storage-only request needs\s+no Search/);
 });
 
+test("work attachment guidance delegates content validation and keeps explicit snapshots separate", () => {
+  const router = readSkillFile("SKILL.md");
+  const add = readSkillFile("references/memorax-add.md");
+  const attachments = add.split("### Document attachment imports")[1].split("### Full document snapshots")[0];
+  const snapshots = add.split("### Full document snapshots")[1].split("## Eligible Knowledge")[0];
+
+  assert.match(router, /`--document-file` or `--document-manifest`[\s\S]*original bytes/);
+  assert.match(router, /Unknown extensions and\s+extensionless text files also qualify/);
+  assert.match(attachments, /service validates the\s+format, encoding and content/);
+  assert.match(attachments, /including\s+MD and TXT/);
+  assert.match(attachments, /not an extension whitelist/);
+  assert.match(attachments, /not\s+instructions to read or validate the entire file locally/);
+  assert.match(attachments, /stored as `document` content, including source code/);
+  assert.match(attachments, /HTML tags, CSV\/JSON syntax\s+and Notebook JSON remain raw text/);
+  assert.match(attachments, /format\s+or encoding rejection is not permission to convert the file, fall back to a text\s+snapshot/);
+  assert.match(attachments, /Credential files[\s\S]*Never import their contents/);
+  assert.match(attachments, /not files merely selected or visible[\s\S]*scanning the workspace/);
+  assert.match(snapshots, /only when the requested input is already a complete\s+text snapshot or the user explicitly requests a text snapshot/);
+  assert.match(snapshots, /including MD and TXT, use the original-file upload workflow/);
+});
+
+for (const filename of ["policy.pdf", "policy.md", "policy.txt", "people.csv", "main.py", "config.unlisted", "README", ".editorconfig"]) {
+  test("work attachment example uploads original " + filename + " bytes once and returns an accepted receipt", async (t) => {
+    const add = readSkillFile("references/memorax-add.md");
+    const attachments = add.split("### Document attachment imports")[1].split("### Full document snapshots")[0];
+    const commands = [...attachments.matchAll(/```bash\n([\s\S]*?)\n```/g)]
+      .map((match) => match[1].replace(/\\\r?\n\s*/g, " "));
+    assert.equal(commands.length, 1);
+    const args = commands[0].match(/'[^']*'|\S+/g)
+      .map((token) => token.startsWith("'") ? token.slice(1, -1) : token);
+    assert.equal(args.shift(), "memorax-cli");
+    const option = (flag) => args[args.indexOf(flag) + 1];
+    assert.equal(args[0], "add");
+    assert.equal(option("--document-file"), "./policy.pdf");
+    assert.ok(!args.includes("--memory-file"));
+    const documentId = option("--document-id");
+    const inputId = option("--input-id");
+    const root = mkdtempSync(join(tmpdir(), "memorax-skill-attachment-"));
+    t.after(() => rmSync(root, { recursive: true, force: true }));
+    const file = join(root, filename);
+    const content = Buffer.from("\uFEFF  # Office policy\r\n" + "文😀".repeat(2500) + "\r\n  ");
+    writeFileSync(file, content);
+    args[args.indexOf("--document-file") + 1] = file;
+    const requests = [];
+    const result = await runMemoryCli(args, {
+      cwd: root,
+      env: {
+        MEMORAX_CODE_HOME: join(root, "state"),
+        MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+        MEMORAX_CODE_MEMORAX_API_KEY: "synthetic-test-key",
+        MEMORAX_CODE_MEMORAX_USER_ID: "skill-test-user",
+      },
+      fetchImpl: async (url, init) => {
+        const upload = init.body.get("file");
+        requests.push({ url, method: init.method, request: JSON.parse(init.body.get("request")),
+          filename: upload.name, bytes: Buffer.from(await upload.arrayBuffer()) });
+        return Response.json({ success: true, data: { task_id: "skill-document-import", status: "accepted",
+          document_id: documentId, input_id: inputId, revision: null, data: null } }, { status: 202 });
+      },
+    });
+    assert.equal(result.ok, true, result.error);
+    assert.equal(result.receipt.status, "accepted");
+    assert.equal(result.receipt.pending, true);
+    assert.equal(result.receipt.task_id, "skill-document-import");
+    assert.equal(requests.length, 1);
+    assert.equal(requests[0].url, "http://memorax.test/v1/memories/add");
+    assert.equal(requests[0].method, "POST");
+    assert.equal(requests[0].request.content_type, "document");
+    assert.equal(requests[0].request.async_mode, true);
+    assert.equal(requests[0].request.document_id, documentId);
+    assert.equal(requests[0].request.input_id, inputId);
+    assert.equal(requests[0].request.expected_revision, 0);
+    assert.equal(requests[0].filename, filename);
+    assert.deepEqual(requests[0].bytes, content);
+  });
+}
+
 for (const extension of ["md", "txt"]) {
-  test(`work ${extension} snapshot example submits the full document once and returns an accepted receipt`, async (t) => {
+  test(`explicit ${extension} snapshot example submits the full document once and returns an accepted receipt`, async (t) => {
     const add = readSkillFile("references/memorax-add.md");
     const snapshots = add.split("### Full document snapshots")[1].split("## Eligible Knowledge")[0];
     const commands = [...snapshots.matchAll(/```bash\n([\s\S]*?)\n```/g)]
@@ -129,7 +206,7 @@ for (const extension of ["md", "txt"]) {
     const option = (flag) => args[args.indexOf(flag) + 1];
     assert.equal(args[0], "add");
     assert.equal(option("--content-type"), "document");
-    assert.equal(option("--memory-file"), "./policy.md");
+    assert.equal(option("--memory-file"), "./document-snapshot.txt");
     assert.equal(option("--expected-revision"), "0");
     assert.ok(args.includes("--json"));
     const documentId = option("--document-id");
@@ -181,27 +258,27 @@ for (const extension of ["md", "txt"]) {
 
 test("work imports reuse accepted receipts only for the same scope and unchanged file", () => {
   const add = readSkillFile("references/memorax-add.md");
-  const binary = add.split("### Binary document imports")[1].split("### Full document snapshots")[0];
+  const attachments = add.split("### Document attachment imports")[1].split("### Full document snapshots")[0];
 
-  assert.match(binary, /current task's known receipts/);
-  assert.match(binary, /Reuse an accepted\s+receipt only when it belongs to the same account\/workspace scope and the same\s+unchanged file/);
-  assert.match(binary, /original upload or a matching SHA-256/);
-  assert.match(binary, /filename alone is not identity evidence/);
-  assert.match(binary, /Acceptance is enough to skip a duplicate\s+Add even while the backend is still processing/);
-  assert.match(binary, /no persistent file-to-document identity cache/);
-  assert.match(binary, /Acceptance alone does not confirm a new revision/);
-  assert.match(binary, /revision is unknown[\s\S]*do not guess a revision or silently create another document/);
-  assert.match(binary, /unchanged\s+user-authorized retry must reuse the exact file, input ID, revision, scope, output\s+language and optional checksum/);
-  assert.match(binary, /Do not retry\s+an uncertain submission automatically or generate a replacement ID/);
-  assert.match(binary, /On failure or `submission_unknown`[\s\S]*do not automatically retransmit the file/);
+  assert.match(attachments, /current task's known receipts/);
+  assert.match(attachments, /Reuse an accepted\s+receipt only when it belongs to the same account\/workspace scope and the same\s+unchanged file/);
+  assert.match(attachments, /original upload or a matching SHA-256/);
+  assert.match(attachments, /filename alone is not identity evidence/);
+  assert.match(attachments, /Acceptance is enough to skip a duplicate\s+Add even while the backend is still processing/);
+  assert.match(attachments, /no persistent file-to-document identity cache/);
+  assert.match(attachments, /Acceptance alone does not confirm a new revision/);
+  assert.match(attachments, /revision is unknown[\s\S]*do not guess a revision or silently create another document/);
+  assert.match(attachments, /unchanged\s+user-authorized retry must reuse the exact file, input ID, revision, scope, output\s+language and optional checksum/);
+  assert.match(attachments, /Do not retry\s+an uncertain submission automatically or generate a replacement ID/);
+  assert.match(attachments, /On failure or `submission_unknown`[\s\S]*do not automatically retransmit the file/);
 });
 
 test("work document guidance stops at the upload response and exposes no task polling commands", () => {
   const router = readSkillFile("SKILL.md");
   const add = readSkillFile("references/memorax-add.md");
   const search = readSkillFile("references/memorax-search.md");
-  const binary = add.split("### Binary document imports")[1].split("### Full document snapshots")[0];
-  const uploadCommands = [...binary.matchAll(/```bash\n([\s\S]*?)\n```/g)]
+  const attachments = add.split("### Document attachment imports")[1].split("### Full document snapshots")[0];
+  const uploadCommands = [...attachments.matchAll(/```bash\n([\s\S]*?)\n```/g)]
     .map((match) => match[1].replace(/\\\r?\n\s*/g, " "));
 
   assert.equal(uploadCommands.length, 1);
@@ -214,12 +291,12 @@ test("work document guidance stops at the upload response and exposes no task po
     assert.match(identity ?? "", /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/);
   }
   assert.notEqual(documentId, inputId);
-  assert.match(binary, /nonempty[\s\S]*150 MiB/);
-  assert.match(binary, /Wait for the upload HTTP response/);
-  assert.match(binary, /Once accepted, retain the receipt and end the\s+import operation/);
-  assert.match(binary, /Do not query task status or\s+wait for backend processing/);
-  assert.match(binary, /`pending: true` confirms submission only/);
-  assert.match(binary, /Preserve the\s+returned task ID[\s\S]*does not confirm a completed revision/);
+  assert.match(attachments, /nonempty[\s\S]*150 MiB/);
+  assert.match(attachments, /Wait for the upload HTTP response/);
+  assert.match(attachments, /Once accepted, retain the receipt and end the\s+import operation/);
+  assert.match(attachments, /Do not query task status or\s+wait for backend processing/);
+  assert.match(attachments, /`pending: true` confirms submission only/);
+  assert.match(attachments, /Preserve the\s+returned task ID[\s\S]*does not confirm a completed revision/);
   for (const guidance of [router, add, search]) {
     assert.doesNotMatch(guidance, /memorax-cli(?:\.cmd)? add-status\b/);
     assert.doesNotMatch(guidance, /--(?:wait(?:-timeout-ms)?|poll-interval-ms)\b/);
