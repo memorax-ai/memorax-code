@@ -81,6 +81,17 @@ memorax-code setup --existing-account
 
 按照安装引导，在本机终端中输入 MemoraX 用户名和 API Key。
 
+如需自托管（Self-hosted）MemoraX 服务，请在运行 setup 前将
+`MEMORAX_CODE_MEMORAX_ENDPOINT` 设置为该服务的地址。否则 setup 会保留默认云端地址
+`https://platform.memorax.net`，之后的搜索和写回请求会把 API Key 和记忆内容发送到该地址：
+
+```bash
+MEMORAX_CODE_MEMORAX_ENDPOINT=https://memorax.example.com memorax-code setup --existing-account
+```
+
+下方的非交互命令同样使用该变量。保存的 `endpoint` 配置及其环境变量覆盖说明见
+[MemoraX 连接配置](docs/configuration.md#memorax-connection)。
+
 如果 Coding Agent 无法提供交互式终端，可以通过 stdin 传入 API Key。以下示例假定调用方
 已提供 `MEMORAX_SETUP_API_KEY` 变量；请勿将 Key 填入命令参数或项目文件。
 
