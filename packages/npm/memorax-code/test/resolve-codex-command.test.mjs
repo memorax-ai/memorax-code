@@ -23,6 +23,7 @@ test("Codex command resolution preserves explicit overrides and PATH CLI precede
     await mkdir(bin, { recursive: true });
     await executable(join(bin, "codex"));
     const appCommand = await executable(join(root, "Applications", "ChatGPT.app", "Contents", "Resources", "codex"));
+    await executable(join(root, "Applications", "ChatGPT.app", "Contents", "Resources", "codex-cli", "CodexCLI.app", "Contents", "MacOS", "codex"));
 
     assert.deepEqual(resolveCodexCommand({
       env: { PATH: bin, MEMORAX_CODE_CODEX_COMMAND: "/custom/npm-codex" },
@@ -71,6 +72,80 @@ test("Codex command resolution uses the desktop App bundled runtime without a PA
 
     assert.deepEqual(resolved, { command: appCommand, source: "app-bundled" });
     assert.equal(env.CODEX_CLI_PATH, appCommand);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+for (const [appName, runtimePath] of [
+  ["ChatGPT.app", "Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"],
+  ["Codex.app", "Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex"],
+  ["Codex.app", "Contents/Resources/codex"],
+]) {
+  test(`Codex command resolution discovers ${appName}/${runtimePath}`, async () => {
+    const root = await mkdtemp(join(tmpdir(), "memorax-code-codex-app-layout-"));
+    try {
+      const applications = join(root, "Applications");
+      const command = await executable(join(applications, appName, runtimePath));
+      const extensions = join(root, ".vscode", "extensions");
+      await vscodeExtension(extensions, "openai.chatgpt-9.9.9-darwin-arm64", {
+        publisher: "openai", name: "chatgpt", version: "9.9.9", targetPlatform: "darwin-arm64",
+      });
+      const env = { PATH: join(root, "empty-bin") };
+      assert.deepEqual(ensureCodexCommandEnv({
+        env, homeDir: root, platform: "darwin", arch: "arm64",
+        applicationRoots: [applications], vscodeExtensionRoots: [extensions],
+      }), { command, source: "app-bundled" });
+      assert.equal(env.CODEX_CLI_PATH, command);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+}
+
+test("macOS Codex App discovery preserves root, App name and legacy path precedence", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-codex-app-order-"));
+  try {
+    const userApps = join(root, "user", "Applications");
+    const systemApps = join(root, "system", "Applications");
+    const nestedPath = "Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex";
+    const userCodex = await executable(join(userApps, "Codex.app", nestedPath));
+    await executable(join(systemApps, "ChatGPT.app", "Contents", "Resources", "codex"));
+    const options = {
+      env: { PATH: join(root, "empty-bin") }, homeDir: root, platform: "darwin",
+      applicationRoots: [userApps, systemApps], vscodeExtensionRoots: [],
+    };
+    assert.deepEqual(resolveCodexCommand(options), { command: userCodex, source: "app-bundled" });
+    const userChatGPT = await executable(join(userApps, "ChatGPT.app", nestedPath));
+    assert.deepEqual(resolveCodexCommand(options), { command: userChatGPT, source: "app-bundled" });
+    const legacy = await executable(join(userApps, "ChatGPT.app", "Contents", "Resources", "codex"));
+    assert.deepEqual(resolveCodexCommand(options), { command: legacy, source: "app-bundled" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("macOS Codex App discovery skips non-executable candidates before the VS Code fallback", {
+  skip: process.platform === "win32" && "POSIX executable permissions are not enforced on Windows",
+}, async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-codex-app-permissions-"));
+  try {
+    const applications = join(root, "Applications");
+    const resources = join(applications, "ChatGPT.app", "Contents", "Resources");
+    const legacy = await executable(join(resources, "codex"));
+    await chmod(legacy, 0o644);
+    const nested = await executable(join(resources, "codex-cli", "CodexCLI.app", "Contents", "MacOS", "codex"));
+    const extensions = join(root, ".vscode", "extensions");
+    const vscode = await vscodeExtension(extensions, "openai.chatgpt-9.9.9-darwin-arm64", {
+      publisher: "openai", name: "chatgpt", version: "9.9.9", targetPlatform: "darwin-arm64",
+    });
+    const options = {
+      env: { PATH: join(root, "empty-bin") }, homeDir: root, platform: "darwin", arch: "arm64",
+      applicationRoots: [applications], vscodeExtensionRoots: [extensions],
+    };
+    assert.deepEqual(resolveCodexCommand(options), { command: nested, source: "app-bundled" });
+    await chmod(nested, 0o644);
+    assert.deepEqual(resolveCodexCommand(options), { command: vscode, source: "vscode-bundled" });
   } finally {
     await rm(root, { recursive: true, force: true });
   }

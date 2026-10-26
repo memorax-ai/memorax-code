@@ -11,6 +11,10 @@ import {
 import { resolveWindowsCliInvocation } from "./windows-cli-invocation.mjs";
 
 const APP_BUNDLE_NAMES = ["ChatGPT.app", "Codex.app"];
+const MACOS_CODEX_APP_RUNTIME_SEGMENTS = [
+  ["Contents", "Resources", "codex"],
+  ["Contents", "Resources", "codex-cli", "CodexCLI.app", "Contents", "MacOS", "codex"],
+];
 const WINDOWS_CODEX_DISCOVERY_PROBE_TIMEOUT_MS = 2_000;
 const WINDOWS_CODEX_APP_RUNTIME_SEGMENTS = ["plugins", ".plugin-appserver", "codex.exe"];
 
@@ -46,8 +50,10 @@ export function resolveCodexCommand({
   if (platform === "darwin") {
     for (const root of applicationRoots) {
       for (const appName of APP_BUNDLE_NAMES) {
-        const command = join(root, appName, "Contents", "Resources", "codex");
-        if (isExecutableCommand(command, platform)) return { command, source: "app-bundled" };
+        for (const segments of MACOS_CODEX_APP_RUNTIME_SEGMENTS) {
+          const command = join(root, appName, ...segments);
+          if (isExecutableCommand(command, platform)) return { command, source: "app-bundled" };
+        }
       }
     }
   }

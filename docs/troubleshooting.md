@@ -624,6 +624,21 @@ be active. Let concurrent work finish, then rerun `memorax-code status`.
 
 ## Codex plugin or Hook is inactive
 
+On macOS, runtime discovery prefers `MEMORAX_CODE_CODEX_COMMAND`, then
+`CODEX_CLI_PATH`, then `codex` on `PATH`. Without one of these, it checks
+`~/Applications` before `/Applications`, looking for `ChatGPT.app` before
+`Codex.app` in each directory. Both App layouts are supported, in this order
+within each bundle:
+
+```text
+Contents/Resources/codex
+Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex
+```
+
+Missing or non-executable App candidates are skipped before trying the next
+candidate or the VS Code extension runtime. A discovered command must still
+pass setup's existing runtime check; discovery does not repair execution errors.
+
 ```sh
 memorax-code codex-plugin install
 memorax-code codex-plugin activate --yes
