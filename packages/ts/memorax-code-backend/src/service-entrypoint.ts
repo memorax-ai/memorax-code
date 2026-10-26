@@ -1,4 +1,4 @@
-import { runBackendCli } from "./entrypoints/backend-cli.js";
+import { reportBackendStartupPhase } from "./lifecycle/backend/startup-diagnostics.js";
 
 const markerIndex = process.argv.indexOf("--memorax-code-backend-instance");
 const instanceId = markerIndex >= 0 ? process.argv[markerIndex + 1] : undefined;
@@ -9,4 +9,7 @@ if (!instanceId
   process.exit(1);
 }
 
+reportBackendStartupPhase("runtime_import", "start");
+const { runBackendCli } = await import("./entrypoints/backend-cli.js");
+reportBackendStartupPhase("runtime_import", "complete");
 runBackendCli([process.execPath, "memorax-code-backend"]);

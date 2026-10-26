@@ -4,11 +4,14 @@ import {
 } from "node:fs";
 import { join, resolve } from "node:path";
 import type { DiagnosticRecordFields } from "../../../memorax-code-adapter-common/src/diagnostic-record.mjs";
+import type { BackendStartupDiagnostics } from "./contracts.js";
+import { projectBackendStartupDiagnostics } from "./backend/startup-diagnostics.js";
 
 export type DiagnosticRecord = DiagnosticRecordFields & {
   schemaVersion: 1;
   id: string;
   timestamp: string;
+  startup?: BackendStartupDiagnostics;
 };
 
 export type DiagnosticHistory = {
@@ -197,6 +200,11 @@ function projectRecord(raw: unknown, id: string): DiagnosticRecord {
   if (input.processState !== undefined) {
     if (typeof input.processState !== "string" || !["not-started", "stopped", "running", "unknown"].includes(input.processState)) throw new DiagnosticReadError("DIAGNOSTIC_RECORD_INVALID");
     record.processState = input.processState as DiagnosticRecordFields["processState"];
+  }
+  if (input.startup !== undefined) {
+    const startup = projectBackendStartupDiagnostics(input.startup);
+    if (!startup) throw new DiagnosticReadError("DIAGNOSTIC_RECORD_INVALID");
+    record.startup = startup;
   }
   return record;
 }

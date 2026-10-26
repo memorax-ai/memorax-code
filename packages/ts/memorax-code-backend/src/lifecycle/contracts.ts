@@ -74,4 +74,31 @@ export type BackendServiceResult = {
   cleanupSystemCode?: string;
   degraded?: true;
   warnings?: BackendRuntimeRecordWarning[];
+  startup?: BackendStartupDiagnostics;
+};
+
+export type BackendStartupDiagnostics = {
+  version: 1;
+  elapsedMs: number;
+  healthTimeoutMs: number;
+  phases: Array<{ phase: string; elapsedMs: number; durationMs: number }>;
+  healthCheckCount: number;
+  lastHealthCheck?: {
+    outcome: "ready" | BackendServiceFailureReason;
+    elapsedMs: number;
+    durationMs: number;
+    systemCode?: string;
+    httpStatus?: number;
+  };
+  child: {
+    pid?: number;
+    exitObserved: boolean;
+    exitCode?: number;
+    signal?: string;
+    phases: Array<{
+      phase: "runtime_import" | "state_creation" | "plugin_preparation" | "server_creation" | "listen";
+      event: "start" | "complete";
+      elapsedMs: number;
+    }>;
+  };
 };

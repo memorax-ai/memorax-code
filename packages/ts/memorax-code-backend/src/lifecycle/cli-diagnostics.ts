@@ -5,6 +5,7 @@ import type { MemoraxCodeLifecycleReport } from "./orchestrator.js";
 import { backendServiceHome } from "./lock.js";
 import { deploymentFailure, projectDeploymentFailure, type DeploymentFailure } from "../../../memorax-code-adapter-common/src/deployment-failure.mjs";
 import { lifecycleAdapterReports, LIFECYCLE_CLIENTS, type LifecycleClientId } from "./client-reports.js";
+import { backendStartupDiagnosticLines, projectBackendStartupDiagnostics } from "./backend/startup-diagnostics.js";
 
 type LifecycleFailureSummary = {
   errorCode: string;
@@ -19,6 +20,7 @@ type LifecycleFailureSummary = {
   processState: NonNullable<BackendServiceResult["processState"]>;
   cleanupErrorCode?: string;
   cleanupSystemCode?: string;
+  startup?: BackendServiceResult["startup"];
 };
 
 export type LifecycleCliReport = MemoraxCodeLifecycleReport & {
@@ -98,6 +100,7 @@ function diagnoseBackendReport(
   const stage = backend.stage ?? "lifecycle";
   const errorCode = backend.errorCode ?? "BACKEND_LIFECYCLE_FAILED";
   const processState = backend.processState ?? "unknown";
+  const startup = projectBackendStartupDiagnostics(backend.startup);
   const failure: LifecycleFailureSummary = {
     errorCode,
     stage,
@@ -123,6 +126,7 @@ function diagnoseBackendReport(
     userAction: recoveryAction(errorCode, stage, backend),
     ...(backend.cleanupErrorCode ? { cleanupErrorCode: backend.cleanupErrorCode } : {}),
     ...(backend.cleanupSystemCode ? { cleanupSystemCode: backend.cleanupSystemCode } : {}),
+    ...(startup ? { startup } : {}),
   };
   const diagnostic = writeDiagnosticRecord(backendServiceHome(options), {
     source: "memorax-code",
@@ -244,6 +248,7 @@ export function lifecycleDiagnosticLines(report: LifecycleCliReport): string[] {
       `Last observation: ${REASON_MESSAGES[failure.failureReason]}${failure.httpStatus === undefined ? "" : ` (HTTP ${failure.httpStatus})`}`,
     ] : []),
     ...(failure.recordReason ? [`Record validation: ${failure.recordReason}.`] : []),
+    ...backendStartupDiagnosticLines(failure.startup),
     ...(failure.cleanupErrorCode ? [
       `Cleanup also failed: ${failure.cleanupErrorCode}${failure.cleanupSystemCode ? ` (${failure.cleanupSystemCode})` : ""}.`,
     ] : []),

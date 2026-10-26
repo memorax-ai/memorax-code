@@ -8,6 +8,7 @@ import {
   writeBackendToken,
 } from "../lifecycle/backend/service.js";
 import type { BackendServiceOptions } from "../lifecycle/contracts.js";
+import { backendStartupDiagnosticLines, reportBackendStartupPhase } from "../lifecycle/backend/startup-diagnostics.js";
 import {
   BackendConnectionAuthorityError,
   resolveBackendConnection,
@@ -241,7 +242,9 @@ export function runBackendCli(argv = process.argv): void {
     // Raw server mode: invoked directly as `memorax-code-backend` without a subcommand.
     const port = Number(backendEnv("PORT") ?? "8787");
     const host = backendEnv("HOST") ?? "127.0.0.1";
+    reportBackendStartupPhase("state_creation", "start");
     const state = createBackendState(host);
+    reportBackendStartupPhase("state_creation", "complete");
     void startRawBackendServer(state, host, port, argv).catch((error) => {
       console.error(error instanceof Error ? error.message : String(error));
       process.exit(1);
@@ -255,6 +258,7 @@ async function startRawBackendServer(
   port: number,
   argv: string[],
 ): Promise<void> {
+  reportBackendStartupPhase("plugin_preparation", "start");
   const installWatchdogConfig = resolveBackendInstallWatchdogConfig();
   const clientPluginCleanup = installWatchdogConfig?.enabled
     ? await prepareClientPluginRemovalCleanup({
@@ -274,7 +278,10 @@ async function startRawBackendServer(
         dshCommand: argValue(argv, "--dsh-command"),
       })
     : undefined;
+  reportBackendStartupPhase("plugin_preparation", "complete");
+  reportBackendStartupPhase("server_creation", "start");
   const server = createBackendServer(state);
+  reportBackendStartupPhase("server_creation", "complete");
   let automaticUpdateScheduler: AutomaticUpdateScheduler | undefined;
   let installRemovalStarted = false;
   const installWatchdog = startBackendInstallWatchdog(installWatchdogConfig, async (event) => {
@@ -317,7 +324,9 @@ async function startRawBackendServer(
     }
     process.exit(1);
   });
+  reportBackendStartupPhase("listen", "start");
   server.listen(port, host, () => {
+    reportBackendStartupPhase("listen", "complete");
     console.log(`memorax-code-backend listening on http://${host}:${port}`);
     if (backendEnv("INSTANCE_ID")) {
       automaticUpdateScheduler = startBackendAutomaticUpdateScheduler({
@@ -687,6 +696,7 @@ function printDiagnosticHistory(history: DiagnosticHistory): void {
     for (const key of ["systemCode", "httpStatus", "failureReason", "recordReason", "credentialReason", "configState", "commandExitCode", "commandSignal", "retryAfterMs", "processState", "cleanupErrorCode", "cleanupSystemCode", "recoveryErrorCode", "recoveryStage", "recoverySystemCode", "recoveryStatus", "installedVersion", "targetVersion", "causeDiagnosticId", "causeErrorCode", "causeStage", "recoveryDiagnosticId", "sessionHash", "turnHash"] as const) {
       if (record[key] !== undefined) console.log(`${key}: ${record[key]}`);
     }
+    for (const line of backendStartupDiagnosticLines(record.startup)) console.log(line);
     console.log(`Impact: ${record.impact}\nNext step: ${record.userAction}`);
   }
 }

@@ -58,6 +58,7 @@ import type {
 } from "../contracts.js";
 import { withLoopbackProxyBypass } from "../../config/proxy-env.js";
 import { isRecord } from "../../shared/record.js";
+import { createBackendStartupDiagnostics, type BackendStartupTracker } from "./startup-diagnostics.js";
 
 export {
   BACKEND_SERVICE_RECORD_VERSION,
@@ -161,6 +162,20 @@ export async function startBackendService(
   options: BackendServiceOptions = {},
   runtime: BackendServiceRuntime = {},
 ): Promise<BackendServiceResult> {
+  const startup = createBackendStartupDiagnostics(options.timeoutMs ?? 5000);
+  try {
+    return startup.finish(await startBackendServiceAttempt(options, runtime, startup));
+  } finally {
+    startup.close();
+  }
+}
+
+async function startBackendServiceAttempt(
+  options: BackendServiceOptions,
+  runtime: BackendServiceRuntime,
+  startup: BackendStartupTracker,
+): Promise<BackendServiceResult> {
+  startup.phase("resolve_connection");
   let endpoint: BackendServiceEndpoint;
   try {
     endpoint = backendServiceEndpoint(options);
@@ -173,6 +188,7 @@ export async function startBackendService(
     };
   }
   const processAlive = runtime.isProcessAlive ?? isProcessAlive;
+  startup.phase("read_state");
   let existing: BackendServiceState | undefined;
   try {
     existing = readBackendServiceState(options);
@@ -183,6 +199,7 @@ export async function startBackendService(
     };
   }
   let token: string | undefined;
+  startup.phase("resolve_token");
   try {
     token = resolveBackendServiceToken(options, endpoint);
   } catch (error) {
@@ -193,6 +210,7 @@ export async function startBackendService(
   }
   const { host, port, url } = endpoint;
   if (existing && processAlive(existing.pid)) {
+    startup.phase("verify_ownership");
     const ownership = await readBackendOwnership(
       existing,
       options.timeoutMs ?? 5000,
@@ -213,6 +231,7 @@ export async function startBackendService(
       };
     }
   }
+  startup.phase("prepare_runtime");
   if (existing) {
     const cleanup = clearBackendServiceState(pidPath(options), existing, "start");
     if (cleanup) return cleanup;
@@ -239,6 +258,7 @@ export async function startBackendService(
   const serverPath = fileURLToPath(new URL("../../service-entrypoint.js", import.meta.url));
   const instanceId = randomBytes(24).toString("base64url");
   let child: ChildProcess;
+  startup.phase("spawn");
   try {
     child = (runtime.spawnProcess ?? spawn)(
       process.execPath,
@@ -254,7 +274,7 @@ export async function startBackendService(
           MEMORAX_CODE_BACKEND_INSTANCE_ID: instanceId,
           ...(token ? { MEMORAX_CODE_BACKEND_TOKEN: token } : {}),
         }, url),
-        stdio: ["ignore", outFd, errFd],
+        stdio: ["ignore", outFd, errFd, "ipc"],
       },
     );
   } catch (error) {
@@ -270,6 +290,7 @@ export async function startBackendService(
   }
   closeSync(outFd);
   closeSync(errFd);
+  startup.attach(child);
   const spawnError = await waitForSpawn(child);
   const childPid = child.pid;
   if (spawnError || !Number.isSafeInteger(childPid) || (childPid ?? 0) <= 0) {
@@ -287,6 +308,7 @@ export async function startBackendService(
     };
   }
   child.unref();
+  startup.phase("persist_pid");
 
   const state: BackendServiceState & { instanceId: string } = {
     pid: childPid as number,
@@ -308,6 +330,8 @@ export async function startBackendService(
     const warning = runtimeRecordDurabilityWarning("pid", written);
     if (warning) durabilityWarnings.push(warning);
   } catch (error) {
+    startup.captureChild();
+    startup.phase("cleanup");
     const cleanup = await stopFailedBackendStart(state.pid, options.timeoutMs ?? 5000, runtime);
     return {
       ok: false,
@@ -319,6 +343,7 @@ export async function startBackendService(
     };
   }
 
+  startup.phase("health");
   const healthy = await waitForHealth(
     url,
     options.timeoutMs ?? 5000,
@@ -326,8 +351,11 @@ export async function startBackendService(
     backendServiceHome(options),
     runtime,
     child,
+    startup,
   );
+  startup.captureChild();
   if (!healthy.ok) {
+    startup.phase("cleanup");
     // A known exited child must not authorize a signal to its potentially reused PID.
     const processCleanup = healthy.processExited
       ? { processState: "stopped" as const }
@@ -355,6 +383,7 @@ export async function startBackendService(
     };
   }
   let persistenceStage: "persist_token" | "persist_connection" = "persist_token";
+  startup.phase("persist_token");
   try {
     const activeTokenRecord = token
       ? persistBackendToken(options, token, runtime.recordWriteRuntime)
@@ -365,6 +394,7 @@ export async function startBackendService(
     );
     if (tokenWarning) durabilityWarnings.push(tokenWarning);
     persistenceStage = "persist_connection";
+    startup.phase("persist_connection");
     const connectionWrite = writeBackendConnectionAuthority({
       memoraxCodeHome: backendServiceHome(options),
       url,
@@ -376,6 +406,7 @@ export async function startBackendService(
     );
     if (connectionWarning) durabilityWarnings.push(connectionWarning);
   } catch (error) {
+    startup.phase("cleanup");
     const processCleanup = await stopFailedBackendStart(state.pid, options.timeoutMs ?? 5000, runtime);
     const persistenceError = `failed to persist Backend ${persistenceStage === "persist_token" ? "token record" : "connection authority"}: ${error instanceof Error ? error.message : String(error)}`;
     const failure: BackendServiceResult = {
@@ -600,6 +631,7 @@ async function waitForHealth(
   expectedSessionHome: string,
   runtime: BackendServiceRuntime,
   child: ChildProcess,
+  startup: BackendStartupTracker,
 ): Promise<{ ok: true } | BackendHealthFailure> {
   let failure: BackendHealthFailure | undefined;
   const budgetMs = Number.isFinite(timeoutMs) ? Math.max(0, Math.trunc(timeoutMs)) : 0;
@@ -607,6 +639,7 @@ async function waitForHealth(
   while (Date.now() < deadline) {
     if (child.exitCode != null || child.signalCode != null) return { ...failure, ok: false, processExited: true };
     const remainingMs = deadline - Date.now();
+    const probeStarted = startup.healthCheckStarted();
     try {
       const health = await readHealthWithTimeout(
         new URL("/health", url),
@@ -616,6 +649,10 @@ async function waitForHealth(
       const failureReason = health.ok
         ? healthResponseFailureReason(health.body, instanceId, expectedSessionHome)
         : "http_error";
+      startup.healthCheckFinished(probeStarted, {
+        outcome: failureReason ?? "ready",
+        ...(health.httpStatus === undefined ? {} : { httpStatus: health.httpStatus }),
+      });
       if (!failureReason) {
         return child.exitCode != null || child.signalCode != null
           ? { ...failure, ok: false, processExited: true }
@@ -634,6 +671,11 @@ async function waitForHealth(
         ...(known?.httpStatus === undefined ? {} : { httpStatus: known.httpStatus }),
         ...(known?.systemCode ? { systemCode: known.systemCode } : {}),
       };
+      startup.healthCheckFinished(probeStarted, {
+        outcome: failure.failureReason ?? "unknown",
+        ...(known?.httpStatus === undefined ? {} : { httpStatus: known.httpStatus }),
+        ...(known?.systemCode ? { systemCode: known.systemCode } : {}),
+      });
       // Retry until timeout; the child process may still be starting.
     }
     if (child.exitCode != null || child.signalCode != null) return { ...failure, ok: false, processExited: true };

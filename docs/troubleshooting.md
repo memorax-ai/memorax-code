@@ -552,6 +552,31 @@ returns promptly instead of waiting for the full deadline. Both preserve the
 last health observation when available. Check Backend logs for the underlying
 startup error; a loopback `ECONNREFUSED` alone does not identify its cause.
 
+New start attempts include versioned `backend.startup` observations in JSON
+results. Failed attempts also retain them as `failure.startup` and in the same
+diagnostic record. Text diagnostics and `memorax-code logs --id DIAGNOSTIC_ID`
+show total service-start elapsed time, parent phase durations, the health budget
+and attempt count, the last health outcome and duration, and the last observed
+child phase. `memorax-code logs --id DIAGNOSTIC_ID --json` exposes every retained
+phase. Older records may have no startup observations.
+
+Parent phases cover connection/state/token resolution, ownership checks when
+needed, runtime preparation, process spawn, PID persistence, health readiness,
+token/connection persistence, and failure cleanup. The total includes cleanup
+but excludes earlier setup/client installation and lifecycle-lock acquisition.
+The health budget applies only to readiness, not to the whole setup command.
+Child markers cover runtime import, state creation, plugin preparation, server
+creation, and listening. Each has start/completion elapsed times from a separate
+child monotonic clock; do not subtract a child time from a parent time. Timestamped
+JSON markers in the Backend log also identify the child PID for local correlation.
+
+The child snapshot records only exits observed before cleanup. A final start
+marker without completion narrows the last observed phase but does not prove
+where the child stalled; absent markers may also mean the channel closed or the
+process had not reached reporting. These observations do not identify OS policy,
+disk contention, or another environmental cause by themselves, and do not change
+the existing five-second readiness deadline or process-ownership checks.
+
 `processState` reports `not-started`, `stopped`, `running`, or `unknown`; it
 does not prove current process ownership. For unknown state or a separate
 cleanup failure, check status before retrying and preserve the process record

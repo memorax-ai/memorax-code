@@ -241,6 +241,18 @@ adapters do not write duplicate records. This presentation path does not change
 lifecycle authority, validation, retry, or scheduling decisions. Hook execution
 and automatic writeback have separate failure-reporting boundaries below.
 
+Managed Backend startup adds bounded, content-free observations through
+`lifecycle/backend/startup-diagnostics.ts`. The parent times service phases and
+health probes with a monotonic clock. A dedicated Node IPC channel carries the
+child's ordered module-import, state-creation, plugin-preparation, server-creation,
+and listen markers; the child also timestamps these markers in its Backend log.
+The parent snapshots observed child exit state before failure cleanup, so a
+cleanup signal is not reported as the startup cause. The channel is unreferenced
+and disconnected after the attempt; it grants no process or readiness authority.
+Health identity checks, deadlines, retries and cleanup remain authoritative.
+The existing lifecycle CLI owns persistence and presentation, and history reads
+project only the versioned numeric and enumerated startup fields.
+
 ## 3. Runtime Flows
 
 The system has two related but distinct planes. The control plane installs and

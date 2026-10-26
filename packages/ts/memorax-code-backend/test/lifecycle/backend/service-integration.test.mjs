@@ -24,6 +24,13 @@ test("Backend service manager can start, report logs, and stop a local Backend",
     const started = await startBackendService({ home, port, timeoutMs: 5000 });
     assert.equal(started.ok, true);
     assert.equal(started.state?.port, port);
+    assert.equal(started.startup.healthTimeoutMs, 5000);
+    assert.ok(started.startup.healthCheckCount >= 1);
+    assert.equal(started.startup.lastHealthCheck.outcome, "ready");
+    assert.equal(started.startup.child.exitObserved, false);
+    assert.deepEqual(started.startup.child.phases.map(({ phase, event }) => `${phase}:${event}`),
+      ["runtime_import", "state_creation", "plugin_preparation", "server_creation", "listen"]
+        .flatMap((phase) => [`${phase}:start`, `${phase}:complete`]));
     const pidPath = join(home, "runtime", "backend", "backend.pid.json");
     assert.equal(JSON.parse(await readFile(pidPath, "utf8")).version, 1);
     if (process.platform !== "win32") {
@@ -34,6 +41,9 @@ test("Backend service manager can start, report logs, and stop a local Backend",
     const logs = backendServiceLogs({ home });
     assert.equal(logs.ok, true);
     assert.match(logs.text ?? "", /memorax-code-backend listening/);
+    const observations = logs.text.split("\n").filter((line) => line.startsWith('{"type":"memorax-code.backend-startup"')).map(JSON.parse);
+    assert.equal(observations.length, 10);
+    assert.ok(observations.every(({ timestamp, pid }) => Number.isFinite(Date.parse(timestamp)) && pid === started.state.pid));
   } finally {
     const stopped = await stopBackendService({ home, port, timeoutMs: 5000 });
     assert.equal(stopped.ok, true);

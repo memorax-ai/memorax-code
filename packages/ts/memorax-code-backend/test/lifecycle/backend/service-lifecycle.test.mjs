@@ -20,6 +20,7 @@ import {
 import { removeBackendServiceStateIfOwnedAtPath } from "../../../dist/lifecycle/backend/record.js";
 import { backendServiceFailureFields } from "../../../dist/lifecycle/backend/result.js";
 import { diagnoseLifecycleReport, lifecycleDiagnosticLines } from "../../../dist/lifecycle/cli-diagnostics.js";
+import { readDiagnosticHistory } from "../../../dist/lifecycle/diagnostic-history.js";
 import { backendShutdownRequestPath } from "../../../dist/lifecycle/backend/shutdown-request.js";
 
 function successfulProcessProbe(commandLine) {
@@ -274,17 +275,26 @@ test("startup expires the default five-second health deadline and cleans up its 
   let alive = true;
   let probes = 0;
   let terminated = false;
+  const child = new EventEmitter();
+  child.pid = 4242;
+  child.unref = () => undefined;
   try {
     const result = await startBackendService({ home }, {
       spawnProcess: () => {
-        const child = new EventEmitter();
-        child.pid = 4242;
-        child.unref = () => undefined;
-        process.nextTick(() => child.emit("spawn"));
+        process.nextTick(() => {
+          child.emit("spawn");
+          child.emit("message", {
+            type: "memorax-code.backend-startup", version: 1,
+            phase: "runtime_import", event: "start", elapsedMs: 0,
+            privateText: "must-not-be-retained",
+          });
+        });
         return child;
       },
       isProcessAlive: () => alive,
-      terminateProcessTree: () => { terminated = true; alive = false; return true; },
+      terminateProcessTree: () => {
+        terminated = true; alive = false; child.signalCode = "SIGTERM"; return true;
+      },
       fetch: async () => {
         probes += 1;
         // Advance only the deadline clock; no real slow process is needed.
@@ -299,6 +309,22 @@ test("startup expires the default five-second health deadline and cleans up its 
     assert.equal(terminated, true);
     assert.equal(result.processState, "stopped");
     assert.equal(readBackendServiceState({ home }), undefined);
+    const startup = result.startup;
+    assert.equal(startup.healthTimeoutMs, 5000);
+    assert.equal(startup.healthCheckCount, 1);
+    assert.equal(startup.lastHealthCheck.outcome, "transport");
+    assert.equal(startup.lastHealthCheck.systemCode, "ECONNREFUSED");
+    assert.equal(startup.child.exitObserved, false);
+    assert.equal(startup.child.signal, undefined);
+    assert.deepEqual(startup.child.phases, [{ phase: "runtime_import", event: "start", elapsedMs: 0 }]);
+    assert.deepEqual(startup.phases.slice(-2).map(({ phase }) => phase), ["health", "cleanup"]);
+    assert.ok(startup.phases.every(({ durationMs, elapsedMs }) => durationMs >= 0 && durationMs <= elapsedMs));
+    clock.mock.restore();
+    const diagnosed = diagnoseLifecycleReport({ ok: false, action: "start", backend: result }, { home });
+    const record = readDiagnosticHistory(home, { id: diagnosed.diagnostic.id }).records[0];
+    assert.deepEqual(record.startup, startup);
+    assert.doesNotMatch(JSON.stringify(record), /must-not-be-retained/);
+    assert.match(lifecycleDiagnosticLines(diagnosed).join("\n"), /runtime_import start at 0ms; exit not observed before cleanup/);
   } finally {
     clock.mock.restore();
     await rm(home, { recursive: true, force: true });
@@ -338,6 +364,8 @@ test("startup reports an exited child promptly without terminating its former PI
     assert.equal(result.processState, "stopped");
     assert.equal(probes, 1);
     assert.equal(terminated, false);
+    assert.equal(result.startup.child.exitObserved, true);
+    assert.equal(result.startup.child.exitCode, 1);
     assert.equal(readBackendServiceState({ home }), undefined);
     assert.doesNotMatch(JSON.stringify(result), /private-startup-failure/);
     const diagnosed = diagnoseLifecycleReport({ ok: false, action: "start", backend: result }, { home });
@@ -346,6 +374,7 @@ test("startup reports an exited child promptly without terminating its former PI
     const record = JSON.parse(await readFile(diagnosed.diagnostic.path, "utf8"));
     assert.equal(record.errorCode, "BACKEND_EXITED_BEFORE_READY");
     assert.equal(record.processState, "stopped");
+    assert.deepEqual(record.startup, result.startup);
   } finally {
     await rm(home, { recursive: true, force: true });
   }
@@ -907,7 +936,9 @@ test("failed startup retains PID state when cleanup fails or the PID remains ali
             isProcessAlive: () => true,
             spawnProcess: (_command, _args, options) => {
               child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1_000)"], options);
-              childClosed = new Promise((resolve) => child.once("close", resolve));
+              // Startup disconnects its IPC channel before this fixture is killed;
+              // wait for process exit rather than a later stdio-close notification.
+              childClosed = new Promise((resolve) => child.once("exit", resolve));
               return child;
             },
           },
