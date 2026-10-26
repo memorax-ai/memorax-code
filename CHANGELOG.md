@@ -6,6 +6,20 @@ behavior.
 
 ## Unreleased
 
+## [0.1.22] - 2026-10-26
+
+### Added
+
+- Added Backend startup phase timings and health-check observations to lifecycle
+  results and retained failure diagnostics, including the last observed child
+  startup phase, to help investigate slow starts and readiness timeouts.
+
+### Fixed
+
+- Fixed macOS setup to discover the nested Codex CLI runtime bundled with
+  ChatGPT and Codex apps, while preserving command overrides, PATH precedence,
+  and support for the existing app layout.
+
 ## [0.1.21] - 2026-10-24
 
 Initial investor preview for `@memorax/memorax-code-preview`, based on the
