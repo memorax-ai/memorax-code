@@ -4,6 +4,7 @@
 // whose native steps name it, or name or own a file that names it, so reuse across directories is followed, not assumed.
 // Shared code names the product adapter files, so an adapter change other than a test still selects every client: this
 // version accepts that conservative boundary and does not route adapter changes precisely.
+// CI repeatability experiment: this comment changes no behavior, and its pull request is never merged.
 import { spawnSync } from "node:child_process";
 import { appendFileSync, lstatSync, readFileSync, statSync } from "node:fs";
 import { basename } from "node:path";
