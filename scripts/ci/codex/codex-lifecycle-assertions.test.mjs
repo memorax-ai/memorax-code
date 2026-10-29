@@ -258,9 +258,15 @@ function trackingFixture(source, cursor = false) {
     return source.slice(begin, finish);
   };
   const f = replacementFixture();
+  // The Codex smoke tracks PID and instance pairs; the other runners track PIDs.
+  const pairs = source.includes("const trackedBackends = [];");
+  const instances = new Map([[f.before.pid, f.before.instanceId], [f.after.pid, f.after.instanceId]]);
+  const track = (pids) => pairs
+    ? { trackedBackends: pids.map((pid) => ({ pid, instanceId: instances.get(pid) ?? `instance-${pid}` })) }
+    : { backendPids: new Set(pids) };
   const context = {
     stage: "", cleanupStage: "", cleanupTrackedPidIndex: undefined,
-    backendPids: new Set([101, 102, f.before.pid, f.after.pid, 105]), backendPort: 32123, port: 32123,
+    ...track([101, 102, f.before.pid, f.after.pid, 105]), backendPort: 32123, port: 32123,
     report: { checks: [] }, portProbes: 0,
     pidPath: () => "synthetic-record", transitionPath: () => "synthetic-transition",
     exists: async (path) => {
@@ -292,7 +298,9 @@ function trackingFixture(source, cursor = false) {
     : extract("async function verifyBackendReplacement(", "async function stopAndVerify(")
       + extract("async function assertStopped(", "async function verifyPreserved(")
       + "\n({ verifyBackendReplacement, assertStopped });";
-  return Object.assign(f, runInNewContext(body, context), { context });
+  return Object.assign(f, runInNewContext(body, context), { context,
+    track: (pids) => Object.assign(context, track(pids)),
+    tracked: () => pairs ? context.trackedBackends.map((entry) => entry.pid) : [...context.backendPids] });
 }
 
 for (const script of ["codex-install-smoke.mjs", "../opencode/opencode-install-smoke.mjs",
@@ -304,7 +312,7 @@ for (const script of ["codex-install-smoke.mjs", "../opencode/opencode-install-s
   test(script + ": confirmed retired PID reuse cannot fail final cleanup", async () => {
     const f = fixture();
     await f.verifyBackendReplacement(f.before, "replacement");
-    assert.equal(f.context.backendPids.has(f.after.pid), true);
+    assert.equal(f.tracked().includes(f.after.pid), true);
     assert.equal(f.context.report.backendReplacement.instanceChanged, true);
     if (script === "codex-install-smoke.mjs") assert.deepEqual(f.diagnostics, [f.context.report.backendReplacement]);
     f.livePids.clear();
@@ -313,20 +321,20 @@ for (const script of ["codex-install-smoke.mjs", "../opencode/opencode-install-s
     await f.assertStopped();
     assert.equal(f.probedPids.includes(f.before.pid), false);
     assert.equal(f.context.portProbes, 1);
-    assert.equal(f.context.backendPids.size, 0);
+    assert.deepEqual(f.tracked(), []);
   });
 
   test(script + ": same-PID replacement keeps the current process tracked until it exits", async () => {
     const f = fixture();
     f.reusePid();
-    f.context.backendPids = new Set([f.before.pid]);
+    f.track([f.before.pid]);
     await f.verifyBackendReplacement(f.before, "replacement");
-    assert.deepEqual([...f.context.backendPids], [f.after.pid]);
+    assert.deepEqual(f.tracked(), [f.after.pid]);
     await assert.rejects(f.assertStopped(), /Backend process remains|BACKEND_REMAINS/);
-    assert.deepEqual([...f.context.backendPids], [f.after.pid]);
+    assert.deepEqual(f.tracked(), [f.after.pid]);
     f.livePids.clear();
     await f.assertStopped();
-    assert.equal(f.context.backendPids.size, 0);
+    assert.deepEqual(f.tracked(), []);
     assert.equal(f.context.portProbes, 1);
   });
 
@@ -339,10 +347,10 @@ for (const script of ["codex-install-smoke.mjs", "../opencode/opencode-install-s
       [(f) => { f.health.instanceId = "another-instance"; }, /BACKEND_REPLACEMENT_HEALTH_IDENTITY_MISMATCH/],
       [(f) => { f.reusePid(); f.after.instanceId = f.before.instanceId; }, /BACKEND_REPLACEMENT_INSTANCE_UNCHANGED/],
     ]) {
-      const f = fixture(), tracked = [...f.context.backendPids];
+      const f = fixture(), tracked = f.tracked();
       mutate(f);
       await assert.rejects(f.verifyBackendReplacement(f.before, "replacement"), expected);
-      assert.deepEqual([...f.context.backendPids], tracked);
+      assert.deepEqual(f.tracked(), tracked);
       assert.ok(f.context.report.backendReplacement);
     }
   });
@@ -357,20 +365,20 @@ for (const script of ["codex-install-smoke.mjs", "../opencode/opencode-install-s
       const f = fixture();
       await f.verifyBackendReplacement(f.before, "replacement");
       f.livePids.clear();
-      const tracked = [...f.context.backendPids];
+      const tracked = f.tracked();
       mutate(f);
       await assert.rejects(f.assertStopped(), expected);
-      assert.deepEqual([...f.context.backendPids], tracked);
+      assert.deepEqual(f.tracked(), tracked);
       assert.equal(f.context.portProbes, portProbes);
     }
   });
 
   if (cursor) test("Cursor transition failure preserves tracking after otherwise valid replacement", async () => {
     for (const unreadable of [false, true]) {
-      const f = fixture(), tracked = [...f.context.backendPids];
+      const f = fixture(), tracked = f.tracked();
       if (unreadable) f.context.transitionError = { code: "EACCES" }; else f.context.transitionPresent = true;
       await assert.rejects(f.verifyBackendReplacement(f.before), unreadable ? { code: "EACCES" } : /TRANSITION_REMAINS/);
-      assert.deepEqual([...f.context.backendPids], tracked);
+      assert.deepEqual(f.tracked(), tracked);
       assert.equal(f.context.report.backendReplacement.instanceChanged, true);
     }
   });
