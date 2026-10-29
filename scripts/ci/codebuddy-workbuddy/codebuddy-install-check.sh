@@ -7,6 +7,9 @@ if [[ ( $# -ne 2 && $# -ne 3 && $# -ne 5 ) || ! "$(uname -s)" =~ ^(Darwin|Linux)
 fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+# Capture the evidence location before every command below runs with a cleared environment.
+evidence_dir="${MEMORAX_CI_EVIDENCE_DIR:-}"
+evidence_tool="$repo_root/scripts/ci/shared/ci-evidence.mjs"
 tarball_dir="$(cd "$1" && pwd)"
 codebuddy_version="$2"
 previous_version="${3:-0.1.18}"
@@ -71,9 +74,35 @@ isolated() {
   return "$status"
 }
 
+# Evidence lives outside the isolated runtime; an unusable location disables it without affecting the suites.
+if [[ -n "$evidence_dir" ]] && ! evidence_dir="$(node "$evidence_tool" prepare "$evidence_dir" "$test_root")"; then
+  echo 'CI evidence disabled: the evidence directory is unusable.' >&2
+  evidence_dir=''
+fi
+ledger() {
+  [[ -z "$evidence_dir" ]] || node "$evidence_tool" ledger "$evidence_dir" "$@" \
+    || echo 'CI evidence ledger could not be updated.' >&2
+}
+# Only the test runners receive the evidence location; npm, product commands and the wrapper cleanup do not.
+# Without one, as in the WorkBuddy job, the runners keep exactly their previous environment.
+isolated_suite() {
+  if [[ -n "$evidence_dir" ]]; then isolated env MEMORAX_CI_EVIDENCE_DIR="$evidence_dir" "$@"; else isolated "$@"; fi
+}
+run_suite() {
+  local suite="$1" status=0
+  shift
+  ledger start "$suite"
+  "$@" || status=$?
+  ledger end "$suite" "$status"
+  return "$status"
+}
+planned_suites="codebuddy-lifecycle-check,codebuddy-install-interruption-check,$client-native-check,codebuddy-background-check,codebuddy-permissions-check"
+
 cleanup_failed_install() {
   local status=$?
   trap - EXIT
+  # Close the ledger before the slower wrapper cleanup, which a cancelled job may not finish.
+  ledger finalize "$planned_suites"
   if [[ "$status" -ne 0 ]]; then
     isolated node "$repo_root/scripts/ci/codebuddy-workbuddy/codebuddy-install-cleanup.mjs" \
       "$test_root/state" "$test_root/npm/bin/memorax-code" "" "$client" || true
@@ -81,6 +110,8 @@ cleanup_failed_install() {
   exit "$status"
 }
 trap cleanup_failed_install EXIT
+ledger plan "$planned_suites"
+ledger phase setup
 
 cd "$test_root/user"
 packages=("$tarball")
@@ -122,22 +153,24 @@ fi
 }
 printf '%s runtime requested: %s; installed: %s\n' "$client" "$codebuddy_version" "$codebuddy_version"
 
-isolated node "$repo_root/scripts/ci/codebuddy-workbuddy/codebuddy-lifecycle-check.mjs" \
+ledger phase suites
+run_suite codebuddy-lifecycle-check isolated_suite node "$repo_root/scripts/ci/codebuddy-workbuddy/codebuddy-lifecycle-check.mjs" \
   "$test_root/npm/lib/node_modules/@memorax/memorax-code" \
   "$native_command" "$tarball" "$npm_command" "$previous_version" \
   "$test_root/terminal/node_modules/node-pty" "$repo_root/scripts/ci/codebuddy-workbuddy/codebuddy-setup-pty.mjs" "$codebuddy_version" "$client"
-isolated node "$repo_root/scripts/ci/codebuddy-workbuddy/codebuddy-install-interruption-check.mjs" \
+run_suite codebuddy-install-interruption-check isolated_suite node "$repo_root/scripts/ci/codebuddy-workbuddy/codebuddy-install-interruption-check.mjs" \
   "$test_root/npm/lib/node_modules/@memorax/memorax-code" \
   "$native_command" "$test_root/terminal/node_modules/node-pty" "$codebuddy_version" "$client"
-isolated node "$repo_root/scripts/ci/codebuddy-workbuddy/$client-native-check.mjs" \
+run_suite "$client-native-check" isolated_suite node "$repo_root/scripts/ci/codebuddy-workbuddy/$client-native-check.mjs" \
   "$test_root/npm/lib/node_modules/@memorax/memorax-code" \
   "$native_command" "$codebuddy_version"
-isolated node "$repo_root/scripts/ci/codebuddy-workbuddy/codebuddy-background-check.mjs" \
+run_suite codebuddy-background-check isolated_suite node "$repo_root/scripts/ci/codebuddy-workbuddy/codebuddy-background-check.mjs" \
   "$test_root/npm/lib/node_modules/@memorax/memorax-code" \
   "$native_command" "$codebuddy_version" "$client"
-isolated node "$repo_root/scripts/ci/codebuddy-workbuddy/codebuddy-permissions-check.mjs" \
+run_suite codebuddy-permissions-check isolated_suite node "$repo_root/scripts/ci/codebuddy-workbuddy/codebuddy-permissions-check.mjs" \
   "$test_root/npm/lib/node_modules/@memorax/memorax-code" \
   "$native_command" "$codebuddy_version" "$client"
 
 # Each suite confirms owned-process cleanup before removing this runtime.
+ledger phase cleanup
 rm -rf "$test_root"

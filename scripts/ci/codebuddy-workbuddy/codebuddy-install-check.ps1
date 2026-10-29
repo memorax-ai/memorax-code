@@ -29,7 +29,15 @@ $tempRoot = Join-Path $testRoot 'tmp'
 New-Item -ItemType Directory -Force $userRoot, $tempRoot, $prefix | Out-Null
 [IO.File]::WriteAllText((Join-Path $prefix '.memorax-code-ci-owned'), "$Client-install-check`n")
 
+# Evidence stays outside the isolated runtime and never changes the native result.
+. (Join-Path $PSScriptRoot '../shared/ci-evidence.ps1')
+Initialize-CiEvidence -Tool (Join-Path $repoRoot 'scripts/ci/shared/ci-evidence.mjs') -RuntimeRoot $testRoot
+
 . (Join-Path $PSScriptRoot '../shared/codex-install-user-path.ps1')
+$plannedSuites = "codebuddy-lifecycle-check,codebuddy-install-interruption-check,$Client-native-check,codebuddy-background-check,codebuddy-permissions-check"
+Write-CiLedger plan $plannedSuites
+Write-CiLedger phase setup
+try {
 Invoke-WithCodexTestUserPath -Prefix $prefix -Action {
   $allowedEnvironment = @('PATH', 'SystemRoot', 'WINDIR', 'ComSpec', 'PATHEXT',
     'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432', 'PSModulePath',
@@ -93,26 +101,46 @@ Invoke-WithCodexTestUserPath -Prefix $prefix -Action {
       }
       Write-Output "CodeBuddy Code requested: $CodeBuddyVersion; installed: $CodeBuddyVersion"
     }
+    # Only test runners receive the evidence location after setup.
+    if ($CiEvidenceDir) { $env:MEMORAX_CI_EVIDENCE_DIR = $CiEvidenceDir }
+    Write-CiLedger phase suites
+    Write-CiLedger start codebuddy-lifecycle-check
     & node (Join-Path $repoRoot 'scripts/ci/codebuddy-workbuddy/codebuddy-lifecycle-check.mjs') `
       (Join-Path $prefix 'node_modules/@memorax/memorax-code') $nativeCommand `
       $tarball $npmCommand $PreviousVersion (Join-Path $testRoot 'terminal/node_modules/node-pty') `
       (Join-Path $repoRoot 'scripts/ci/codebuddy-workbuddy/codebuddy-setup-pty.mjs') $CodeBuddyVersion $Client
-    if ($LASTEXITCODE -ne 0) { throw 'The selected client lifecycle suite failed; isolated state retained.' }
+    $suiteExit = $LASTEXITCODE
+    Write-CiLedger end codebuddy-lifecycle-check $suiteExit
+    if ($suiteExit -ne 0) { throw 'The selected client lifecycle suite failed; isolated state retained.' }
+    Write-CiLedger start codebuddy-install-interruption-check
     & node (Join-Path $repoRoot 'scripts/ci/codebuddy-workbuddy/codebuddy-install-interruption-check.mjs') `
       (Join-Path $prefix 'node_modules/@memorax/memorax-code') $nativeCommand `
       (Join-Path $testRoot 'terminal/node_modules/node-pty') $CodeBuddyVersion $Client
-    if ($LASTEXITCODE -ne 0) { throw 'The selected client setup interruption suite failed; isolated state retained.' }
+    $suiteExit = $LASTEXITCODE
+    Write-CiLedger end codebuddy-install-interruption-check $suiteExit
+    if ($suiteExit -ne 0) { throw 'The selected client setup interruption suite failed; isolated state retained.' }
+    Write-CiLedger start "$Client-native-check"
     & node (Join-Path $repoRoot "scripts/ci/codebuddy-workbuddy/$Client-native-check.mjs") `
       (Join-Path $prefix 'node_modules/@memorax/memorax-code') $nativeCommand $CodeBuddyVersion
-    if ($LASTEXITCODE -ne 0) { throw 'The selected client native suite failed; isolated state retained.' }
+    $suiteExit = $LASTEXITCODE
+    Write-CiLedger end "$Client-native-check" $suiteExit
+    if ($suiteExit -ne 0) { throw 'The selected client native suite failed; isolated state retained.' }
+    Write-CiLedger start codebuddy-background-check
     & node (Join-Path $repoRoot 'scripts/ci/codebuddy-workbuddy/codebuddy-background-check.mjs') `
       (Join-Path $prefix 'node_modules/@memorax/memorax-code') $nativeCommand $CodeBuddyVersion $Client
-    if ($LASTEXITCODE -ne 0) { throw 'The selected client background suite failed; isolated state retained.' }
+    $suiteExit = $LASTEXITCODE
+    Write-CiLedger end codebuddy-background-check $suiteExit
+    if ($suiteExit -ne 0) { throw 'The selected client background suite failed; isolated state retained.' }
+    Write-CiLedger start codebuddy-permissions-check
     & node (Join-Path $repoRoot 'scripts/ci/codebuddy-workbuddy/codebuddy-permissions-check.mjs') `
       (Join-Path $prefix 'node_modules/@memorax/memorax-code') $nativeCommand $CodeBuddyVersion $Client
-    if ($LASTEXITCODE -ne 0) { throw 'The selected client permission suite failed; isolated state retained.' }
+    $suiteExit = $LASTEXITCODE
+    Write-CiLedger end codebuddy-permissions-check $suiteExit
+    if ($suiteExit -ne 0) { throw 'The selected client permission suite failed; isolated state retained.' }
   } catch {
     $originalFailure = $_
+    # The wrapper cleanup drives product commands, which never receive the evidence location.
+    [Environment]::SetEnvironmentVariable('MEMORAX_CI_EVIDENCE_DIR', $null, 'Process')
     try {
       & node (Join-Path $repoRoot 'scripts/ci/codebuddy-workbuddy/codebuddy-install-cleanup.mjs') `
         (Join-Path $testRoot 'state') (Join-Path $prefix 'memorax-code.cmd') (Join-Path $PSHOME 'pwsh.exe') $Client
@@ -126,5 +154,9 @@ Invoke-WithCodexTestUserPath -Prefix $prefix -Action {
   }
 
   # Each suite confirms owned-process cleanup before removing this runtime.
+  Write-CiLedger phase cleanup
   Remove-Item -LiteralPath $testRoot -Recurse -Force
+}
+} finally {
+  Write-CiLedger finalize $plannedSuites
 }

@@ -687,8 +687,10 @@ Cursor App image assets remain in `scripts/fixtures/cursor-app/`.
 
 ### Native CI First-Failure Evidence
 
-The Codex, OpenCode and Claude functional jobs record first-failure evidence by
-default; the other clients keep their existing reports. The wrappers read
+The Codex, OpenCode, Claude and CodeBuddy functional jobs record first-failure
+evidence by default; the other clients keep their existing reports, and the
+WorkBuddy job runs the shared CodeBuddy wrappers without an evidence directory,
+so its runners keep their previous environment. The wrappers read
 `MEMORAX_CI_EVIDENCE_DIR` before clearing the environment, require an empty real
 directory outside the test runtime, and pass it only to the test runners; an
 unusable directory disables evidence without changing the result. They keep a
@@ -697,7 +699,7 @@ suite (`PASS`, `FAIL`, `NOT_RUN`, `INCOMPLETE`, `SKIPPED_BY_DESIGN`); suite
 order, fail-fast behavior and assertions are unchanged. A GitHub `pwsh` step
 exits with `$LASTEXITCODE`, so the PowerShell evidence helpers restore it after
 every call. After their native suites and evidence export, the Codex and
-OpenCode Windows jobs run a CI tool self-test: all three wrappers under real
+OpenCode Windows jobs run a CI tool self-test: all four wrappers under real
 PowerShell with stub suites,
 failing ledger calls and an unusable evidence directory. It fails the job when
 any expected test fails or is skipped, and reports on its own summary line
@@ -737,17 +739,25 @@ and fails the job, while `evidenceStatus` and `exportStatus` only add warnings.
 ledger, and `PARTIAL` when an expected record is missing, damaged or cut at the
 read limit. A skipped step owes nothing, and only an instrumented suite that ran
 owes a journal and a result, so unreached, skipped and uninstrumented suites do
-not make evidence partial.
+not make evidence partial. The CodeBuddy suites write no journal or result and
+are listed as `not_instrumented`: their evidence is the inputs record and the
+wrapper ledger, which shows the failed, unreached or unfinished suite and the
+wrapper phase. `COMPLETE` there covers only those records, and an uploaded
+artifact is not complete suite evidence. The job summary marks every
+uninstrumented suite `not_instrumented` and states this limit.
 `exportStatus` is `UPLOADED` only when the upload step succeeded and returned an
 artifact ID; otherwise it is `EMPTY`, `UPLOAD_FAILED` or `NOT_ATTEMPTED`. The
 job summary prints a `client|os|suite|stage|code` signature and a category:
 `functional`, `cleanup` or `functional+cleanup` from the failing suite's result,
-`interrupted` for a suite that never ended and left no result, `setup` or
-`wrapper_cleanup` for a wrapper failure before the suites or after all of them
-passed, and `unclassified` otherwise. A suite whose end the wrapper never
-recorded stays `INCOMPLETE` next to the outcome its runner reported: a failure
-the runner reported keeps its category, and any other reported result is
-`EXIT_UNCONFIRMED`. Equal signatures do not prove the same root cause.
+`interrupted` for a suite that never ended and left no result (for an
+uninstrumented suite, which never leaves one, only in a cancelled step),
+`setup` or `wrapper_cleanup` for a wrapper failure before the suites or after
+all of them passed, and `unclassified` otherwise. A suite whose end the wrapper
+never recorded stays `INCOMPLETE` next to the outcome its runner reported: a
+failure the runner reported keeps its category, and any other reported result
+is `EXIT_UNCONFIRMED`. Such an uninstrumented suite outside a cancelled step is
+`EXIT_UNCONFIRMED` as well, and `LEDGER_END_UNCONFIRMED_<SUITE>` makes the
+evidence partial. Equal signatures do not prove the same root cause.
 
 Artifact names carry the run attempt, so a re-run keeps every earlier attempt's
 evidence and inputs: `native-evidence-<client>-<os>-<channel>-node-<n>-attempt<N>`,

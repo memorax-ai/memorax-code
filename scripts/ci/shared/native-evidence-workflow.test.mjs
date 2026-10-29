@@ -23,14 +23,15 @@ function step(id, predicate) {
 
 test("the evidence change keeps every acceptance trigger, matrix and job timeout", () => {
   assert.match(source, /^on:\n  workflow_dispatch:\n    inputs:\n      mode:[\s\S]*?\n      expected_sha:[\s\S]*?\n  pull_request:\n    branches: \[main\]\n  push:\n    branches: \[main\]\n/m);
-  for (const [id, client] of [["install", "codex"], ["opencode", "opencode"], ["claude", "claude"]]) {
+  for (const [id, client, minutes] of [["install", "codex", 30], ["opencode", "opencode", 30], ["claude", "claude", 30], ["codebuddy", "codebuddy", 35]]) {
     assert.match(job(id), new RegExp(`^      matrix: \\$\\{\\{ fromJSON\\(needs\\.package\\.outputs\\.${client}-matrix\\) \\}\\}$`, "m"));
-    assert.match(job(id), /^    timeout-minutes: 30$/m);
+    assert.match(job(id), new RegExp(`^    timeout-minutes: ${minutes}$`, "m"));
     assert.match(job(id), /^      fail-fast: false$/m);
   }
 });
 
-for (const [id, client, version] of [["install", "codex", "codex"], ["opencode", "opencode", "opencode"], ["claude", "claude", "claude"]]) {
+for (const [id, client, version] of [["install", "codex", "codex"], ["opencode", "opencode", "opencode"], ["claude", "claude", "claude"],
+  ["codebuddy", "codebuddy", "codebuddy"]]) {
   test(`${client} jobs record inputs, keep evidence outside the runtime and export it without changing the outcome`, () => {
     const list = steps(id);
     const download = step(id, (item) => item.startsWith("uses: actions/download-artifact@v4"));
@@ -44,7 +45,7 @@ for (const [id, client, version] of [["install", "codex", "codex"], ["opencode",
     const tests = list.filter((item) => /^\s+id: native-(posix|windows)$/m.test(item));
     assert.equal(tests.length, 2);
     for (const item of tests) {
-      if (client === "claude") assert.doesNotMatch(item, /timeout-minutes:/);
+      if (client === "claude" || client === "codebuddy") assert.doesNotMatch(item, /timeout-minutes:/);
       else assert.match(item, /^        timeout-minutes: 20$/m);
       assert.match(item, /^          MEMORAX_CI_EVIDENCE_DIR: \$\{\{ runner\.temp \}\}\/native-evidence\/suites$/m);
       assert.doesNotMatch(item, /continue-on-error/);
@@ -73,7 +74,8 @@ for (const [id, client, version] of [["install", "codex", "codex"], ["opencode",
     // The real-PowerShell wrapper test gates the job but cannot skip the native suites or delay their evidence.
     // Its TAP counts decide its result, so a skipped test fails it, and it reports on its own summary line.
     const ordered = [inputs, ...tests, summary, upload, report];
-    if (client !== "claude") {
+    // The Codex and OpenCode Windows jobs run that test for every wrapper, the Claude and CodeBuddy ones included.
+    if (client === "codex" || client === "opencode") {
       const wrappers = step(id, (item) => item.startsWith("name: Verify evidence helpers keep the wrapper result (Windows)\n"));
       assert.match(wrappers, /^        if: always\(\) && !cancelled\(\) && runner\.os == 'Windows'$/m);
       assert.match(wrappers, /^        timeout-minutes: 10$/m);
@@ -89,9 +91,9 @@ for (const [id, client, version] of [["install", "codex", "codex"], ["opencode",
 
 test("every uploaded artifact is attempt-qualified and every package reader uses the package job outputs", () => {
   const uploads = source.split("uses: actions/upload-artifact@v4\n").slice(1).map((item) => item.split("\n      - ")[0]);
-  // Package, Cursor releases and input manifest; three clients' evidence; two Cursor reports; WorkBuddy download
+  // Package, Cursor releases and input manifest; four clients' evidence; two Cursor reports; WorkBuddy download
   // evidence and version report; the release acceptance record.
-  assert.equal(uploads.length, 11);
+  assert.equal(uploads.length, 12);
   for (const upload of uploads) assert.match(upload, /^          name: .*\$\{\{ github\.run_attempt \}\}$/m);
   assert.doesNotMatch(source, /overwrite:/);
   const downloads = source.split("uses: actions/download-artifact@v4\n").slice(1).map((item) => item.split("\n      - ")[0]);
@@ -207,6 +209,52 @@ test("wrappers capture the evidence location before isolation and pass it only t
     assert.equal((script.match(/\$suiteExit = \$LASTEXITCODE/g) ?? []).length, (script.match(/Write-CiLedger end /g) ?? []).length);
     assert.doesNotMatch(script, /isolated state retained/);
   }
+  // The CodeBuddy wrappers, which WorkBuddy shares, keep their own setup checks, cleanup and failure messages.
+  const planned = "codebuddy-lifecycle-check,codebuddy-install-interruption-check,$client-native-check,codebuddy-background-check,codebuddy-permissions-check";
+  const shell = await read("../codebuddy-workbuddy/codebuddy-install-check.sh");
+  assert.ok(shell.indexOf('evidence_dir="${MEMORAX_CI_EVIDENCE_DIR:-}"') < shell.indexOf("env -i"));
+  assert.ok(shell.includes(`\nplanned_suites="${planned}"\n`));
+  // The ledger closes before the wrapper cleanup, which a cancelled job may not finish.
+  assert.match(shell, /^cleanup_failed_install\(\) \{\n  local status=\$\?\n  trap - EXIT\n  # .*\n  ledger finalize "\$planned_suites"\n/m);
+  assert.match(shell, /^trap cleanup_failed_install EXIT\nledger plan "\$planned_suites"\nledger phase setup$/m);
+  const runners = shell.split("\n").filter((line) => line.startsWith("run_suite "));
+  assert.deepEqual(runners.map((line) => /^run_suite ("?)(\$?[a-z-]+)\1 isolated_suite node "\$repo_root\/scripts\/ci\/codebuddy-workbuddy\/\2\.mjs" \\$/.exec(line)?.[2]),
+    planned.split(","));
+  // Only isolated_suite adds the location, and only when evidence is enabled; npm, the shims and the cleanup never get it.
+  assert.equal(shell.split('MEMORAX_CI_EVIDENCE_DIR="$evidence_dir"').length, 2);
+  assert.match(shell, /^isolated_suite\(\) \{\n  if \[\[ -n "\$evidence_dir" \]\]; then isolated env MEMORAX_CI_EVIDENCE_DIR="\$evidence_dir" "\$@"; else isolated "\$@"; fi\n\}$/m);
+  assert.equal((shell.match(/isolated_suite/g) ?? []).length, runners.length + 1);
+  assert.match(shell, /^    isolated node "\$repo_root\/scripts\/ci\/codebuddy-workbuddy\/codebuddy-install-cleanup\.mjs" \\$/m);
+  const suitesPhase = shell.indexOf("\nledger phase suites\n");
+  assert.ok(suitesPhase > shell.lastIndexOf("isolated npm") && suitesPhase > shell.indexOf("printf '%s runtime requested")
+    && suitesPhase < shell.indexOf("\nrun_suite "));
+  assert.match(shell, /^ledger phase cleanup\nrm -rf "\$test_root"$/m);
+  const powershell = await read("../codebuddy-workbuddy/codebuddy-install-check.ps1");
+  const dotSource = powershell.indexOf(". (Join-Path $PSScriptRoot '../shared/ci-evidence.ps1')");
+  const capture = powershell.indexOf("Initialize-CiEvidence -Tool (Join-Path $repoRoot 'scripts/ci/shared/ci-evidence.mjs') -RuntimeRoot $testRoot");
+  const scrub = powershell.indexOf("[Environment]::SetEnvironmentVariable($item.Name, $null, 'Process')");
+  const versionCheck = powershell.indexOf('Write-Output "CodeBuddy Code requested');
+  const handoff = powershell.indexOf("if ($CiEvidenceDir) { $env:MEMORAX_CI_EVIDENCE_DIR = $CiEvidenceDir }");
+  const firstRunner = powershell.search(/& node \(Join-Path \$repoRoot ['"]scripts\/ci\//);
+  assert.ok(dotSource > 0 && dotSource < capture && capture < scrub && powershell.lastIndexOf("& npm.cmd install") < handoff
+    && versionCheck > 0 && versionCheck < handoff && handoff < firstRunner);
+  assert.ok(powershell.includes(`\n$plannedSuites = "${planned.replace("$client", "$Client")}"\nWrite-CiLedger plan $plannedSuites\nWrite-CiLedger phase setup\ntry {\n`));
+  assert.match(powershell.slice(handoff, firstRunner), /\n\s*Write-CiLedger phase suites\n\s*Write-CiLedger start codebuddy-lifecycle-check\n\s*$/);
+  assert.match(powershell, /^\s*Write-CiLedger phase cleanup\n\s*Remove-Item -LiteralPath \$testRoot -Recurse -Force$/m);
+  assert.ok(powershell.includes("} finally {\n  Write-CiLedger finalize $plannedSuites\n}"));
+  assert.doesNotMatch(powershell, /function Write-CiLedger|\$evidenceTool|ci-evidence\.mjs['"]?\) (?:prepare|ledger)/);
+  // Each suite's exit status is recorded first and then decides the unchanged failure message.
+  const block = powershell.slice(handoff, powershell.indexOf("  } catch {\n    $originalFailure = $_\n"));
+  const names = (pattern) => [...block.matchAll(pattern)].map((match) => match[2]);
+  const suiteNames = planned.replace("$client", "$Client").split(",");
+  assert.deepEqual(names(/Write-CiLedger start ("?)(\$?[A-Za-z-]+)\1\n/g), suiteNames);
+  assert.deepEqual(names(/\$suiteExit = \$LASTEXITCODE\n\s*Write-CiLedger end ("?)(\$?[A-Za-z-]+)\1 \$suiteExit\n\s*if \(\$suiteExit -ne 0\) \{ throw '[^']+; isolated state retained\.' \}\n/g), suiteNames);
+  assert.equal((block.match(/& node \(Join-Path \$repoRoot /g) ?? []).length, suiteNames.length);
+  assert.doesNotMatch(block, /if \(\$LASTEXITCODE -ne 0\)/);
+  // The failure cleanup drives product commands, so the catch clears the location before it runs.
+  const failure = powershell.slice(powershell.indexOf("  } catch {\n    $originalFailure = $_\n"));
+  const cleared = failure.indexOf("[Environment]::SetEnvironmentVariable('MEMORAX_CI_EVIDENCE_DIR', $null, 'Process')");
+  assert.ok(cleared > 0 && cleared < failure.indexOf("codebuddy-install-cleanup.mjs"));
   // The executable PowerShell tests in native-evidence-wrappers.test.mjs check the behavior; this keeps
   // any later helper from calling node outside the save/restore pair.
   const helpers = await read("./ci-evidence.ps1");
