@@ -663,24 +663,81 @@ jobs:
         with:
           name: ${{ needs.package.outputs.package-artifact-name }}
           path: dist/npm/tarballs
+      - name: Record native test inputs
+        id: record-inputs
+        continue-on-error: true
+        shell: bash
+        env:
+          CLIENT_CHANNEL: ${{ matrix.channel }}
+          CLIENT_VERSION: ${{ matrix.codebuddy }}
+          MATRIX_OS: ${{ matrix.os }}
+          MATRIX_NODE: ${{ matrix.node }}
+          PACKAGE_ARTIFACT_NAME: ${{ needs.package.outputs.package-artifact-name }}
+          PACKAGE_ARTIFACT_ID: ${{ needs.package.outputs.package-artifact-id }}
+          PACKAGE_ARTIFACT_DIGEST: ${{ needs.package.outputs.package-artifact-digest }}
+          PACKAGE_SHA256: ${{ needs.package.outputs.package-sha256 }}
+        run: |
+          node scripts/ci/shared/ci-evidence.mjs inputs "$RUNNER_TEMP/native-evidence/inputs.json" \
+            --client codebuddy --channel "$CLIENT_CHANNEL" --client-version "$CLIENT_VERSION" \
+            --matrix-os "$MATRIX_OS" --matrix-node "$MATRIX_NODE" --npm-version "$(npm -v)" \
+            --package-dir dist/npm/tarballs --package-artifact-name "$PACKAGE_ARTIFACT_NAME" \
+            --package-artifact-id "$PACKAGE_ARTIFACT_ID" --package-artifact-digest "$PACKAGE_ARTIFACT_DIGEST" \
+            --expected-package-sha256 "$PACKAGE_SHA256"
       - name: Verify CodeBuddy lifecycle, interruption, native flows and Repo Memory configuration (macOS/Linux)
+        id: native-posix
         if: runner.os != 'Windows'
         shell: bash
         env:
           CODEBUDDY_VERSION: ${{ matrix.codebuddy }}
+          MEMORAX_CI_EVIDENCE_DIR: ${{ runner.temp }}/native-evidence/suites
         run: bash scripts/ci/codebuddy-workbuddy/codebuddy-install-check.sh dist/npm/tarballs "$CODEBUDDY_VERSION"
       - name: Verify shared Windows user PATH cleanup
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/ci/shared/codex-install-user-path.test.ps1
       - name: Verify CodeBuddy lifecycle, interruption, native flows and Repo Memory configuration (Windows)
+        id: native-windows
         if: runner.os == 'Windows'
         shell: pwsh
         env:
           CODEBUDDY_VERSION: ${{ matrix.codebuddy }}
+          MEMORAX_CI_EVIDENCE_DIR: ${{ runner.temp }}/native-evidence/suites
           TEMP: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
         run: ./scripts/ci/codebuddy-workbuddy/codebuddy-install-check.ps1 -TarballDirectory dist/npm/tarballs -CodeBuddyVersion $env:CODEBUDDY_VERSION
+      - name: Summarize first-failure evidence
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          TEST_OUTCOME: ${{ runner.os == 'Windows' && steps.native-windows.outcome || steps.native-posix.outcome }}
+          INPUTS_OUTCOME: ${{ steps.record-inputs.outcome }}
+          CLIENT_CHANNEL: ${{ matrix.channel }}
+          CLIENT_VERSION: ${{ matrix.codebuddy }}
+          MATRIX_OS: ${{ matrix.os }}
+          MATRIX_NODE: ${{ matrix.node }}
+        run: |
+          node scripts/ci/shared/ci-evidence.mjs summarize "$RUNNER_TEMP/native-evidence" --client codebuddy --os "$MATRIX_OS" \
+            --channel "$CLIENT_CHANNEL" --client-version "$CLIENT_VERSION" --node "$MATRIX_NODE" \
+            --test-step-outcome "$TEST_OUTCOME" --inputs-step-outcome "$INPUTS_OUTCOME" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --github-summary "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        id: upload-evidence
+        if: always()
+        continue-on-error: true
+        with:
+          name: native-evidence-codebuddy-${{ matrix.os }}-${{ matrix.channel }}-node-${{ matrix.node }}-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/native-evidence
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Report evidence export
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          UPLOAD_OUTCOME: ${{ steps.upload-evidence.outcome }}
+          ARTIFACT_ID: ${{ steps.upload-evidence.outputs.artifact-id }}
+        run: node scripts/ci/shared/ci-evidence.mjs export-status --outcome "$UPLOAD_OUTCOME" --artifact-id "$ARTIFACT_ID" --github-summary "$GITHUB_STEP_SUMMARY"
 
   cursor-app:
     name: Cursor App ${{ matrix.channel }} ${{ matrix.cursor }} (${{ matrix.os }}, Node ${{ matrix.node }})

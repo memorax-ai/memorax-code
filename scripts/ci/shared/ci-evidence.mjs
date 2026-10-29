@@ -438,11 +438,15 @@ export function summarizeEvidence(root, options = {}) {
   if (ledger?.invalidLines) issues.add("LEDGER_INVALID_LINES");
   if (ledger?.readTruncated) issues.add("LEDGER_READ_TRUNCATED");
   const suites = ledger ? [...ledger.suites.values()] : [];
+  // An uninstrumented suite never leaves a result, so only a cancelled step explains its missing end
+  // record; otherwise the suite's end is unconfirmed and the ledger has a gap.
+  const endUnconfirmed = (entry) => entry.status === "INCOMPLETE" && entry.evidence === "not_instrumented" && stepOutcome !== "cancelled";
   for (const entry of suites) {
     // A killed wrapper never finalizes its ledger; derive the statuses finalize would record.
     if (entry.status === "PLANNED") entry.status = "NOT_RUN";
     if (entry.status === "RUNNING") entry.status = "INCOMPLETE";
     entry.evidence = suiteEvidence(entry, suitesDirectory, issues);
+    if (endUnconfirmed(entry)) issues.add(`LEDGER_END_UNCONFIRMED_${entry.suite.toUpperCase().replaceAll("-", "_")}`);
   }
   const failed = suites.find((entry) => entry.status === "FAIL");
   const unconfirmed = suites.find((entry) => entry.status === "INCOMPLETE");
@@ -459,12 +463,13 @@ export function summarizeEvidence(root, options = {}) {
     } else if (unconfirmed) {
       // The wrapper never confirmed this suite's exit. A failure the runner reported itself is kept;
       // any other runner result does not prove a normal exit, so that completion stays unconfirmed.
-      // A suite that left no result at all is reported as interrupted.
+      // An instrumented suite that left no result is reported as interrupted; an uninstrumented one
+      // is reported so only in a cancelled step, and otherwise its completion stays unconfirmed too.
       suite = unconfirmed.suite;
       const progress = unconfirmed.lastProgress ?? {};
       const progressStage = [progress.stage, progress.backgroundStage].filter((part) => typeof part === "string").join("/") || "unknown";
       if (unconfirmed.result?.testOutcome === "FAIL" && unconfirmed.result.failure) [category, stage, failureCode] = reportedFailure(unconfirmed);
-      else if (unconfirmed.result) [category, stage, failureCode] = ["unclassified", progressStage, "EXIT_UNCONFIRMED"];
+      else if (unconfirmed.result || endUnconfirmed(unconfirmed)) [category, stage, failureCode] = ["unclassified", progressStage, "EXIT_UNCONFIRMED"];
       else [category, stage, failureCode] = ["interrupted", progressStage, "INCOMPLETE"];
     } else if (ledger?.phase === "cleanup" && suites.length && suites.every((entry) => PASSING.includes(entry.status))) {
       [category, stage, failureCode] = ["wrapper_cleanup", "cleanup", "WRAPPER_CLEANUP_FAILED"];
@@ -499,7 +504,8 @@ export function renderSummary(summary) {
   const suites = (summary.suites ?? []).map((entry) => {
     const notes = [entry.exitCode ? `exit ${entry.exitCode}` : undefined,
       entry.reportedOutcome && entry.reportedOutcome !== entry.status ? `runner reported ${entry.reportedOutcome}` : undefined,
-      ["missing", "partial"].includes(entry.evidence) ? `evidence ${entry.evidence}` : undefined].filter(Boolean);
+      ["missing", "partial"].includes(entry.evidence) ? `evidence ${entry.evidence}` : undefined,
+      entry.evidence === "not_instrumented" ? "not_instrumented" : undefined].filter(Boolean);
     return `${entry.suite} ${entry.status === "FAIL" ? "**FAIL**" : entry.status}${notes.length ? ` (${notes.join(", ")})` : ""}`;
   });
   const lines = [
@@ -510,6 +516,9 @@ export function renderSummary(summary) {
     `- evidenceStatus: **${summary.evidenceStatus}**${summary.evidenceIssues?.length ? ` (${summary.evidenceIssues.join(", ")})` : ""}`,
     `- suites: ${suites.length ? suites.join(" · ") : "none recorded"}`,
   ];
+  if (summary.suites?.some((entry) => entry.evidence === "not_instrumented")) {
+    lines.push("- `not_instrumented` suites write no journal or result, so for them evidenceStatus covers only the inputs record and the wrapper ledger, not suite-internal diagnostics.");
+  }
   if (summary.runAttempt > 1) {
     lines.push(`- This is re-run attempt ${summary.runAttempt}. Earlier attempts keep their own artifacts (suffix \`-attempt1\` …); a passing re-run does not mark an earlier failure as fixed.`);
   }

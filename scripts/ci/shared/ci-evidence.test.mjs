@@ -459,6 +459,27 @@ test("the summary expects evidence only from instrumented suites that ran and cl
     assert.deepEqual(unconfirmed.suites.map(({ status, reportedOutcome }) => [status, reportedOutcome]), [["INCOMPLETE", result.testOutcome]]);
   }
   assert.match(renderSummary(await unconfirmedExit(passed)), /codex-install-smoke INCOMPLETE \(runner reported PASS, evidence partial\)/);
+
+  // An uninstrumented suite never leaves a result, so a missing end record shows an interruption only in a
+  // cancelled step. Otherwise, as when only the end record failed to write, its end stays unconfirmed and is a gap.
+  const uninstrumentedEnd = (testStepOutcome) => summarize({ ledger: [["plan", "", "codebuddy-lifecycle-check,codebuddy-native-check"],
+    ...phases("setup", "suites"), ["start", "codebuddy-lifecycle-check"], ["incomplete", "codebuddy-lifecycle-check"],
+    ["not_run", "codebuddy-native-check"]] }, testStepOutcome, "codebuddy");
+  const lostEnd = await uninstrumentedEnd("failure");
+  assert.deepEqual(view(lostEnd), [["codebuddy-lifecycle-check", "INCOMPLETE", "not_instrumented"],
+    ["codebuddy-native-check", "NOT_RUN", "not_instrumented"]]);
+  assert.deepEqual([lostEnd.testOutcome, lostEnd.category, lostEnd.signature, lostEnd.evidenceStatus, lostEnd.evidenceIssues], ["FAIL",
+    "unclassified", "codebuddy|windows-2025|codebuddy-lifecycle-check|unknown|EXIT_UNCONFIRMED", "PARTIAL",
+    ["LEDGER_END_UNCONFIRMED_CODEBUDDY_LIFECYCLE_CHECK"]]);
+  const cancelled = await uninstrumentedEnd("cancelled");
+  assert.deepEqual([cancelled.testOutcome, cancelled.category, cancelled.signature, cancelled.evidenceStatus, cancelled.evidenceIssues], ["FAIL",
+    "interrupted", "codebuddy|windows-2025|codebuddy-lifecycle-check|unknown|INCOMPLETE", "COMPLETE", []]);
+
+  // The job summary marks uninstrumented suites and states what evidenceStatus then covers.
+  const rendered = renderSummary(lostEnd);
+  assert.match(rendered, /suites: codebuddy-lifecycle-check INCOMPLETE \(not_instrumented\) · codebuddy-native-check NOT_RUN \(not_instrumented\)\n/);
+  assert.match(rendered, /\n- `not_instrumented` suites write no journal or result, so for them evidenceStatus covers only the inputs record and the wrapper ledger, not suite-internal diagnostics\.\n/);
+  assert.doesNotMatch(renderSummary(damaged), /not_instrumented/);
 });
 
 test("the export status counts only a successful upload with an artifact ID and never fails the job", async (t) => {
