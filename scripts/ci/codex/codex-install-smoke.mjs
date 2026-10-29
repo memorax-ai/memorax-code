@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { createServer as createTcpServer } from "node:net";
@@ -31,8 +31,13 @@ const cleanupCodes = {
   pid_record_removal: "CLEANUP_PID_RECORD_REMAINS",
   tracked_process: "CLEANUP_TRACKED_PROCESS_CHECK_FAILED",
   port_release: "CLEANUP_PORT_RELEASE_FAILED",
+  command_process: "CLEANUP_COMMAND_PROCESS_REMAINS",
   directory_removal: "CLEANUP_DIRECTORY_REMOVAL_FAILED",
 };
+// Windows directory removal retries, used only after the pre-removal query found no process matching the isolated
+// paths. The budget bounds when a retry may start, not how long removal takes: a started attempt is never cancelled.
+const removalRetryDelaysMs = [250, 500, 1000];
+const removalBudgetMs = 5_000;
 let cleanupStage = "entrypoint_check";
 let cleanupTrackedPidIndex;
 let stage = "prerequisites";
@@ -471,14 +476,18 @@ try {
       report.cleanupStop = { invoked: false, skipReason: "backend_not_started" };
     }
     if (root) {
+      if (process.platform === "win32") {
+        cleanupStage = "command_process";
+        await checkRelatedProcesses();
+      }
       cleanupStage = "directory_removal";
       await removeIsolatedDirectory();
     }
     report.cleanup = "PASS";
   } catch (error) {
     report.status = "FAIL";
-    // Directory removal starts only after every shutdown check above has passed,
-    // or directly when setup never started a Backend.
+    // Directory removal starts only when no check above has failed; when setup never
+    // started a Backend, only the Windows process check precedes it.
     const removalOnly = cleanupStage === "directory_removal";
     report.cleanup = !removalOnly ? "FAIL: isolated state retained because shutdown was not confirmed"
       : setupStarted ? "FAIL: shutdown was confirmed but the isolated directory could not be removed"
@@ -645,7 +654,7 @@ function failureEvidence(functionalOutcome) {
     errorDetails: report.errorDetails, terminalDisposal: report.terminalDisposal,
     failureState: report.failureState, productDiagnostics: report.productDiagnostics, cleanupStop: report.cleanupStop,
     cleanupStage: cleanup?.stage, cleanupCode, cleanupPath: cleanup?.path, cleanupBackendPid: cleanup?.backendPid,
-    directoryRemoval: report.directoryRemoval,
+    processCheck: report.processCheck, directoryRemoval: report.directoryRemoval,
     backendStarted: setupStarted,
     shutdownConfirmed: cleanup ? setupStarted && cleanup.stage === "directory_removal" : undefined,
     checksPassed: report.checks.length,
@@ -846,21 +855,83 @@ function recordTerminalDisposal(mode, value) {
 
 async function removeIsolatedDirectory() {
   const started = performance.now();
-  // Preserve the existing single removal attempt and publish only its outcome.
-  try { evidence.observe("directoryRemoval", { status: "started", attempt: 1 }); } catch {}
-  let failure;
-  try { await rm(root, { recursive: true, force: true }); }
-  catch (error) { failure = error; throw error; }
-  finally {
-    report.directoryRemoval = { status: failure ? "failed" : "returned", attempt: 1,
-      elapsedMs: Math.max(0, Math.min(600_000, Math.floor(performance.now() - started))) };
-    if (failure) {
-      report.directoryRemoval.error = projectError(failure);
-      const path = projectPathAlias(failure.path, { root });
-      if (path) report.directoryRemoval.path = path;
+  // Windows can hold a handle briefly after its process exits. Retry only there, and only after the pre-removal
+  // query found no process matching the isolated paths, so a process it finds fails instead of being retried away.
+  const delays = process.platform === "win32" && report.processCheck?.status === "clear" ? removalRetryDelaysMs : [];
+  const codes = [];
+  let attempt = 0, failure, first;
+  for (;;) {
+    attempt += 1;
+    try { evidence.observe("directoryRemoval", { status: "started", attempt }); } catch {}
+    try {
+      await rm(root, { recursive: true, force: true });
+      failure = undefined;
+      break;
+    } catch (error) {
+      failure = error;
+      first ??= error;
+      codes.push(projectError(error).code ?? "FAILED");
+      const delay = delays[attempt - 1];
+      if (delay === undefined || !["EBUSY", "EPERM", "ENOTEMPTY"].includes(error?.code)
+        || performance.now() - started + delay > removalBudgetMs) break;
+      await new Promise((done) => setTimeout(done, delay));
+      // A timer that fires late must not start an attempt after the budget; the last failure stands.
+      if (performance.now() - started > removalBudgetMs) break;
     }
-    try { evidence.observe("directoryRemoval", report.directoryRemoval); } catch {}
   }
+  report.directoryRemoval = { status: failure ? "failed" : "returned", attempt,
+    elapsedMs: Math.max(0, Math.min(600_000, Math.floor(performance.now() - started))) };
+  if (attempt > 1) {
+    // The first failure and every attempt's code stay in the record, including after a recovery.
+    report.directoryRemoval.firstError = projectError(first);
+    const firstPath = projectPathAlias(first.path, { root });
+    if (firstPath) report.directoryRemoval.firstError.path = firstPath;
+    report.directoryRemoval.errors = codes;
+    if (!failure) report.directoryRemoval.recovered = true;
+  }
+  if (failure) {
+    report.directoryRemoval.error = projectError(failure);
+    const path = projectPathAlias(failure.path, { root });
+    if (path) report.directoryRemoval.path = path;
+  }
+  try { evidence.observe("directoryRemoval", report.directoryRemoval); } catch {}
+  if (failure) throw failure;
+  if (attempt > 1) console.log(`::warning title=Codex cleanup::The isolated directory was removed on attempt ${attempt} after ${codes.join(", ")}; the pre-removal query found no process matching the isolated paths.`);
+}
+
+// A live process whose executable path or command line references the isolated installation or test root fails
+// cleanup before removal. "clear" means only that this one query matched none; it does not show that no process
+// holds the directory. The record holds counts and image names only; executable paths and command lines stay private.
+async function checkRelatedProcesses(budgetMs = 30_000) {
+  const observed = await evidence.collect("relatedProcesses", async () => {
+    const windowsRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows";
+    // Error-stop turns a query error into a non-zero exit instead of an empty list. Progress output is switched off,
+    // and any text still on stderr is treated as a query error, so an error the query reports cannot read as clear.
+    const { stdout, stderr } = await execFileAsync(join(windowsRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), [
+      "-NoProfile", "-NonInteractive", "-Command",
+      "$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; [Console]::OutputEncoding=[Text.Encoding]::UTF8; $rows=@(Get-CimInstance Win32_Process -Property ProcessId,Name,ExecutablePath,CommandLine | Select-Object ProcessId,Name,ExecutablePath,CommandLine); ConvertTo-Json -InputObject @($rows) -Compress",
+    ], { timeout: budgetMs + 5_000, maxBuffer: 16 * 1024 * 1024, encoding: "utf8", windowsHide: true });
+    if (stderr) throw Object.assign(new Error("The process query wrote to stderr"), { code: "PROCESS_QUERY_STDERR" });
+    // A command line can hold either the given or the long form of a temporary path.
+    const paths = [npmPrefix, root, await realpath(npmPrefix), await realpath(root)];
+    return classifyRelatedProcesses(JSON.parse(stdout), paths, process.pid);
+  }, { budgetMs });
+  report.processCheck = boundedObservation(observed);
+  check(report.processCheck.status !== "remaining", "A Codex or isolated installation process remains before directory removal");
+  // An unavailable observation neither passes nor fails the check; removal then keeps its single attempt.
+  if (report.processCheck.status === "clear") report.checks.push("pre-removal process query found no process matching the isolated paths");
+}
+
+function classifyRelatedProcesses(rows, paths, self) {
+  const normalize = (value) => String(value ?? "").replaceAll("/", "\\").toLowerCase();
+  const needles = [...new Set(paths.map(normalize))];
+  const related = rows.filter((row) => row.ProcessId !== self && needles.some((needle) =>
+    normalize(row.ExecutablePath).includes(needle) || normalize(row.CommandLine).includes(needle)));
+  if (!related.length) return { status: "clear" };
+  const codex = related.filter((row) =>
+    `${normalize(row.ExecutablePath)} ${normalize(row.CommandLine)}`.includes("\\node_modules\\@openai\\")).length;
+  const names = new Set(related.map((row) => typeof row.Name === "string" && /^[\w.-]{1,64}$/.test(row.Name) ? row.Name : "unrecognized"));
+  return { status: "remaining", codex, other: related.length - codex, names: [...names].sort().slice(0, 8) };
 }
 
 async function verifySavedAccountSearch(label) {
