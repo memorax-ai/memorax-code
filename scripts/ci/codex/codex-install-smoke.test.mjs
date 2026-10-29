@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, win32 } from "node:path";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import { createEvidenceRecorder } from "../shared/ci-evidence.mjs";
@@ -116,6 +116,89 @@ test("successful directory removal does not add retries or change the rm contrac
   await remove();
   assert.deepEqual(calls, [["/fixture/isolated", { recursive: true, force: true }]]);
   assert.deepEqual(plain(report.directoryRemoval), { status: "returned", attempt: 1, elapsedMs: 0 });
+});
+
+// Windows removal with synthetic rm failures and clock; each retry delay advances the clock at once.
+function removalFixture({ platform = "win32", processCheck = { status: "clear" }, failures = [], clock } = {}) {
+  const root = "/fixture/isolated", report = { processCheck }, calls = [], thrown = [], delays = [], observations = [], warnings = [];
+  let now = 0;
+  const remove = runnerFunction("removeIsolatedDirectory", { root, report, process: { platform },
+    removalRetryDelaysMs: [250, 500, 1000], removalBudgetMs: 5_000, performance: { now: clock ?? (() => now) },
+    setTimeout(done, delay) { delays.push(delay); now += delay; done(); },
+    console: { log(line) { warnings.push(line); } },
+    evidence: { observe(name, value) { observations.push(plain(value)); } },
+    async rm(path, options) {
+      calls.push(plain(options));
+      const code = failures.shift();
+      if (!code) return;
+      thrown.push(Object.assign(new Error(privateText), { code, path: root + "/upgrade user 测试/.codex" }));
+      throw thrown.at(-1);
+    },
+  });
+  return { remove, report, calls, thrown, delays, observations, warnings };
+}
+const busyPath = "<root>/upgrade user 测试/.codex";
+
+test("Windows removal retries a transient EBUSY after a clear process check and keeps the first error and attempts", async () => {
+  const fixture = removalFixture({ failures: ["EBUSY", "EBUSY"] });
+  await fixture.remove();
+  assert.deepEqual(fixture.delays, [250, 500]);
+  assert.deepEqual(fixture.calls, Array(3).fill({ recursive: true, force: true }));
+  const record = { status: "returned", attempt: 3, elapsedMs: 750,
+    firstError: { name: "Error", code: "EBUSY", path: busyPath }, errors: ["EBUSY", "EBUSY"], recovered: true };
+  assert.deepEqual(plain(fixture.report.directoryRemoval), record);
+  assert.deepEqual(fixture.observations, [1, 2, 3].map((attempt) => ({ status: "started", attempt })).concat([record]));
+  // A recovered removal stays visible in the job log, with codes only.
+  assert.deepEqual(fixture.warnings, ["::warning title=Codex cleanup::The isolated directory was removed on attempt 3 after EBUSY, EBUSY; the pre-removal query found no process matching the isolated paths."]);
+  assert.equal(JSON.stringify([fixture.observations, fixture.warnings]).includes(privateText), false);
+});
+
+test("persistent occupation still fails after the bounded retries and keeps every attempt's code", async () => {
+  const fixture = removalFixture({ failures: ["EBUSY", "ENOTEMPTY", "EPERM", "ENOTEMPTY", "EBUSY"] });
+  await assert.rejects(fixture.remove(), (actual) => actual === fixture.thrown.at(-1));
+  assert.deepEqual(fixture.delays, [250, 500, 1000]);
+  assert.equal(fixture.calls.length, 4);
+  assert.deepEqual(plain(fixture.report.directoryRemoval), { status: "failed", attempt: 4, elapsedMs: 1750,
+    firstError: { name: "Error", code: "EBUSY", path: busyPath }, errors: ["EBUSY", "ENOTEMPTY", "EPERM", "ENOTEMPTY"],
+    error: { name: "Error", code: "ENOTEMPTY" }, path: busyPath });
+  assert.deepEqual(fixture.warnings, []);
+});
+
+test("the total removal budget ends retries before every delay is used", async () => {
+  // Attempt 1 fails at 4.6 s, its wait ends at 4.85 s, attempt 2 fails at 4.9 s and its 500 ms wait would pass 5 s.
+  const times = [0, 4_600, 4_850, 4_900, 4_900];
+  const fixture = removalFixture({ failures: ["EBUSY", "EBUSY", "EBUSY"], clock: () => times.shift() });
+  await assert.rejects(fixture.remove(), (actual) => actual === fixture.thrown.at(-1));
+  assert.deepEqual(fixture.delays, [250]);
+  assert.deepEqual(plain(fixture.report.directoryRemoval), { status: "failed", attempt: 2, elapsedMs: 4_900,
+    firstError: { name: "Error", code: "EBUSY", path: busyPath }, errors: ["EBUSY", "EBUSY"],
+    error: { name: "Error", code: "EBUSY" }, path: busyPath });
+});
+
+test("a retry timer that fires after the budget starts no further attempt and keeps the previous failure", async () => {
+  // Attempt 1 fails at 4.5 s; its 250 ms wait would end within budget, but the timer resumes at 5.3 s.
+  const times = [0, 4_500, 5_300, 5_300];
+  const fixture = removalFixture({ failures: ["EBUSY"], clock: () => times.shift() });
+  await assert.rejects(fixture.remove(), (actual) => actual === fixture.thrown[0]);
+  assert.deepEqual([fixture.calls.length, fixture.delays, fixture.warnings], [1, [250], []]);
+  assert.deepEqual(plain(fixture.report.directoryRemoval), { status: "failed", attempt: 1, elapsedMs: 5_300,
+    error: { name: "Error", code: "EBUSY" }, path: busyPath });
+});
+
+test("removal keeps one attempt off Windows, without a clear process check, or after a non-transient error", async () => {
+  for (const [label, options, code] of [
+    ["linux", { platform: "linux" }, "EBUSY"],
+    ["process check timed out", { processCheck: { status: "timed_out" } }, "EBUSY"],
+    ["process check failed", { processCheck: { status: "observation_failed", code: "ENOENT" } }, "EBUSY"],
+    ["no process check", { processCheck: null }, "EBUSY"],
+    ["non-transient error", {}, "EACCES"],
+  ]) {
+    const fixture = removalFixture({ ...options, failures: [code, code] });
+    await assert.rejects(fixture.remove(), (actual) => actual === fixture.thrown[0], label);
+    assert.deepEqual([fixture.calls.length, fixture.delays, fixture.warnings], [1, [], []], label);
+    assert.deepEqual(plain(fixture.report.directoryRemoval), { status: "failed", attempt: 1, elapsedMs: 0,
+      error: { name: "Error", code }, path: busyPath }, label);
+  }
 });
 
 test("final failure evidence retains terminal and directory cleanup causes independently", () => {
@@ -353,4 +436,80 @@ test("a cleanup PID observation that never returns still lets the report finish 
   for (const key of Object.keys(before)) assert.deepEqual(after[key], before[key], key);
   assert.deepEqual([after.code, after.cleanupCode, after.cleanupBackendPid],
     ["TERMINAL_CASE_TIMEOUT", "CLEANUP_PID_RECORD_REMAINS", { status: "timed_out" }]);
+});
+
+// Windows process rows in the shapes the PowerShell query returns; the temporary path can appear in short or long form.
+const tempShort = "C:\\Users\\RUNNER~1\\AppData\\Local\\Temp", tempLong = "C:\\Users\\runneradmin\\AppData\\Local\\Temp";
+const isolatedPrefix = tempShort + "\\memorax-codex-install-0f1e\\npm", isolatedRoot = tempShort + "\\memorax-code-codex-install-AbC123";
+const longForm = (path) => path.replace(tempShort, tempLong);
+const processRow = (ProcessId, Name, ExecutablePath, CommandLine) => ({ ProcessId, Name, ExecutablePath, CommandLine });
+const nativeCodex = processRow(201, "codex.exe", longForm(isolatedPrefix) + "\\node_modules\\@openai\\codex\\vendor\\codex.exe", null);
+const unrelatedProcess = processRow(300, "svchost.exe", "C:\\Windows\\System32\\svchost.exe", "svchost.exe -k netsvcs");
+
+test("the process check counts related processes in either path form and keeps paths and command lines private", () => {
+  const classify = runnerFunction("classifyRelatedProcesses");
+  const rows = [
+    // The smoke itself names the isolated package in its arguments.
+    processRow(100, "node.exe", "C:\\hostedtoolcache\\node.exe", `node codex-install-smoke.mjs ${isolatedPrefix}\\node_modules/@memorax/memorax-code`),
+    nativeCodex,
+    processRow(202, "node.exe", "C:\\hostedtoolcache\\node.exe",
+      `"node.exe" "${isolatedPrefix.toLowerCase().replaceAll("\\", "/")}/node_modules/@openai/codex/bin/codex.js" app-server`),
+    processRow(203, privateText, null, `cmd.exe /d /s /c "cd ${isolatedRoot}\\workspace 测试"`),
+    unrelatedProcess, processRow(4, "System", null, null),
+  ];
+  const paths = [isolatedPrefix, isolatedRoot, longForm(isolatedPrefix), longForm(isolatedRoot)];
+  const remaining = plain(classify(rows, paths, 100));
+  assert.deepEqual(remaining, { status: "remaining", codex: 2, other: 1, names: ["codex.exe", "node.exe", "unrecognized"] });
+  assert.equal(/runner|temp|private/i.test(JSON.stringify(remaining)), false);
+  assert.deepEqual(plain(classify([rows[0], unrelatedProcess, rows[5]], paths, 100)), { status: "clear" });
+});
+
+test("a remaining related process fails the Windows check; a failed or unfinished query neither passes nor fails it", { timeout: 10_000 }, async () => {
+  for (const [label, query, processCheck, failure, checks] of [
+    ["remaining", async () => ({ stdout: JSON.stringify([nativeCodex, unrelatedProcess]) }),
+      { status: "remaining", codex: 1, other: 0, names: ["codex.exe"] }, "A Codex or isolated installation process remains before directory removal", []],
+    ["clear", async () => ({ stdout: JSON.stringify([unrelatedProcess]), stderr: "" }), { status: "clear" }, undefined,
+      ["pre-removal process query found no process matching the isolated paths"]],
+    ["query failed", async () => { throw Object.assign(new Error(privateText), { code: "ENOENT" }); },
+      { status: "observation_failed", code: "ENOENT" }, undefined, []],
+    // A non-terminating query error can still leave exit 0 and an empty list; it must not read as clear.
+    ["query error with exit 0", async () => ({ stdout: "[]", stderr: "Get-CimInstance : " + privateText }),
+      { status: "observation_failed" }, undefined, []],
+    ["query never returns", never, { status: "timed_out" }, undefined, []],
+  ]) {
+    const report = { checks: [] }, invocations = [];
+    const checkRelatedProcesses = runnerFunction("checkRelatedProcesses", { report, npmPrefix: isolatedPrefix, root: isolatedRoot,
+      join: win32.join, process: { pid: 100, env: { SystemRoot: "C:\\Windows" } }, boundedObservation, check: runnerFunction("check"),
+      classifyRelatedProcesses: runnerFunction("classifyRelatedProcesses"), realpath: async (path) => longForm(path),
+      evidence: createEvidenceRecorder({ suite: "codex-install-smoke", client: "codex" }),
+      execFileAsync(command, args, options) {
+        invocations.push([command, args.at(-1).split("; ").slice(0, 2), options.cwd, options.windowsHide]);
+        return query();
+      } });
+    const checked = checkRelatedProcesses(50);
+    if (failure) await assert.rejects(checked, (actual) => actual.smokeMessage === failure, label);
+    else await checked;
+    assert.deepEqual(plain(report.processCheck), processCheck, label);
+    assert.deepEqual(report.checks, checks, label);
+    // The query stops on its first error, keeps progress records off stderr, and runs outside the directory it inspects.
+    assert.deepEqual(invocations, [["C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      ["$ErrorActionPreference='Stop'", "$ProgressPreference='SilentlyContinue'"], undefined, true]], label);
+  }
+});
+
+test("failure evidence separates a matching process from a removal still reporting occupation after the query found none", () => {
+  const occupied = { status: "failed", attempt: 4, elapsedMs: 1750, firstError: { name: "Error", code: "EBUSY", path: "<root>/.codex" },
+    errors: ["EBUSY", "EBUSY", "EBUSY", "EBUSY"], error: { name: "Error", code: "EBUSY" }, path: "<root>/.codex" };
+  for (const [processCheck, cleanupFailure, directoryRemoval, cleanupCode, shutdownConfirmed] of [
+    [{ status: "remaining", codex: 1, other: 0, names: ["codex.exe"] }, { stage: "command_process", code: "CLEANUP_COMMAND_PROCESS_REMAINS" },
+      undefined, "CLEANUP_COMMAND_PROCESS_REMAINS", false],
+    [{ status: "clear" }, { stage: "directory_removal", code: "CLEANUP_DIRECTORY_REMOVAL_FAILED", systemCode: "EBUSY", path: "<root>/.codex" },
+      occupied, "CLEANUP_DIRECTORY_REMOVAL_FAILED:EBUSY", true],
+  ]) {
+    const report = { status: "FAIL", checks: ["fixture"], processCheck, cleanupFailure, directoryRemoval };
+    const result = plain(runnerFunction("failureEvidence", { report, setupStarted: true })("PASS"));
+    assert.deepEqual([result.kind, result.code, result.cleanupCode, result.shutdownConfirmed], ["cleanup", cleanupCode, cleanupCode, shutdownConfirmed]);
+    assert.deepEqual(result.processCheck, processCheck);
+    assert.deepEqual(result.directoryRemoval, directoryRemoval);
+  }
 });
