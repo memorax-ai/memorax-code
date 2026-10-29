@@ -43,7 +43,8 @@ let requests = 0;
 let allowSearch = false;
 const memoryRequests = [];
 const endpointErrors = [];
-const backendPids = new Set();
+// Every Backend seen, as PID and instance pairs: a PID can recur with another instance, so no pair replaces another.
+const trackedBackends = [];
 let npmCommand, npmPrefix, candidateTarball, ptyPackage, ptyScript;
 let expectedPackageVersion, expectedPluginVersion, expectedEvents, sourceRoot, parse;
 // Upgrade registry request counts, and stop commands issued, for failure evidence.
@@ -488,7 +489,7 @@ try {
     if (busyPath) report.cleanupFailure.path = busyPath;
     if (cleanupStage === "tracked_process" && Number.isInteger(cleanupTrackedPidIndex)) {
       report.cleanupFailure.trackedPidIndex = cleanupTrackedPidIndex;
-      report.cleanupFailure.trackedPidCount = backendPids.size;
+      report.cleanupFailure.trackedPidCount = trackedBackends.length;
     }
     // A remaining PID record ends the shutdown checks; record whether its process is still alive.
     if (cleanupStage === "pid_record_removal") await observeCleanupBackendPid();
@@ -601,7 +602,7 @@ async function inspectBackendPid() {
   const { value, ...record } = await readStateRecord(pidPath());
   if (record.file !== "present") return { ...record, process: "not_probed" };
   if (!Number.isInteger(value?.pid) || value.pid <= 0) return { file: "invalid", process: "not_probed" };
-  const tracked = backendPids.has(value.pid);
+  const tracked = trackedBackends.some((entry) => entry.pid === value.pid);
   try {
     process.kill(value.pid, 0);
     return { file: "present", process: "alive", tracked };
@@ -715,7 +716,7 @@ async function verifyReady(attempt, expectedUser = fixtureUser) {
   "Setup changed the existing Codex model configuration");
   const backend = await readJson(join(stateHome, "runtime", "backend", "backend.pid.json"));
   check(Number.isInteger(backend.pid) && backend.pid > 0, "Backend PID record is invalid");
-  backendPids.add(backend.pid);
+  await trackBackend(backend);
   report.checks.push(`${attempt}: native plugin, trusted Hooks, packaged Skill, Backend and completion verified`);
 }
 
@@ -728,7 +729,7 @@ async function rememberPid() {
   if (await exists(pidPath())) {
     const backend = await readJson(pidPath());
     check(Number.isInteger(backend.pid) && backend.pid > 0, "Backend PID record is invalid");
-    backendPids.add(backend.pid);
+    await trackBackend(backend);
   }
 }
 async function verifyBackendReplacement(before, label) {
@@ -740,8 +741,9 @@ async function verifyBackendReplacement(before, label) {
       evidence.observe("backendReplacement", diagnostic);
     },
   });
-  backendPids.delete(before.pid);
-  backendPids.add(after.pid);
+  const retired = trackedBackends.findIndex((entry) => entry.pid === before.pid && entry.instanceId === before.instanceId);
+  if (retired >= 0) trackedBackends.splice(retired, 1);
+  await trackBackend(after);
   report.checks.push(`${label}: Backend instance changed; current process and health identity agree`);
 }
 async function stopAndVerify() {
@@ -775,18 +777,145 @@ async function assertStopped() {
   cleanupStage = "pid_record_removal";
   check(!(await exists(pidPath())), "Backend PID record remains after stop");
   cleanupStage = "tracked_process";
+  const instanceIds = trackedBackends.map((entry) => entry.instanceId).filter(validInstanceId);
   let trackedIndex = 0;
-  for (const pid of backendPids) {
+  for (const entry of trackedBackends) {
     cleanupTrackedPidIndex = trackedIndex++;
-    let alive = true;
-    try { process.kill(pid, 0); } catch (error) { if (error.code === "ESRCH") alive = false; else throw error; }
-    check(!alive, "An installation Backend process remains after stop");
+    if (!signalable(entry.pid)) continue;
+    // Only Windows has a command-line query here; elsewhere a live tracked PID still fails as a remaining Backend.
+    check(process.platform === "win32", "An installation Backend process remains after stop");
+    const identity = await queryBackendIdentity(entry.pid, instanceIds);
+    // A tracked instance on the command line is a remaining Backend. A complete command line without one shows another
+    // process only for a verified pair, and a PID the query no longer finds has exited only if the probe agrees.
+    const outcome = identity === "match" ? "identity_match"
+      : identity === "other_instance" || identity === "no_marker"
+        ? (entry.registration === "verified" ? "identity_mismatch" : "identity_unverified")
+        : identity === "exited" && signalable(entry.pid) ? "query_inconsistent" : identity;
+    (report.backendIdentity ??= []).push({ index: cleanupTrackedPidIndex, outcome, registration: entry.registration });
+    try { evidence.observe("backendIdentity", report.backendIdentity); } catch {}
+    check(outcome !== "identity_match", "An installation Backend process remains after stop");
+    check(outcome === "exited" || outcome === "identity_mismatch",
+      "An installation Backend process identity could not be confirmed after stop");
   }
   cleanupStage = "port_release";
   const probe = createTcpServer();
   await new Promise((done, reject) => { probe.once("error", reject); probe.listen(backendPort, "127.0.0.1", done); });
   await new Promise((done) => probe.close(done));
-  backendPids.clear();
+  trackedBackends.length = 0;
+}
+// Tracks a recorded Backend once per PID and instance pair. On Windows the command line read while that instance is
+// known to run anchors any later mismatch: only a PID once shown to carry exactly this instance's marker can later be
+// judged another process. A failed read leaves the pair unverified; it does not fail the stage. The report counts each
+// read's code, with no PID, instance or command line, so a passing run still shows whether the reads worked.
+async function trackBackend(record) {
+  if (trackedBackends.some((entry) => entry.pid === record.pid && entry.instanceId === record.instanceId)) return;
+  const entry = { pid: record.pid, instanceId: record.instanceId, registration: "not_applicable" };
+  trackedBackends.push(entry);
+  if (process.platform !== "win32") return;
+  const identity = validInstanceId(entry.instanceId) ? await queryBackendIdentity(entry.pid, [entry.instanceId]) : "instance_invalid";
+  entry.registration = identity === "match" ? "verified" : identity;
+  const registrations = report.backendRegistration ??= {};
+  registrations[entry.registration] = (registrations[entry.registration] ?? 0) + 1;
+  try { evidence.observe("backendRegistration", registrations); } catch {}
+}
+// A signal probe that is false only when the PID no longer exists; any other probe error still fails.
+function signalable(pid) {
+  try { process.kill(pid, 0); return true; } catch (error) { if (error.code === "ESRCH") return false; throw error; }
+}
+// Reads one Windows PID's command line in the smoke's own environment and directory, outside the isolated tree, and
+// returns only its classification. Error-stop and the stderr check keep a query error from reading as an absent
+// process; base64 keeps the console encoding from altering the line.
+async function queryBackendIdentity(pid, instanceIds) {
+  const windowsRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows";
+  const script = [
+    "$ErrorActionPreference='Stop'", "$ProgressPreference='SilentlyContinue'",
+    `$rows=@(Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' -Property ProcessId,CommandLine | ForEach-Object {`
+      + " @{ processId=$_.ProcessId; commandLine=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$_.CommandLine)) } })",
+    "ConvertTo-Json -InputObject @($rows) -Compress",
+  ].join("; ");
+  let result;
+  try {
+    result = await execFileAsync(join(windowsRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+      ["-NoProfile", "-NonInteractive", "-Command", script],
+      { timeout: 30_000, maxBuffer: 1024 * 1024, encoding: "utf8", windowsHide: true });
+  } catch (error) {
+    // execFile marks a child it killed at the deadline; any other launch or exit failure is a failed query.
+    return error?.killed === true ? "query_timeout" : "query_failed";
+  }
+  if (result.stderr) return "query_stderr";
+  let rows;
+  try { rows = JSON.parse(result.stdout); } catch { return "query_invalid"; }
+  if (!Array.isArray(rows) || rows.length > 1) return "query_invalid";
+  if (!rows.length) return "exited";
+  const [row] = rows;
+  if (row?.processId !== pid || typeof row.commandLine !== "string") return "query_invalid";
+  // Only canonical base64 of valid UTF-8 is read. Node decodes both leniently, so a value that does not encode back to
+  // the same input, such as one missing its padding or holding an invalid byte, is malformed, not a line without a marker.
+  const bytes = Buffer.from(row.commandLine, "base64"), line = bytes.toString("utf8");
+  if (bytes.toString("base64") !== row.commandLine || !Buffer.from(line, "utf8").equals(bytes)) return "query_invalid";
+  return classifyBackendCommandLine(line, instanceIds);
+}
+// Classifies a Windows command line by whole arguments: only the exact marker argument followed by one instance value
+// counts. A near-miss or repeated marker, a malformed value, a tracked instance in any other argument, or a line the
+// parsers could split differently is ambiguous, never another process.
+function classifyBackendCommandLine(commandLine, instanceIds) {
+  if (!commandLine.trim()) return "command_line_missing";
+  const { args, certain } = windowsArgv(commandLine);
+  if (!certain) return "parse_uncertain";
+  const marker = args.indexOf("--memorax-code-backend-instance"), valueAt = marker < 0 ? -1 : marker + 1;
+  const value = args[valueAt];
+  if ((marker >= 0 && !validInstanceId(value)) || args.some((arg, index) => index !== marker
+    && (arg.toLowerCase().includes("memorax-code-backend-instance")
+      || ((index !== valueAt || !instanceIds.includes(arg)) && instanceIds.some((id) => arg.includes(id)))))) {
+    return "marker_ambiguous";
+  }
+  if (marker < 0) return "no_marker";
+  return instanceIds.includes(value) ? "match" : "other_instance";
+}
+function validInstanceId(value) { return typeof value === "string" && /^[A-Za-z0-9_-]+$/.test(value); }
+// Splits a Windows command line by the C runtime rules Node applies to its own arguments. `certain` is false for an
+// unterminated quote, a doubled quote inside quotes or a quote within the program name, where parsers can disagree.
+function windowsArgv(commandLine) {
+  const blank = (char) => char === " " || char === "\t";
+  let index = 0, quoted = false, arg = "";
+  // The program name: quotes toggle and backslashes are literal.
+  while (index < commandLine.length && (quoted || !blank(commandLine[index]))) {
+    if (commandLine[index] === '"') quoted = !quoted; else arg += commandLine[index];
+    index += 1;
+  }
+  const name = commandLine.slice(0, index), quotes = name.split('"').length - 1;
+  let certain = quotes === 0 || (quotes === 2 && name.startsWith('"') && name.endsWith('"'));
+  const args = [arg];
+  for (;;) {
+    while (blank(commandLine[index])) index += 1;
+    if (index >= commandLine.length) break;
+    arg = "";
+    quoted = false;
+    while (index < commandLine.length && (quoted || !blank(commandLine[index]))) {
+      if (commandLine[index] === "\\") {
+        // Backslashes are literal unless a quote follows: then each pair yields one, and an odd one escapes the quote.
+        let end = index;
+        while (commandLine[end] === "\\") end += 1;
+        const count = end - index;
+        if (commandLine[end] !== '"') arg += "\\".repeat(count);
+        else {
+          arg += "\\".repeat(count >> 1);
+          if (count % 2) { arg += '"'; end += 1; }
+        }
+        index = end;
+      } else if (commandLine[index] === '"') {
+        if (quoted && commandLine[index + 1] === '"') { certain = false; arg += '"'; index += 1; }
+        else quoted = !quoted;
+        index += 1;
+      } else {
+        arg += commandLine[index];
+        index += 1;
+      }
+    }
+    if (quoted) certain = false;
+    args.push(arg);
+  }
+  return { args, certain };
 }
 async function verifyPreserved(config) {
   assertProtectedConfiguration(parse(await readFile(join(stateHome, "config.toml"), "utf8")),

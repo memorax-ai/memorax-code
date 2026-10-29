@@ -4,7 +4,7 @@ import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, win32 } from "node:path";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import { createEvidenceRecorder } from "../shared/ci-evidence.mjs";
@@ -134,10 +134,10 @@ test("final failure evidence retains terminal and directory cleanup causes indep
 });
 
 // The failure-state readers with real file and process access; each test varies paths, versions or one injected error.
-function stateReaders({ entrypoint, stateHome, backendPids = new Set(), argv = [], expectedPackageVersion, kill, fs = {} } = {}) {
+function stateReaders({ entrypoint, stateHome, trackedBackends = [], argv = [], expectedPackageVersion, kill, fs = {} } = {}) {
   const withSystemCode = runnerFunction("withSystemCode", { systemCode });
   const readStateRecord = runnerFunction("readStateRecord", { readFile: fs.readFile ?? readFile, withSystemCode });
-  const context = { entrypoint, stateHome, backendPids, expectedPackageVersion, join, dirname, semver, withSystemCode, readStateRecord,
+  const context = { entrypoint, stateHome, trackedBackends, expectedPackageVersion, join, dirname, semver, withSystemCode, readStateRecord,
     stat: fs.stat ?? stat, pidPath: runnerFunction("pidPath", { join, stateHome }),
     process: { argv, kill: kill ?? ((pid, signal) => process.kill(pid, signal)) } };
   return Object.fromEntries(["inspectEntrypoint", "inspectInstalledPackage", "inspectPackageTransition", "inspectBackendPid", "withSystemCode"]
@@ -189,7 +189,7 @@ test("a PID record and its process are separate observations, including a record
   const child = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
   await once(child, "exit");
   await writeState(pidFile, { pid: child.pid });
-  assert.deepEqual(await read({ backendPids: new Set([child.pid]) }), { file: "present", process: "exited", tracked: true });
+  assert.deepEqual(await read({ trackedBackends: [{ pid: child.pid }] }), { file: "present", process: "exited", tracked: true });
   await writeState(pidFile, { pid: process.pid });
   assert.deepEqual(await read(), { file: "present", process: "alive", tracked: false });
   // A probe error is unknown, never alive or exited.
@@ -235,7 +235,7 @@ test("the failure snapshot keeps every other item when one cannot be observed", 
   await writeState(packageJson, { name: "@memorax/memorax-code", version: "0.1.18" });
   await writeState(transition, { version: 1, state: "retired", sourceVersion: "0.1.18" });
   await writeState(pidFile, { pid: process.pid });
-  const readers = stateReaders({ entrypoint, stateHome, backendPids: new Set([process.pid]),
+  const readers = stateReaders({ entrypoint, stateHome, trackedBackends: [{ pid: process.pid }],
     argv: ["node", "smoke", "", "", "", "", "0.1.18"], expectedPackageVersion: "0.1.21" });
   // `registryRequests` is declared in the smoke and stays undefined until the upgrade scenario starts its registry.
   const evidence = createEvidenceRecorder({ suite: "codex-install-smoke", client: "codex" });
@@ -319,7 +319,7 @@ test("a snapshot reader that never returns times out alone; the other items and 
   const directory = join(root, "evidence");
   await mkdir(directory);
   const evidence = createEvidenceRecorder({ suite: "codex-install-smoke", client: "codex", directory });
-  const readers = stateReaders({ entrypoint, stateHome, backendPids: new Set([process.pid]) });
+  const readers = stateReaders({ entrypoint, stateHome, trackedBackends: [{ pid: process.pid }] });
   const snapshotFailureState = runnerFunction("snapshotFailureState",
     { ...readers, evidence, boundedObservation, registryRequests: undefined, inspectInstalledPackage: never });
   const started = Date.now();
@@ -353,4 +353,273 @@ test("a cleanup PID observation that never returns still lets the report finish 
   for (const key of Object.keys(before)) assert.deepEqual(after[key], before[key], key);
   assert.deepEqual([after.code, after.cleanupCode, after.cleanupBackendPid],
     ["TERMINAL_CASE_TIMEOUT", "CLEANUP_PID_RECORD_REMAINS", { status: "timed_out" }]);
+});
+
+// The tracked-process judgement with an injected platform, signal probe and Windows process query. Instance values
+// have the product's 24-byte base64url form; the command lines are synthetic and must never reach the report.
+const instanceA = "q3Zr0_Wk-8bN2yT5LmPaVd1Xc7HsJe4G", instanceC = "Hn5-uR2zP_8sYb3Kd7QwLx0VfM4tGc1E";
+const nodeExe = String.raw`C:\hostedtoolcache\windows\node\24.15.0\x64\node.exe`;
+const serviceEntry = win32.join(String.raw`C:\Users\runneradmin\AppData\Local\Temp\codex install 测试\npm prefix`, "node_modules",
+  "@memorax", "memorax-code", "node_modules", "memorax-code-backend", "dist", "service-entrypoint.js");
+const commandLine = (marker) => `${nodeExe} "${serviceEntry}" ${marker}`;
+const backendLine = (id) => commandLine(`--memorax-code-backend-instance ${id}`);
+const otherLine = String.raw`C:\Windows\System32\conhost.exe 0xffffffff -ForceV1`;
+const row = (pid, line) => ({ processId: pid, commandLine: Buffer.from(line).toString("base64") });
+const answer = (...rows) => ({ stdout: JSON.stringify(rows), stderr: "" });
+const remains = "An installation Backend process remains after stop";
+const unconfirmed = "An installation Backend process identity could not be confirmed after stop";
+
+function identityFixture({ platform = "win32", live = [], kill = {}, answers = [] } = {}) {
+  const calls = [], observations = [];
+  const context = {
+    report: { checks: [] }, trackedBackends: [], stage: "", cleanupStage: "unset", cleanupTrackedPidIndex: undefined,
+    backendPort: 32123, stopInvocations: 0, entrypoint: "/fixture/bin/memorax-code.mjs", Buffer, join: win32.join,
+    pidPath: () => "/fixture/backend.pid.json",
+    exists: async (path) => path === context.entrypoint && context.entrypointPresent === true,
+    async product() { return { stdout: JSON.stringify({ ok: true }) }; },
+    verifyBackendReplacementState: async () => context.replacementAfter,
+    evidence: { observe(name, value) { observations.push({ name, value: plain(value) }); } },
+    createTcpServer: () => ({ once() {}, listen(_port, _host, done) { done(); }, close(done) { done(); } }),
+    process: { platform, env: { SystemRoot: "C:\\Windows" }, kill(pid, signal) {
+      assert.equal(signal, 0);
+      if (kill[pid]) throw kill[pid];
+      if (!live.includes(pid)) throw Object.assign(new Error("not found"), { code: "ESRCH" });
+    } },
+    async execFileAsync(file, args, options) {
+      calls.push({ file, args: plain(args), options: plain(options) });
+      assert.ok(answers.length, "unexpected process query");
+      const next = answers.shift();
+      const result = typeof next === "function" ? next() : next;
+      if (result instanceof Error) throw result;
+      return result;
+    },
+  };
+  for (const name of ["check", "rememberPid", "verifyBackendReplacement", "stopAndVerify", "stopForCleanup", "assertStopped",
+    "trackBackend", "signalable", "queryBackendIdentity", "classifyBackendCommandLine", "validInstanceId", "windowsArgv"]) {
+    context[name] = runInNewContext(definitionOf(name), context);
+  }
+  return { context, calls, observations, live, records: () => plain(context.report.backendIdentity ?? []),
+    registrations: () => plain(context.report).backendRegistration };
+}
+// Neither an instance value nor any part of a command line may reach the report or the journal.
+function assertPrivate(fx) {
+  const text = JSON.stringify([fx.context.report, fx.observations]);
+  for (const value of [instanceA, instanceC, "conhost", "service-entrypoint", "hostedtoolcache", "测试"]) {
+    assert.equal(text.includes(value), false, value);
+  }
+}
+
+test("Windows command lines split by the C runtime rules, and quoting that parsers could split differently is uncertain", () => {
+  const { windowsArgv } = identityFixture().context;
+  for (const [line, args] of [
+    [String.raw`C:\node.exe a b `, [String.raw`C:\node.exe`, "a", "b"]],
+    [String.raw`"C:\Program Files\node.exe"  "a b"` + "\tc", [String.raw`C:\Program Files\node.exe`, "a b", "c"]],
+    // The program name keeps its backslashes; later arguments apply the backslash and quote rules.
+    [String.raw`"C:\dir\\" x "a b"c`, [String.raw`C:\dir\\`, "x", "a bc"]],
+    [String.raw`x a\b "c\\" d\"e f\\\"g "h i\\\\"`, ["x", String.raw`a\b`, "c\\", 'd"e', 'f\\"g', "h i\\\\"]],
+    ['x "" y', ["x", "", "y"]],
+  ]) assert.deepEqual(plain(windowsArgv(line)), { args, certain: true }, line);
+  for (const line of ['x "a', 'x "a""b"', String.raw`"C:\node.exe"x y`, String.raw`C:\no"de.exe" y`, String.raw`"C:\node.exe y`]) {
+    assert.equal(windowsArgv(line).certain, false, line);
+  }
+});
+
+test("only the exact marker argument with one instance value identifies a Backend; near misses are ambiguous", () => {
+  const { classifyBackendCommandLine: classify } = identityFixture().context;
+  const tracked = [instanceA];
+  assert.equal(classify(backendLine(instanceA), tracked), "match");
+  assert.equal(classify(backendLine(instanceC), tracked), "other_instance");
+  assert.equal(classify(otherLine, tracked), "no_marker");
+  for (const line of ["", " \t"]) assert.equal(classify(line, tracked), "command_line_missing");
+  assert.equal(classify(`${nodeExe} "${serviceEntry} --memorax-code-backend-instance ${instanceA}`, tracked), "parse_uncertain");
+  for (const marker of [
+    `--memorax-code-backend-instance=${instanceA}`, `--memorax-code-backend-instance=${instanceC}`,
+    `--MEMORAX-CODE-BACKEND-INSTANCE ${instanceC}`, `--memorax-code-backend-instances ${instanceC}`,
+    `-memorax-code-backend-instance ${instanceC}`, `"--memorax-code-backend-instance ${instanceC}"`,
+    `--memorax-code-backend-instance ${instanceC} --memorax-code-backend-instance ${instanceC}`,
+    "--memorax-code-backend-instance", "--memorax-code-backend-instance --memorax-code-backend-instance",
+    `--memorax-code-backend-instance "${instanceC} x"`, `--memorax-code-backend-instance ${instanceA}x`,
+    `--memorax-code-backend-instance ${instanceC} --note ${instanceA}`,
+  ]) assert.equal(classify(commandLine(marker), tracked), "marker_ambiguous", marker);
+  // A tracked instance anywhere on an unrelated command line is ambiguous as well, never another process.
+  for (const line of ["C:\\Windows\\notepad.exe C:\\logs\\" + instanceA + ".txt", "C:\\" + instanceA + "\\node.exe"]) {
+    assert.equal(classify(line, tracked), "marker_ambiguous", line);
+  }
+});
+
+test("the Windows process query fails closed and returns only a classification", async () => {
+  const pid = 4321;
+  const query = async (result) => {
+    const fx = identityFixture({ answers: [result] });
+    return { result: await fx.context.queryBackendIdentity(pid, [instanceA]), call: fx.calls[0] };
+  };
+  const { result, call } = await query(answer(row(pid, backendLine(instanceA))));
+  assert.equal(result, "match");
+  assert.equal(call.file, String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`);
+  assert.deepEqual(call.args.slice(0, 3), ["-NoProfile", "-NonInteractive", "-Command"]);
+  assert.match(call.args[3], /^\$ErrorActionPreference='Stop'; /);
+  assert.match(call.args[3], /Get-CimInstance Win32_Process -Filter 'ProcessId = 4321' -Property ProcessId,CommandLine/);
+  // The query runs in the smoke's own environment and directory, never inside the isolated tree.
+  assert.deepEqual(call.options, { timeout: 30_000, maxBuffer: 1024 * 1024, encoding: "utf8", windowsHide: true });
+  for (const [label, output, expected] of [
+    ["no row", answer(), "exited"],
+    ["another process", answer(row(pid, otherLine)), "no_marker"],
+    ["another Backend instance", answer(row(pid, backendLine(instanceC))), "other_instance"],
+    ["empty command line", answer(row(pid, "")), "command_line_missing"],
+    ["stderr", { ...answer(row(pid, otherLine)), stderr: "warning" }, "query_stderr"],
+    ["deadline", Object.assign(new Error("private"), { killed: true, signal: "SIGTERM", code: null }), "query_timeout"],
+    ["exit code", Object.assign(new Error("private"), { killed: false, code: 1 }), "query_failed"],
+    ["launch failure", Object.assign(new Error("private"), { code: "ENOENT" }), "query_failed"],
+    ["empty output", { stdout: "", stderr: "" }, "query_invalid"],
+    ["truncated output", { stdout: "[{", stderr: "" }, "query_invalid"],
+    ["object output", { stdout: JSON.stringify(row(pid, otherLine)), stderr: "" }, "query_invalid"],
+    ["two rows", answer(row(pid, otherLine), row(pid, otherLine)), "query_invalid"],
+    ["another PID", answer(row(pid + 1, otherLine)), "query_invalid"],
+    ["missing command line", answer({ processId: pid }), "query_invalid"],
+    ["null command line", answer({ processId: pid, commandLine: null }), "query_invalid"],
+    ["undecodable command line", answer({ processId: pid, commandLine: "not base64!" }), "query_invalid"],
+    // Node would decode each of these to text without a marker, yet none is canonical base64 of valid UTF-8; the
+    // non-ASCII Backend line above is.
+    ["unpadded base64", answer({ processId: pid, commandLine: "bm9kZS5leGU" }), "query_invalid"],
+    ["nonzero padding bits", answer({ processId: pid, commandLine: "bm9kZS5leGV=" }), "query_invalid"],
+    ["base64url alphabet", answer({ processId: pid, commandLine: "Pz8_" }), "query_invalid"],
+    ["wrapped base64", answer({ processId: pid, commandLine: "bm9kZS5l\r\neGU=" }), "query_invalid"],
+    ["invalid UTF-8 byte", answer({ processId: pid, commandLine: "/w==" }), "query_invalid"],
+    ["truncated UTF-8 sequence", answer({ processId: pid, commandLine: "5rU=" }), "query_invalid"],
+  ]) assert.equal((await query(output)).result, expected, label);
+});
+
+test("a tracked PID held by another process passes only for a verified pair and a complete, unambiguous command line", async () => {
+  const pid = 4321, verified = answer(row(pid, backendLine(instanceA)));
+  const deadline = () => Object.assign(new Error("private"), { killed: true, signal: "SIGTERM", code: null });
+  for (const [label, registration, stopAnswer, expected, outcome, registered = "verified"] of [
+    ["another process", verified, answer(row(pid, otherLine)), "passed", "identity_mismatch"],
+    ["another Backend instance", verified, answer(row(pid, backendLine(instanceC))), "passed", "identity_mismatch"],
+    ["the tracked Backend", verified, verified, remains, "identity_match"],
+    ["the tracked Backend on an unverified pair", deadline, verified, remains, "identity_match", "query_timeout"],
+    ["an unverified pair", { ...verified, stderr: "warning" }, answer(row(pid, otherLine)), unconfirmed,
+      "identity_unverified", "query_stderr"],
+    ["a pair whose PID showed no marker", answer(row(pid, otherLine)), answer(row(pid, otherLine)), unconfirmed,
+      "identity_unverified", "no_marker"],
+    ["query stderr", verified, { ...answer(row(pid, otherLine)), stderr: "warning" }, unconfirmed, "query_stderr"],
+    ["query deadline", verified, deadline, unconfirmed, "query_timeout"],
+    ["query failure", verified, Object.assign(new Error("private"), { code: 1 }), unconfirmed, "query_failed"],
+    ["truncated output", verified, { stdout: "[{", stderr: "" }, unconfirmed, "query_invalid"],
+    ["missing command line", verified, answer({ processId: pid }), unconfirmed, "query_invalid"],
+    ["empty command line", verified, answer(row(pid, "")), unconfirmed, "command_line_missing"],
+    ["unterminated quote", verified, answer(row(pid, `${nodeExe} "${serviceEntry}`)), unconfirmed, "parse_uncertain"],
+    ["marker joined to its value", verified, answer(row(pid, commandLine(`--memorax-code-backend-instance=${instanceC}`))),
+      unconfirmed, "marker_ambiguous"],
+    ["marker in another case", verified, answer(row(pid, commandLine(`--MEMORAX-CODE-BACKEND-INSTANCE ${instanceC}`))),
+      unconfirmed, "marker_ambiguous"],
+    ["tracked instance in another argument", verified, answer(row(pid, `${otherLine} ${instanceA}`)), unconfirmed,
+      "marker_ambiguous"],
+    ["invalid UTF-8", verified, answer({ processId: pid, commandLine: "/w==" }), unconfirmed, "query_invalid"],
+    ["unpadded base64", verified, answer({ processId: pid, commandLine: "bm9kZS5leGU" }), unconfirmed, "query_invalid"],
+  ]) {
+    const fx = identityFixture({ live: [pid], answers: [registration, stopAnswer] });
+    await fx.context.trackBackend({ pid, instanceId: instanceA });
+    assert.equal(fx.context.trackedBackends[0].registration, registered, label);
+    assert.deepEqual(fx.registrations(), { [registered]: 1 }, label);
+    assert.equal(await fx.context.assertStopped().then(() => "passed", (error) => error.message), expected, label);
+    assert.deepEqual(fx.records(), [{ index: 0, outcome, registration: registered }], label);
+    assert.deepEqual(fx.observations.at(-1), { name: "backendIdentity", value: fx.records() }, label);
+    assert.equal(fx.context.trackedBackends.length, expected === "passed" ? 0 : 1, label);
+    assert.equal(fx.context.cleanupStage, expected === "passed" ? "port_release" : "tracked_process", label);
+    assertPrivate(fx);
+  }
+});
+
+test("a PID that exits during the check passes only when the probe agrees; probe errors and other platforms still fail", async () => {
+  const pid = 4321, verified = answer(row(pid, backendLine(instanceA)));
+  let fx = identityFixture({ live: [pid], answers: [verified, () => { fx.live.length = 0; return answer(); }] });
+  await fx.context.trackBackend({ pid, instanceId: instanceA });
+  await fx.context.assertStopped();
+  assert.deepEqual(fx.records(), [{ index: 0, outcome: "exited", registration: "verified" }]);
+  fx = identityFixture({ live: [pid], answers: [verified, answer()] });
+  await fx.context.trackBackend({ pid, instanceId: instanceA });
+  await assert.rejects(fx.context.assertStopped(), { message: unconfirmed });
+  assert.deepEqual(fx.records(), [{ index: 0, outcome: "query_inconsistent", registration: "verified" }]);
+  // An exited PID needs no query, and a probe error is not an absent process.
+  fx = identityFixture({ answers: [verified] });
+  await fx.context.trackBackend({ pid, instanceId: instanceA });
+  await fx.context.assertStopped();
+  assert.deepEqual([fx.calls.length, fx.records()], [1, []]);
+  fx = identityFixture({ kill: { [pid]: Object.assign(new Error("private"), { code: "EPERM" }) }, answers: [verified] });
+  await fx.context.trackBackend({ pid, instanceId: instanceA });
+  await assert.rejects(fx.context.assertStopped(), { code: "EPERM" });
+  assert.deepEqual([fx.calls.length, fx.records()], [1, []]);
+  // Without a Windows query a live tracked PID stays a remaining Backend and the report has no registrations, as before.
+  for (const platform of ["linux", "darwin"]) {
+    fx = identityFixture({ platform, live: [pid] });
+    await fx.context.trackBackend({ pid, instanceId: instanceA });
+    assert.equal(fx.context.trackedBackends[0].registration, "not_applicable");
+    await assert.rejects(fx.context.assertStopped(), { message: remains });
+    assert.deepEqual([fx.calls.length, fx.records(), fx.registrations()], [0, [], undefined]);
+  }
+});
+
+test("a PID that recurs with another instance keeps both pairs, so the later live instance still fails", async () => {
+  const pid = 4321;
+  const fx = identityFixture({ live: [pid], answers: [answer(row(pid, backendLine(instanceA))),
+    answer(row(pid, backendLine(instanceC))), answer(row(pid, backendLine(instanceC)))] });
+  await fx.context.trackBackend({ pid, instanceId: instanceA });
+  await fx.context.trackBackend({ pid, instanceId: instanceC });
+  // An exact repeat neither adds a pair nor queries again.
+  await fx.context.trackBackend({ pid, instanceId: instanceA });
+  assert.deepEqual(plain(fx.context.trackedBackends), [{ pid, instanceId: instanceA, registration: "verified" },
+    { pid, instanceId: instanceC, registration: "verified" }]);
+  assert.deepEqual([fx.calls.length, fx.registrations()], [2, { verified: 2 }]);
+  await assert.rejects(fx.context.assertStopped(), { message: remains });
+  // The earlier pair fails already: its PID now carries a tracked instance, though not its own.
+  assert.deepEqual(fx.records(), [{ index: 0, outcome: "identity_match", registration: "verified" }]);
+  assert.equal(fx.context.trackedBackends.length, 2);
+  assertPrivate(fx);
+});
+
+test("a replacement retires only its own pair, and an instance without a valid value stays unverified", async () => {
+  const pid = 4321, next = 4322;
+  const fx = identityFixture({ answers: [answer(row(next, backendLine(instanceA)))] });
+  fx.context.trackedBackends.push({ pid, instanceId: "older-instance", registration: "verified" },
+    { pid, instanceId: instanceC, registration: "verified" });
+  fx.context.replacementAfter = { pid: next, instanceId: instanceA };
+  await fx.context.verifyBackendReplacement({ pid, instanceId: instanceC }, "replacement");
+  assert.deepEqual(plain(fx.context.trackedBackends), [{ pid, instanceId: "older-instance", registration: "verified" },
+    { pid: next, instanceId: instanceA, registration: "verified" }]);
+  const invalid = identityFixture({ live: [pid], answers: [answer(row(pid, otherLine))] });
+  await invalid.context.trackBackend({ pid });
+  assert.deepEqual([invalid.calls.length, invalid.context.trackedBackends[0].registration], [0, "instance_invalid"]);
+  await assert.rejects(invalid.context.assertStopped(), { message: unconfirmed });
+  assert.deepEqual(invalid.records(), [{ index: 0, outcome: "identity_unverified", registration: "instance_invalid" }]);
+});
+
+test("the functional stop and both cleanup paths apply the same tracked-process judgement", async () => {
+  const pid = 4321;
+  for (const [stopLine, expected, outcome] of [[otherLine, "passed", "identity_mismatch"],
+    [backendLine(instanceA), remains, "identity_match"]]) {
+    for (const [label, stop] of [["functional stop", (context) => context.stopAndVerify()],
+      ["cleanup with entrypoint", (context) => { context.entrypointPresent = true; return context.stopForCleanup(); }],
+      ["cleanup without entrypoint", (context) => context.stopForCleanup()]]) {
+      const fx = identityFixture({ live: [pid], answers: [answer(row(pid, backendLine(instanceA))), answer(row(pid, stopLine))] });
+      await fx.context.trackBackend({ pid, instanceId: instanceA });
+      assert.equal(await stop(fx.context).then(() => "passed", (error) => error.message), expected, label);
+      assert.deepEqual(fx.records(), [{ index: 0, outcome, registration: "verified" }], label);
+    }
+  }
+});
+
+test("a failed registration read never fails the run, and the report and journal keep its code and count", async () => {
+  const pid = 4321, next = 4322, summary = { query_invalid: 1, verified: 1 };
+  const fx = identityFixture({ live: [pid, next],
+    answers: [{ stdout: "[{", stderr: "" }, answer(row(next, backendLine(instanceC)))] });
+  await fx.context.trackBackend({ pid, instanceId: instanceA });
+  await fx.context.trackBackend({ pid: next, instanceId: instanceC });
+  // Both Backends exit before the stop check, which then queries nothing and records no identity.
+  fx.live.length = 0;
+  await fx.context.assertStopped();
+  assert.deepEqual([fx.calls.length, fx.records(), fx.context.trackedBackends.length], [2, [], 0]);
+  assert.deepEqual(fx.registrations(), summary);
+  assert.deepEqual(fx.observations, [{ name: "backendRegistration", value: { query_invalid: 1 } },
+    { name: "backendRegistration", value: summary }]);
+  assertPrivate(fx);
 });
