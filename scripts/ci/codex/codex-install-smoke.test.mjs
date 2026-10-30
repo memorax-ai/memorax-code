@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, win32 } from "node:path";
 import test from "node:test";
@@ -622,4 +622,217 @@ test("a failed registration read never fails the run, and the report and journal
   assert.deepEqual(fx.observations, [{ name: "backendRegistration", value: { query_invalid: 1 } },
     { name: "backendRegistration", value: summary }]);
   assertPrivate(fx);
+});
+
+// A busy Windows removal of a real directory: the first rm fails with `code`, each probe fails with the next of `probes`
+// and removes once they run out, timers fire one per turn in deadline order and move the clock to that deadline (nothing
+// else moves it), and PowerShell answers come from a queue. The smoke started at 1 s on this clock's wall time, and each
+// path resolves to a long form that does not contain its short form.
+async function holderFixture(t, { platform = "win32", code = "EBUSY", probes = [], answers = [], budgets, realpathError } = {}) {
+  const root = await mkdtemp(join(tmpdir(), "codex-holder-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const failedPath = join(root, "upgrade user 测试", ".codex");
+  await mkdir(join(failedPath, "log"), { recursive: true });
+  await writeFile(join(failedPath, "log", "codex-tui.log"), privateText);
+  const failure = Object.assign(new Error(privateText), { code, path: failedPath });
+  const calls = [], queries = [], warnings = [], observations = [];
+  const recorder = createEvidenceRecorder({ suite: "codex-install-smoke", client: "codex" });
+  let now = 0;
+  const timers = [];
+  const context = {
+    root, npmPrefix: "/fixture/npm", report: {}, systemCode, projectError, projectPathAlias, join, lstat, readdir,
+    holderBudgetMs: budgets ?? { total: 60_000, entries: 2_000, processes: 2_000, defender: 2_000 },
+    process: { platform, pid: 100, env: { SystemRoot: "C:\\Windows" } }, performance: { now: () => now, timeOrigin: 1_000 },
+    setTimeout(done, delay) {
+      timers.push({ at: now + delay, done });
+      setImmediate(() => {
+        const next = timers.sort((a, b) => a.at - b.at).shift();
+        now = Math.max(now, next.at);
+        next.done();
+      });
+    },
+    console: { log(line) { warnings.push(line); } },
+    evidence: { collect: recorder.collect, observe(name, value) { observations.push(plain(value)); } },
+    async realpath(path) { if (realpathError) throw realpathError; return { [root]: "/long/root", "/fixture/npm": "/long/npm" }[path]; },
+    async rm(path, options) {
+      calls.push([path, plain(options)]);
+      if (calls.length === 1) throw failure;
+      const next = probes.shift();
+      if (next) throw Object.assign(new Error(privateText), { code: next, path: failedPath });
+    },
+    async execFileAsync(file, args, options) {
+      queries.push({ file: file.split(/[\\/]/), args: plain(args), options: plain(options), at: now });
+      assert.ok(answers.length, "unexpected PowerShell query");
+      const next = answers.shift();
+      const result = typeof next === "function" ? await next() : next;
+      if (result instanceof Error) throw result;
+      return result;
+    },
+  };
+  for (const name of ["withSystemCode", "boundedObservation", "queryPowerShell", "classifyHolderProcesses", "snapshotProcesses",
+    "readDefenderStatus", "inspectRemovalPath", "probeRemoval", "holderWarning", "observeRemovalHolders", "removeIsolatedDirectory"]) {
+    context[name] = runInNewContext(definitionOf(name), context);
+  }
+  return { context, root, failure, calls, queries, warnings, observations, record: () => plain(context.report.directoryRemoval) };
+}
+const holderRow = (ProcessId, Name, CreationDate, ParentProcessId, ExecutablePath = null, CommandLine = null) =>
+  ({ ProcessId, ParentProcessId, Name, CreationDate, ExecutablePath, CommandLine });
+const holderAnswer = (query, ...rows) => ({ stdout: JSON.stringify({ query, rows }), stderr: "" });
+const defenderAnswer = (enabled) => ({ stdout: JSON.stringify({ realTimeProtectionEnabled: enabled }), stderr: "" });
+const busyRecord = (code) => ({ status: "failed", attempt: 1, elapsedMs: 0, error: { name: "Error", code }, path: "<root>/upgrade user 测试/.codex" });
+const remainingEntries = { exists: true, directory: true, total: 2, names: ["log", "log/codex-tui.log"] };
+const wmi = holderRow(300, "WmiPrvSE.exe", 4_000, 4, "C:\\Windows\\System32\\wbem\\WmiPrvSE.exe");
+const wmiRecord = { name: "WmiPrvSE.exe", pid: 300, parentPid: 4, createdAt: new Date(4_000).toISOString(), inRoot: false, inNpmPrefix: false };
+// Neither a path nor any part of a command line may reach the report, the journal or the job log.
+function assertHolderPrivate(fx) {
+  const text = JSON.stringify([fx.context.report, fx.observations, fx.warnings]);
+  for (const value of [fx.root, "/long", "/fixture", "private", "app-server", "C:", "wbem"]) {
+    assert.equal(text.includes(value), false, value);
+  }
+}
+
+test("a busy Windows removal records what remains, the processes alive, when removal stops failing and Defender, and still fails", async (t) => {
+  for (const [label, probes, probeRecords, warning] of [
+    ["removable at 4 s", ["EBUSY", "ENOTEMPTY"], [{ second: 1, afterMs: 1_000, code: "EBUSY" },
+      { second: 2, afterMs: 2_000, code: "ENOTEMPTY" }, { second: 4, afterMs: 4_000, removed: true }],
+      "succeeded on a probe 4.0 s after the failure"],
+    ["still busy at 15 s", Array(5).fill("EBUSY"), [1, 2, 4, 8, 15].map((second) => ({ second, afterMs: second * 1_000, code: "EBUSY" })),
+      "still failed with EBUSY 15.0 s after the failure"],
+  ]) {
+    const end = probeRecords.at(-1).afterMs;
+    const fx = await holderFixture(t, { probes, answers: [
+      // The first query takes 2.5 s while the probes keep their schedule.
+      async () => {
+        await new Promise((done) => fx.context.setTimeout(done, 2_500));
+        // The smoke itself, the query and its console host, and processes without a creation time or older than the
+        // smoke are left out.
+        return holderAnswer(700, holderRow(100, "node.exe", 1_000, 50, "C:\\node.exe", `node codex-install-smoke.mjs ${fx.root}`),
+          holderRow(700, "powershell.exe", 5_000, 100, "C:\\powershell.exe", "powershell -NoProfile"), holderRow(701, "conhost.exe", 5_001, 700),
+          holderRow(0, "System Idle Process", null, 0), wmi,
+          holderRow(10, "svchost.exe", 999, 4, "C:\\Windows\\System32\\svchost.exe", `svchost.exe ${fx.root}`),
+          // A path can appear in its short or long form, in either case and with either separator.
+          holderRow(201, "codex.exe", 2_000, 100, "/long/npm/node_modules/@openai/codex/vendor/codex.exe"),
+          holderRow(202, "node.exe", 2_500, 100, "C:\\node.exe", `"node.exe" "${fx.root.toUpperCase().replaceAll("/", "\\")}\\workspace" app-server`),
+          holderRow(203, privateText, 3_000, 202, null, "cmd /c cd /long/root/private"));
+      },
+      holderAnswer(702, wmi, holderRow(703, "conhost.exe", 9_000, 702)), defenderAnswer(true),
+    ] });
+    await assert.rejects(fx.context.removeIsolatedDirectory(), (actual) => actual === fx.failure, label);
+    assert.deepEqual(fx.calls, Array(probeRecords.length + 1).fill([fx.root, { recursive: true, force: true }]), label);
+    const holders = {
+      entries: remainingEntries,
+      processes: { afterMs: [0, 2_500], total: 4, processes: [
+        { name: "codex.exe", pid: 201, parentPid: 100, createdAt: new Date(2_000).toISOString(), inRoot: false, inNpmPrefix: true },
+        { name: "node.exe", pid: 202, parentPid: 100, createdAt: new Date(2_500).toISOString(), inRoot: true, inNpmPrefix: false },
+        { name: "unrecognized", pid: 203, parentPid: 202, createdAt: new Date(3_000).toISOString(), inRoot: true, inNpmPrefix: false },
+        wmiRecord] },
+      probes: probeRecords,
+      processesAfterProbes: { afterMs: [end, end], total: 1, processes: [wmiRecord] },
+      defender: { realTimeProtectionEnabled: true },
+    };
+    assert.deepEqual(fx.record(), { ...busyRecord("EBUSY"), holders }, label);
+    // The failure is journaled before the observation and again with it.
+    assert.deepEqual(fx.observations, [{ status: "started", attempt: 1 }, busyRecord("EBUSY"), fx.record()], label);
+    assert.deepEqual(fx.warnings, [`::warning title=Codex cleanup::Directory removal failed with EBUSY; removal ${warning}, and the cleanup `
+      + "still fails. Processes created since the smoke started and alive after the failure: "
+      + "WmiPrvSE.exe, codex.exe, node.exe, unrecognized."], label);
+    // Each query stops on its first error, keeps progress records off stderr, runs outside the isolated tree and ends with its budget.
+    assert.deepEqual(fx.queries.map(({ file, args, options, at }) => [file, args.slice(0, 3), args[3].split("; ").slice(0, 2), options, at]),
+      [0, end, end].map((at) => [["C:", "Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"],
+        ["-NoProfile", "-NonInteractive", "-Command"], ["$ErrorActionPreference='Stop'", "$ProgressPreference='SilentlyContinue'"],
+        { timeout: 2_000, maxBuffer: 16 * 1024 * 1024, encoding: "utf8", windowsHide: true }, at]), label);
+    assert.deepEqual(fx.queries.map(({ args }) => /Get-CimInstance Win32_Process|Get-MpComputerStatus/.exec(args[3])?.[0]),
+      ["Get-CimInstance Win32_Process", "Get-CimInstance Win32_Process", "Get-MpComputerStatus"], label);
+    assertHolderPrivate(fx);
+    // The evidence guard keeps the whole record: nothing is nested too deeply, too long or outside its character set.
+    const directory = await mkdtemp(join(tmpdir(), "codex-holder-evidence-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    createEvidenceRecorder({ suite: "codex-install-smoke", client: "codex", directory })
+      .finish({ testOutcome: "FAIL", failure: { directoryRemoval: fx.record() } });
+    const result = JSON.parse(await readFile(join(directory, "codex-install-smoke", "result.json"), "utf8"));
+    assert.deepEqual([result.failure.directoryRemoval, result.evidenceIssues], [fx.record(), []], label);
+  }
+});
+
+test("a failed, silent-error or unfinished query records only why it has no value and keeps the removal failure", { timeout: 10_000 }, async (t) => {
+  for (const [label, answer, expected] of [
+    ["launch failure", () => Object.assign(new Error(privateText), { code: "ENOENT" }), { status: "observation_failed", code: "ENOENT" }],
+    // A non-terminating error can still leave exit 0 and well-formed output; it must not read as a result.
+    ["stderr with exit 0", () => ({ ...holderAnswer(700, wmi), stderr: "Get-CimInstance : " + privateText }), { status: "observation_failed" }],
+    ["exit code", () => Object.assign(new Error(privateText), { code: 1, killed: false }), { status: "observation_failed" }],
+    ["truncated output", () => ({ stdout: '{"query":', stderr: "" }), { status: "observation_failed" }],
+    ["unexpected shape", () => ({ stdout: "[]", stderr: "" }), { status: "observation_failed" }],
+    ["never returns", () => never, { status: "timed_out" }],
+  ]) {
+    const fx = await holderFixture(t, { answers: [answer(), answer(), answer()],
+      budgets: { total: 60_000, entries: 2_000, processes: 50, defender: 50 } });
+    await assert.rejects(fx.context.removeIsolatedDirectory(), (actual) => actual === fx.failure, label);
+    assert.deepEqual(fx.record(), { ...busyRecord("EBUSY"), holders: { entries: remainingEntries, processes: expected,
+      probes: [{ second: 1, afterMs: 1_000, removed: true }], processesAfterProbes: expected, defender: expected } }, label);
+    assert.deepEqual(fx.warnings, ["::warning title=Codex cleanup::Directory removal failed with EBUSY; removal succeeded on a probe 1.0 s "
+      + "after the failure, and the cleanup still fails. Processes created since the smoke started and alive after the failure: "
+      + `unknown (${expected.status}).`], label);
+    assertHolderPrivate(fx);
+  }
+  // A Defender status that is not a boolean is no answer either.
+  const fx = await holderFixture(t, { answers: [holderAnswer(700), holderAnswer(701),
+    { stdout: '{"realTimeProtectionEnabled":"True"}', stderr: "" }] });
+  await assert.rejects(fx.context.removeIsolatedDirectory(), (actual) => actual === fx.failure);
+  assert.deepEqual(fx.record().holders.defender, { status: "observation_failed" });
+});
+
+test("removal keeps its single attempt and adds no observation off Windows or after an error that is not busy", async (t) => {
+  for (const [platform, code] of [["linux", "EBUSY"], ["darwin", "ENOTEMPTY"], ["win32", "EACCES"], ["win32", "EISDIR"]]) {
+    const fx = await holderFixture(t, { platform, code });
+    await assert.rejects(fx.context.removeIsolatedDirectory(), (actual) => actual === fx.failure, platform + code);
+    assert.deepEqual([fx.calls.length, fx.queries, fx.warnings], [1, [], []], platform + code);
+    assert.deepEqual(fx.record(), busyRecord(code), platform + code);
+  }
+});
+
+test("an unexpected observation error ends the observation without replacing the removal failure", async (t) => {
+  for (const code of ["EPERM", "ENOTEMPTY"]) {
+    const fx = await holderFixture(t, { code, realpathError: Object.assign(new Error(privateText), { code: "EACCES" }) });
+    await assert.rejects(fx.context.removeIsolatedDirectory(), (actual) => actual === fx.failure, code);
+    assert.deepEqual([fx.calls.length, fx.queries], [1, []], code);
+    assert.deepEqual(fx.record(), { ...busyRecord(code), holders: { status: "observation_failed", code: "EACCES" } }, code);
+    assert.deepEqual(fx.warnings, [`::warning title=Codex cleanup::Directory removal failed with ${code}; removal was not probed again, `
+      + "and the cleanup still fails. Processes created since the smoke started and alive after the failure: unknown (not observed)."], code);
+    assertHolderPrivate(fx);
+  }
+});
+
+test("the total budget stops probes after a wait and keeps later queries from starting", async (t) => {
+  // The probe due at 4 s would start past the 3.5 s budget, and nothing is left for the later queries.
+  const fx = await holderFixture(t, { probes: ["EBUSY", "EBUSY", "EBUSY"], answers: [holderAnswer(700, wmi)],
+    budgets: { total: 3_500, entries: 2_000, processes: 2_000, defender: 2_000 } });
+  await assert.rejects(fx.context.removeIsolatedDirectory(), (actual) => actual === fx.failure);
+  assert.deepEqual([fx.calls.length, fx.queries.length], [3, 1]);
+  assert.deepEqual(fx.record().holders, { entries: remainingEntries, processes: { afterMs: [0, 0], total: 1, processes: [wmiRecord] },
+    probes: [{ second: 1, afterMs: 1_000, code: "EBUSY" }, { second: 2, afterMs: 2_000, code: "EBUSY" }],
+    processesAfterProbes: { status: "budget_exhausted" }, defender: { status: "budget_exhausted" } });
+  assert.match(fx.warnings[0], /removal still failed with EBUSY 2\.0 s after the failure/);
+});
+
+test("what remains under the failed path keeps 20 sorted relative names, each projected segment by segment", async (t) => {
+  const fx = await holderFixture(t), inspect = fx.context.inspectRemovalPath, directory = join(fx.root, "many");
+  await mkdir(join(directory, "b 测试"), { recursive: true });
+  await writeFile(join(directory, "a$odd"), "");
+  await writeFile(join(directory, "b 测试", "c.log"), "");
+  const files = Array.from({ length: 22 }, (_, index) => `file-${String(index).padStart(2, "0")}.log`);
+  for (const name of files) await writeFile(join(directory, name), "");
+  assert.deepEqual(plain(await inspect(directory)), { exists: true, directory: true, total: 25,
+    names: ["<segment>", "b 测试", "b 测试/c.log", ...files.slice(0, 17)] });
+  assert.deepEqual(plain(await inspect(join(directory, "a$odd"))), { exists: true, directory: false });
+  assert.deepEqual(plain(await inspect(join(directory, "missing"))), { exists: false });
+  await assert.rejects(inspect(join(directory, "a$odd", "below")), { code: "ENOTDIR" });
+});
+
+test("process records stop at the evidence item limit, keeping first those that name the isolated root or npm prefix", async (t) => {
+  const classify = (await holderFixture(t)).context.classifyHolderProcesses;
+  const rows = Array.from({ length: 40 }, (_, index) => holderRow(1_000 + index, "svchost.exe", 2_000 + index, 4));
+  const result = plain(classify([...rows, holderRow(2_000, "codex.exe", 9_000, 100, "/fixture/npm/codex.exe")],
+    { root: ["/fixture/root"], npmPrefix: ["/fixture/npm"] }, { self: 100, query: 700, since: 1_000 }));
+  assert.deepEqual([result.total, result.processes.length, result.processes[0].name, result.processes[1].pid, result.processes.at(-1).pid],
+    [41, 32, "codex.exe", 1_000, 1_030]);
 });
