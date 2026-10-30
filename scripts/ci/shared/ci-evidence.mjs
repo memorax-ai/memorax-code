@@ -428,9 +428,12 @@ export function summarizeEvidence(root, options = {}) {
   const ledgerExpected = stepOutcome !== "skipped";
   const issues = new Set();
   const suitesDirectory = join(root, "suites");
+  let inputs;
   if (inputsExpected) {
-    try { readJsonFile(join(root, "inputs.json")); } catch { issues.add("INPUTS_MISSING"); }
+    try { inputs = readJsonFile(join(root, "inputs.json")); } catch { issues.add("INPUTS_MISSING"); }
   }
+  const nodeVersion = githubText(inputs?.node?.version, /^v\d+\.\d+\.\d+$/);
+  const expectedNodeVersion = githubText(inputs?.node?.expectedVersion, /^v\d+\.\d+\.\d+$/);
   let ledger;
   try { ledger = readLedger(suitesDirectory); }
   catch (error) { if (ledgerExpected) issues.add(error.code === "ENOENT" ? "LEDGER_MISSING" : "LEDGER_UNREADABLE"); }
@@ -487,6 +490,9 @@ export function summarizeEvidence(root, options = {}) {
     schemaVersion: EVIDENCE_SCHEMA, client, os,
     channel: oneOf(options.channel, CHANNELS), clientVersion: semver(options.clientVersion),
     node: typeof options.node === "string" && /^\d{1,3}$/.test(options.node) ? options.node : undefined,
+    // The Node release the job ran and the one its matrix pinned, from the inputs record.
+    nodeVersion, expectedNodeVersion,
+    nodeVersionMatches: nodeVersion && expectedNodeVersion ? nodeVersion === expectedNodeVersion : undefined,
     runAttempt: boundedInt(Number(options.runAttempt), 1, 1000),
     testOutcome, category, signature, wrapperPhase: ledger?.phase, evidenceStatus, evidenceIssues: [...issues].sort(),
     // status is what the wrapper recorded; reportedOutcome is what the runner reported about itself.
@@ -514,6 +520,8 @@ export function renderSummary(summary) {
     `- testOutcome: **${summary.testOutcome}**${summary.category ? ` (category: ${summary.category})` : ""}`,
     ...(summary.signature ? [`- signature: \`${summary.signature}\``] : []),
     `- evidenceStatus: **${summary.evidenceStatus}**${summary.evidenceIssues?.length ? ` (${summary.evidenceIssues.join(", ")})` : ""}`,
+    ...(summary.expectedNodeVersion ? [`- node: ${summary.nodeVersion ?? "unknown"} (pinned ${summary.expectedNodeVersion}`
+      + `${summary.nodeVersionMatches === false ? ", **mismatch**" : ""})`] : []),
     `- suites: ${suites.length ? suites.join(" · ") : "none recorded"}`,
   ];
   if (summary.suites?.some((entry) => entry.evidence === "not_instrumented")) {
@@ -591,6 +599,10 @@ function packageProvenance(options) {
 
 // Record what one matrix job tested; fields come from GitHub context and typed options only.
 export function recordInputs(output, options, env = process.env) {
+  const nodeVersion = githubText(process.version, /^v\d+\.\d+\.\d+$/);
+  // The exact release the matrix pinned, so a job that ran another Node shows the deviation in its record and summary.
+  const expected = githubText(options["expected-node-version"], /^\d{1,3}\.\d{1,4}\.\d{1,4}$/);
+  const expectedVersion = expected && `v${expected}`;
   const record = {
     schemaVersion: EVIDENCE_SCHEMA, recordedAt: new Date().toISOString(),
     source: githubSource(env),
@@ -599,7 +611,8 @@ export function recordInputs(output, options, env = process.env) {
       label: githubText(options["matrix-os"], RUNNER_LABEL), imageOS: token(env.ImageOS),
       imageVersion: githubText(env.ImageVersion, /^\d{8}\.\d{1,6}(?:\.\d{1,6})?$/),
     }),
-    node: compact({ version: githubText(process.version, /^v\d+\.\d+\.\d+$/), matrix: githubText(options["matrix-node"], /^\d{1,3}$/) }),
+    node: compact({ version: nodeVersion, matrix: githubText(options["matrix-node"], /^\d{1,3}$/), expectedVersion,
+      versionMatches: nodeVersion && expectedVersion ? nodeVersion === expectedVersion : undefined }),
     npm: compact({ version: semver(options["npm-version"]) }),
     client: compact({ name: oneOf(options.client, CLIENTS), channel: oneOf(options.channel, CHANNELS), version: semver(options["client-version"]) }),
     package: packageProvenance(options),

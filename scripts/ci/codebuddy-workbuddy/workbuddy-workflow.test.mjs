@@ -104,7 +104,7 @@ test("WorkBuddy consumes the shared candidate package and keeps one aggregate re
   assert.match(job("workbuddy-native"), /^      fail-fast: false$/m);
   assert.match(job("workbuddy-native"), /^      matrix: \$\{\{ fromJSON\(needs\.workbuddy-releases\.outputs\.matrix\) \}\}$/m);
   assert.match(job("workbuddy-native"), /actions\/download-artifact@v4\n        with:\n          name: \$\{\{ needs\.package\.outputs\.package-artifact-name \}\}\n          path: dist\/npm\/tarballs\n/);
-  assert.match(job("workbuddy-native"), /^          node-version: \$\{\{ matrix\.node \}\}$/m);
+  assert.match(job("workbuddy-native"), /^          node-version: \$\{\{ matrix\.nodeVersion \}\}$/m);
   assert.match(job("workbuddy-native"), /^    name: WorkBuddy native \(\$\{\{ matrix\.os \}\}, Node \$\{\{ matrix\.node \}\}, \$\{\{ matrix\.release\.channel \}\}, \$\{\{ matrix\.release\.desktopVersion \}\}\)$/m);
   assert.match(job("workbuddy-native"), /RELEASE_JSON: \$\{\{ toJSON\(matrix\.release\) \}\}/);
   assert.doesNotMatch(job("workbuddy-native"), /run:.*\$\{\{ matrix\.release/);

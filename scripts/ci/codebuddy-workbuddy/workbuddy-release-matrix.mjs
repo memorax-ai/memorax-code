@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { appendFile, readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
-import { readAcceptance } from "../shared/client-acceptance.mjs";
+import { pinNodeVersions, readAcceptance } from "../shared/client-acceptance.mjs";
 
 const desktopVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const productVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
@@ -116,7 +116,7 @@ export function buildMatrix(latestByPlatform, requestedByPlatform = {}) {
     if (fallback) include.at(-1).requestedDesktopVersion = requestedDesktopVersion;
   }
   include.push({ os: "ubuntu-24.04", arch: "x64", node: "20", release: baselineRelease("linux-x64-deb") });
-  return { include };
+  return { include: pinNodeVersions(include) };
 }
 
 // A pull request runs the baseline and the accepted release of each platform from the client acceptance manifest instead
@@ -138,7 +138,7 @@ export function acceptedMatrix(section) {
     if (!same) include.push({ os, arch, node: "24", release: accepted });
   }
   include.push({ os: "ubuntu-24.04", arch: "x64", node: "20", release: release("baseline", "linux-x64-deb") });
-  return { include };
+  return { include: pinNodeVersions(include) };
 }
 
 function releaseSummary(matrix, coverage) {

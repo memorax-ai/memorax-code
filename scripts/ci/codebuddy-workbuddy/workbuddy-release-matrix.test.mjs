@@ -5,11 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { readAcceptance } from "../shared/client-acceptance.mjs";
+import { readAcceptance, readNodeVersions } from "../shared/client-acceptance.mjs";
 import { acceptedMatrix, baselineRelease, buildMatrix, coverageSummary, resolveFeed, resolveLatest, validateRelease }
   from "./workbuddy-release-matrix.mjs";
 
 const platforms = ["linux-x64-deb", "darwin-arm64", "win32-x64-user"];
+const nodes = readNodeVersions();
 const linuxFeedHash = "03d756b259d7086c22098fa077589a032d60948d1de7313473360eefe11e240f";
 function feed(platform, newer = false) {
   const baseline = baselineRelease(platform);
@@ -27,6 +28,7 @@ test("WorkBuddy latest deduplicates each platform and retains Linux minimum Node
   for (const updated of [[], ["linux-x64-deb"], ["darwin-arm64", "win32-x64-user"], platforms]) {
     const { include } = buildMatrix(releases(updated));
     assert.equal(include.length, 4 + updated.length);
+    for (const row of include) assert.equal(row.nodeVersion, nodes[row.node]);
     const minimum = include.filter((row) => row.node === "20");
     assert.equal(minimum.length, 1);
     assert.equal(minimum[0].os, "ubuntu-24.04");
@@ -129,6 +131,7 @@ test("WorkBuddy pull requests run each platform's recorded baseline and accepted
   for (const updated of [[], ["linux-x64-deb"], ["darwin-arm64", "win32-x64-user"], platforms]) {
     const { include } = acceptedMatrix(pinnedSection(Object.fromEntries(updated.map((platform) => [platform, acceptedEntry(platform)]))));
     assert.equal(include.length, 4 + updated.length);
+    for (const row of include) assert.equal(row.nodeVersion, nodes[row.node]);
     const minimum = include.filter((row) => row.node === "20");
     assert.equal(minimum.length, 1);
     assert.equal(minimum[0].os, "ubuntu-24.04");

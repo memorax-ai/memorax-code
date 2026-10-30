@@ -42,6 +42,9 @@ for (const [id, client, version] of [["install", "codex", "codex"], ["opencode",
     assert.match(inputs, new RegExp(`--client ${client} `));
     assert.match(inputs, new RegExp(`CLIENT_VERSION: \\$\\{\\{ matrix\\.${version} \\}\\}`));
     assert.match(inputs, /--expected-package-sha256 "\$PACKAGE_SHA256"/);
+    // The record keeps the cell's pinned Node release next to the one the job ran.
+    assert.match(inputs, /^          MATRIX_NODE_VERSION: \$\{\{ matrix\.nodeVersion \}\}$/m);
+    assert.match(inputs, /--expected-node-version "\$MATRIX_NODE_VERSION"/);
     const tests = list.filter((item) => /^\s+id: native-(posix|windows)$/m.test(item));
     assert.equal(tests.length, 2);
     for (const item of tests) {

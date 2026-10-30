@@ -366,6 +366,29 @@ test("the job summary separates testOutcome, failure category, evidenceStatus an
   assert.match(renderSummary(summary), /signature: `codex\|windows-2025\|codex-install-smoke\|cleanup:directory_removal/);
 });
 
+test("the summary shows the Node release the job ran next to the pinned one without changing the outcome", async (t) => {
+  const summarize = async (node) => {
+    const root = await evidenceRoot(t, { ledger: [["start", "codex-install-smoke"], ["end", "codex-install-smoke", "0"]] });
+    await writeFile(join(root, "inputs.json"), JSON.stringify({ schemaVersion: 1, node }));
+    return summarizeEvidence(root, { client: "codex", os: "windows-2025", channel: "baseline", clientVersion: "0.147.0", node: "24",
+      testStepOutcome: "success" });
+  };
+  const same = await summarize({ version: "v24.22.1", matrix: "24", expectedVersion: "v24.22.1", versionMatches: true });
+  assert.deepEqual([same.nodeVersion, same.expectedNodeVersion, same.nodeVersionMatches], ["v24.22.1", "v24.22.1", true]);
+  assert.match(renderSummary(same), /^- node: v24\.22\.1 \(pinned v24\.22\.1\)$/m);
+  // The flag follows the two recorded versions, not the record's own flag, and a deviation changes neither outcome nor status.
+  const other = await summarize({ version: "v24.22.2", matrix: "24", expectedVersion: "v24.22.1", versionMatches: true });
+  assert.equal(other.nodeVersionMatches, false);
+  assert.deepEqual([other.testOutcome, other.evidenceStatus], [same.testOutcome, same.evidenceStatus]);
+  assert.match(renderSummary(other), /^- node: v24\.22\.2 \(pinned v24\.22\.1, \*\*mismatch\*\*\)$/m);
+  // A record without a pinned release or with malformed versions adds no Node line.
+  for (const node of [{ version: "v24.22.1", matrix: "24" }, { version: "24.22.1", expectedVersion: "24.22.1" }, undefined]) {
+    const summary = await summarize(node);
+    assert.equal(summary.nodeVersionMatches, undefined);
+    assert.doesNotMatch(renderSummary(summary), /^- node:/m);
+  }
+});
+
 test("the summary expects evidence only from instrumented suites that ran and classifies wrapper failures by phase", async (t) => {
   const summarize = async (setup, testStepOutcome, client = "codex") =>
     summarizeEvidence(await evidenceRoot(t, setup), { client, os: "windows-2025", testStepOutcome });
@@ -596,7 +619,8 @@ test("inputs and the manifest record package and client provenance with checksum
     GITHUB_REF: "refs/heads/main", GITHUB_EVENT_NAME: "push", GITHUB_RUN_ID: "38858541095", GITHUB_RUN_ATTEMPT: "1",
     GITHUB_JOB: "install", RUNNER_OS: "Windows", RUNNER_ARCH: "X64", ImageOS: "win25", ImageVersion: "not a version" };
   const inputs = recordInputs(join(root, "inputs.json"), { client: "codex", channel: "latest", "client-version": "0.163.0",
-    "matrix-os": "windows-2025", "matrix-node": "24", "npm-version": "11.19.0", "package-dir": packages,
+    "matrix-os": "windows-2025", "matrix-node": "24", "expected-node-version": process.version.slice(1), "npm-version": "11.19.0",
+    "package-dir": packages,
     "package-artifact-name": "memorax-code-package-attempt1", "package-artifact-id": "12028286155",
     "package-artifact-digest": "sha256:83d6b7a0d1a58bbe91c4bc8ecaf9e864ff8e16049072d515cfbb4924d1d9044d",
     "expected-package-sha256": "0".repeat(64) }, env);
@@ -606,6 +630,14 @@ test("inputs and the manifest record package and client provenance with checksum
   assert.equal(inputs.runner.imageVersion, undefined);
   assert.equal(inputs.source.runAttempt, "1");
   assert.deepEqual(inputs.client, { name: "codex", channel: "latest", version: "0.163.0" });
+  assert.deepEqual(inputs.node, { version: process.version, matrix: "24", expectedVersion: process.version, versionMatches: true });
+  // A job that ran another release records the deviation; a malformed pin is not recorded.
+  const other = process.version === "v1.2.3" ? "1.2.4" : "1.2.3";
+  for (const [expected, node] of [[other, { expectedVersion: `v${other}`, versionMatches: false }], [process.version, {}], ["24", {}]]) {
+    const recorded = recordInputs(join(root, `inputs-${expected}.json`), { "matrix-node": "24", "expected-node-version": expected,
+      "package-dir": packages }, env);
+    assert.deepEqual(recorded.node, { version: process.version, matrix: "24", ...node });
+  }
 
   const fakeNpm = join(root, "fake-npm.mjs");
   await writeFile(fakeNpm, `
