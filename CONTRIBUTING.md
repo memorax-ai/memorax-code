@@ -442,6 +442,17 @@ names versions held back after a failed acceptance. `runs` gives each cited
 run's event, pull request, head commit, date, and rerun scope, and `gaps` lists
 what the records do not establish.
 
+The manifest's `node` section pins the exact Node.js release of each major the
+native matrices run (`24`, `22`, and `20`), and every run builds its matrices
+from it, not only pull requests. A matrix cell keeps the major in `node`, which
+job names, artifact names, and report matching use, and `actions/setup-node`
+installs the cell's `nodeVersion`. Jobs outside the matrices, including both CI
+workflow jobs, read the root `.node-version`, which must equal the pinned `24`
+release; a contract test checks it and every setup-node step. No job enables
+`check-latest` or a setup-node cache. The Codex, OpenCode, Claude Code, and
+CodeBuddy Code input records keep the pinned release next to `process.version`
+with a `versionMatches` flag, and their job summaries mark a mismatch.
+
 A pull request reads only the entries of the clients it selects; an unselected
 client is neither looked up nor downloaded.
 [client-acceptance.mjs](scripts/ci/shared/client-acceptance.mjs) compares both
@@ -481,6 +492,13 @@ updates in one pull request:
    its previous `accepted` entry, add the failed version to its `deferred` list
    with the runs and reason, and keep the other updates. Retry the deferred
    version in a later update.
+
+The same weekly update refreshes the `node` section. `24` and `22` follow the
+releases preinstalled in the runner images, which setup-node reports as
+`Found in cache`; write the new `24` release to `.node-version` as well. Images
+roll out at different times: a runner whose image lacks the pinned release
+downloads that release from `actions/node-versions` instead, so the pin still
+holds. Node 20 has reached end of life, so `20` stays at its final release.
 
 Nothing commits, opens, or merges these updates automatically. A pull request
 that needs a newer client waits for the next update or carries its own manifest

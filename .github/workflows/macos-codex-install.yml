@@ -56,7 +56,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version-file: .node-version
           package-manager-cache: false
       - name: Select the native clients this pull request can affect
         id: scope
@@ -88,7 +88,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version-file: .node-version
           package-manager-cache: false
       # Client versions are read only for runs whose client matrices consume them. A pull request installs the pinned
       # baseline and accepted versions of the clients it selects from the client acceptance manifest and never queries
@@ -105,6 +105,7 @@ jobs:
           npm view @openai/codex dist-tags.latest --json > "$RUNNER_TEMP/codex-latest.json"
           node --input-type=module <<'NODE'
           import { appendFileSync, readFileSync } from 'node:fs';
+          import { pinNodeVersions } from './scripts/ci/shared/client-acceptance.mjs';
           const baseline = '0.147.0';
           const latest = JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/codex-latest.json`, 'utf8'));
           if (typeof latest !== 'string' || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(latest)) {
@@ -115,7 +116,7 @@ jobs:
             channel: latest === baseline ? 'baseline+latest' : 'baseline' }));
           include.push({ os: 'ubuntu-24.04', node: '20', codex: baseline, channel: 'baseline' });
           if (latest !== baseline) include.push(...platforms.map((os) => ({ os, node: '24', codex: latest, channel: 'latest' })));
-          appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`);
+          appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include: pinNodeVersions(include) })}\n`);
           appendFileSync(process.env.GITHUB_STEP_SUMMARY,
             `Codex baseline: **${baseline}**; npm latest resolved for this run: **${latest}**.\n\n` +
             `${include.length} required installation, native-flow and permission jobs; no version fallback.\n`);
@@ -132,6 +133,7 @@ jobs:
           npm view opencode-ai dist-tags.latest --json > "$RUNNER_TEMP/opencode-latest.json"
           node --input-type=module <<'NODE'
           import { appendFileSync, readFileSync } from 'node:fs';
+          import { pinNodeVersions } from './scripts/ci/shared/client-acceptance.mjs';
           const baseline = '1.18.18';
           const latest = JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/opencode-latest.json`, 'utf8'));
           if (typeof latest !== 'string' || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(latest)) {
@@ -142,7 +144,7 @@ jobs:
             channel: latest === baseline ? 'baseline+latest' : 'baseline' }));
           include.push({ os: 'ubuntu-24.04', node: '20', opencode: baseline, channel: 'baseline' });
           if (latest !== baseline) include.push(...platforms.map((os) => ({ os, node: '24', opencode: latest, channel: 'latest' })));
-          appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`);
+          appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include: pinNodeVersions(include) })}\n`);
           appendFileSync(process.env.GITHUB_STEP_SUMMARY,
             `OpenCode baseline: **${baseline}**; npm latest resolved for this run: **${latest}**.\n\n` +
             `${include.length} required installation, native-flow and permission jobs; no version fallback.\n`);
@@ -159,6 +161,7 @@ jobs:
           npm view @anthropic-ai/claude-code dist-tags.latest --json > "$RUNNER_TEMP/claude-latest.json"
           node --input-type=module <<'NODE'
           import { appendFileSync, readFileSync } from 'node:fs';
+          import { pinNodeVersions } from './scripts/ci/shared/client-acceptance.mjs';
           const baseline = '2.1.277';
           const latest = JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/claude-latest.json`, 'utf8'));
           if (typeof latest !== 'string' || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(latest)) {
@@ -169,7 +172,7 @@ jobs:
             channel: latest === baseline ? 'baseline+latest' : 'baseline' }));
           include.push({ os: 'ubuntu-24.04', node: '22', claude: baseline, channel: 'baseline' });
           if (latest !== baseline) include.push(...platforms.map((os) => ({ os, node: '24', claude: latest, channel: 'latest' })));
-          appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`);
+          appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include: pinNodeVersions(include) })}\n`);
           appendFileSync(process.env.GITHUB_STEP_SUMMARY,
             `Claude Code baseline: **${baseline}**; npm latest resolved for this run: **${latest}**.\n\n` +
             `${include.length} required lifecycle, interruption, native memory, Skill, permission and Repo Memory configuration jobs; no version fallback. Client-specific coverage remains bounded.\n`);
@@ -186,6 +189,7 @@ jobs:
           npm view @tencent-ai/codebuddy-code dist-tags.latest --json --registry=https://registry.npmjs.org/ > "$RUNNER_TEMP/codebuddy-latest.json"
           node --input-type=module <<'NODE'
           import { appendFileSync, readFileSync } from 'node:fs';
+          import { pinNodeVersions } from './scripts/ci/shared/client-acceptance.mjs';
           const baseline = '2.159.0';
           const latest = JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/codebuddy-latest.json`, 'utf8'));
           if (typeof latest !== 'string' || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(latest)) {
@@ -196,7 +200,7 @@ jobs:
             channel: latest === baseline ? 'baseline+latest' : 'baseline' }));
           include.push({ os: 'ubuntu-24.04', node: '20', codebuddy: baseline, channel: 'baseline' });
           if (latest !== baseline) include.push(...platforms.map((os) => ({ os, node: '24', codebuddy: latest, channel: 'latest' })));
-          appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`);
+          appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include: pinNodeVersions(include) })}\n`);
           appendFileSync(process.env.GITHUB_STEP_SUMMARY,
             `CodeBuddy Code baseline: **${baseline}**; npm latest resolved for this run: **${latest}**.\n\n` +
             `${include.length} required lifecycle, interruption, native memory, Skill, permission and Repo Memory configuration jobs; no version fallback. WorkBuddy is outside this scope; client-specific coverage remains bounded.\n`);
@@ -213,6 +217,7 @@ jobs:
           node scripts/ci/cursor/cursor-app-release.mjs resolve-linux "$RUNNER_TEMP/cursor-app-releases.json"
           node --input-type=module <<'NODE'
           import { appendFileSync, readFileSync } from 'node:fs';
+          import { pinNodeVersions } from './scripts/ci/shared/client-acceptance.mjs';
           import { validateLinuxRelease } from './scripts/ci/cursor/cursor-app-release.mjs';
           import { selectCursorMacosRelease } from './scripts/ci/cursor/cursor-app-macos-artifact.mjs';
           import { selectCursorWindowsRelease } from './scripts/ci/cursor/cursor-app-windows-artifact.mjs';
@@ -236,7 +241,7 @@ jobs:
           const sameWindows = ['version', 'commitSha', 'url'].every((key) => windowsBaseline[key] === windowsLatest[key]);
           include.push({ os: 'windows-2025', node: '24', cursor: windowsBaseline.version, release: 'baseline', channel: sameWindows ? 'baseline+latest' : 'baseline' });
           if (!sameWindows) include.push({ os: 'windows-2025', node: '24', cursor: windowsLatest.version, release: 'latest', channel: 'latest' });
-          appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`);
+          appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include: pinNodeVersions(include) })}\n`);
           appendFileSync(process.env.GITHUB_STEP_SUMMARY,
             `Cursor App baseline: **${baseline.version}**; desktop latest frozen for this run: **${latest.version}**.\n\n` +
             `${include.length} required Linux, macOS and Windows App jobs, including Linux baseline on Node 22. No version fallback.\n`);
@@ -344,7 +349,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: ${{ matrix.node }}
+          node-version: ${{ matrix.nodeVersion }}
           package-manager-cache: false
       - uses: actions/download-artifact@v4
         with:
@@ -359,6 +364,7 @@ jobs:
           CLIENT_VERSION: ${{ matrix.codex }}
           MATRIX_OS: ${{ matrix.os }}
           MATRIX_NODE: ${{ matrix.node }}
+          MATRIX_NODE_VERSION: ${{ matrix.nodeVersion }}
           PACKAGE_ARTIFACT_NAME: ${{ needs.package.outputs.package-artifact-name }}
           PACKAGE_ARTIFACT_ID: ${{ needs.package.outputs.package-artifact-id }}
           PACKAGE_ARTIFACT_DIGEST: ${{ needs.package.outputs.package-artifact-digest }}
@@ -366,8 +372,8 @@ jobs:
         run: |
           node scripts/ci/shared/ci-evidence.mjs inputs "$RUNNER_TEMP/native-evidence/inputs.json" \
             --client codex --channel "$CLIENT_CHANNEL" --client-version "$CLIENT_VERSION" \
-            --matrix-os "$MATRIX_OS" --matrix-node "$MATRIX_NODE" --npm-version "$(npm -v)" \
-            --package-dir dist/npm/tarballs --package-artifact-name "$PACKAGE_ARTIFACT_NAME" \
+            --matrix-os "$MATRIX_OS" --matrix-node "$MATRIX_NODE" --expected-node-version "$MATRIX_NODE_VERSION" \
+            --npm-version "$(npm -v)" --package-dir dist/npm/tarballs --package-artifact-name "$PACKAGE_ARTIFACT_NAME" \
             --package-artifact-id "$PACKAGE_ARTIFACT_ID" --package-artifact-digest "$PACKAGE_ARTIFACT_DIGEST" \
             --expected-package-sha256 "$PACKAGE_SHA256"
       - name: Verify lifecycle, native writeback, permissions and shared configuration (macOS/Linux)
@@ -451,7 +457,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: ${{ matrix.node }}
+          node-version: ${{ matrix.nodeVersion }}
           package-manager-cache: false
       - uses: actions/download-artifact@v4
         with:
@@ -466,6 +472,7 @@ jobs:
           CLIENT_VERSION: ${{ matrix.opencode }}
           MATRIX_OS: ${{ matrix.os }}
           MATRIX_NODE: ${{ matrix.node }}
+          MATRIX_NODE_VERSION: ${{ matrix.nodeVersion }}
           PACKAGE_ARTIFACT_NAME: ${{ needs.package.outputs.package-artifact-name }}
           PACKAGE_ARTIFACT_ID: ${{ needs.package.outputs.package-artifact-id }}
           PACKAGE_ARTIFACT_DIGEST: ${{ needs.package.outputs.package-artifact-digest }}
@@ -473,8 +480,8 @@ jobs:
         run: |
           node scripts/ci/shared/ci-evidence.mjs inputs "$RUNNER_TEMP/native-evidence/inputs.json" \
             --client opencode --channel "$CLIENT_CHANNEL" --client-version "$CLIENT_VERSION" \
-            --matrix-os "$MATRIX_OS" --matrix-node "$MATRIX_NODE" --npm-version "$(npm -v)" \
-            --package-dir dist/npm/tarballs --package-artifact-name "$PACKAGE_ARTIFACT_NAME" \
+            --matrix-os "$MATRIX_OS" --matrix-node "$MATRIX_NODE" --expected-node-version "$MATRIX_NODE_VERSION" \
+            --npm-version "$(npm -v)" --package-dir dist/npm/tarballs --package-artifact-name "$PACKAGE_ARTIFACT_NAME" \
             --package-artifact-id "$PACKAGE_ARTIFACT_ID" --package-artifact-digest "$PACKAGE_ARTIFACT_DIGEST" \
             --expected-package-sha256 "$PACKAGE_SHA256"
       - name: Verify lifecycle, native memory, permissions and recovery (macOS/Linux)
@@ -560,7 +567,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: ${{ matrix.node }}
+          node-version: ${{ matrix.nodeVersion }}
           package-manager-cache: false
       - uses: actions/download-artifact@v4
         with:
@@ -575,6 +582,7 @@ jobs:
           CLIENT_VERSION: ${{ matrix.claude }}
           MATRIX_OS: ${{ matrix.os }}
           MATRIX_NODE: ${{ matrix.node }}
+          MATRIX_NODE_VERSION: ${{ matrix.nodeVersion }}
           PACKAGE_ARTIFACT_NAME: ${{ needs.package.outputs.package-artifact-name }}
           PACKAGE_ARTIFACT_ID: ${{ needs.package.outputs.package-artifact-id }}
           PACKAGE_ARTIFACT_DIGEST: ${{ needs.package.outputs.package-artifact-digest }}
@@ -582,8 +590,8 @@ jobs:
         run: |
           node scripts/ci/shared/ci-evidence.mjs inputs "$RUNNER_TEMP/native-evidence/inputs.json" \
             --client claude --channel "$CLIENT_CHANNEL" --client-version "$CLIENT_VERSION" \
-            --matrix-os "$MATRIX_OS" --matrix-node "$MATRIX_NODE" --npm-version "$(npm -v)" \
-            --package-dir dist/npm/tarballs --package-artifact-name "$PACKAGE_ARTIFACT_NAME" \
+            --matrix-os "$MATRIX_OS" --matrix-node "$MATRIX_NODE" --expected-node-version "$MATRIX_NODE_VERSION" \
+            --npm-version "$(npm -v)" --package-dir dist/npm/tarballs --package-artifact-name "$PACKAGE_ARTIFACT_NAME" \
             --package-artifact-id "$PACKAGE_ARTIFACT_ID" --package-artifact-digest "$PACKAGE_ARTIFACT_DIGEST" \
             --expected-package-sha256 "$PACKAGE_SHA256"
       - name: Verify Claude lifecycle, interruption, native flows and Repo Memory configuration (macOS/Linux)
@@ -657,7 +665,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: ${{ matrix.node }}
+          node-version: ${{ matrix.nodeVersion }}
           package-manager-cache: false
       - uses: actions/download-artifact@v4
         with:
@@ -672,6 +680,7 @@ jobs:
           CLIENT_VERSION: ${{ matrix.codebuddy }}
           MATRIX_OS: ${{ matrix.os }}
           MATRIX_NODE: ${{ matrix.node }}
+          MATRIX_NODE_VERSION: ${{ matrix.nodeVersion }}
           PACKAGE_ARTIFACT_NAME: ${{ needs.package.outputs.package-artifact-name }}
           PACKAGE_ARTIFACT_ID: ${{ needs.package.outputs.package-artifact-id }}
           PACKAGE_ARTIFACT_DIGEST: ${{ needs.package.outputs.package-artifact-digest }}
@@ -679,8 +688,8 @@ jobs:
         run: |
           node scripts/ci/shared/ci-evidence.mjs inputs "$RUNNER_TEMP/native-evidence/inputs.json" \
             --client codebuddy --channel "$CLIENT_CHANNEL" --client-version "$CLIENT_VERSION" \
-            --matrix-os "$MATRIX_OS" --matrix-node "$MATRIX_NODE" --npm-version "$(npm -v)" \
-            --package-dir dist/npm/tarballs --package-artifact-name "$PACKAGE_ARTIFACT_NAME" \
+            --matrix-os "$MATRIX_OS" --matrix-node "$MATRIX_NODE" --expected-node-version "$MATRIX_NODE_VERSION" \
+            --npm-version "$(npm -v)" --package-dir dist/npm/tarballs --package-artifact-name "$PACKAGE_ARTIFACT_NAME" \
             --package-artifact-id "$PACKAGE_ARTIFACT_ID" --package-artifact-digest "$PACKAGE_ARTIFACT_DIGEST" \
             --expected-package-sha256 "$PACKAGE_SHA256"
       - name: Verify CodeBuddy lifecycle, interruption, native flows and Repo Memory configuration (macOS/Linux)
@@ -754,7 +763,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: ${{ matrix.node }}
+          node-version: ${{ matrix.nodeVersion }}
           package-manager-cache: false
       - uses: actions/download-artifact@v4
         with:
@@ -821,7 +830,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version-file: .node-version
           package-manager-cache: false
       - name: Prepare the isolated release metadata parser
         shell: bash
@@ -863,7 +872,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: ${{ matrix.node }}
+          node-version: ${{ matrix.nodeVersion }}
           package-manager-cache: false
       - uses: actions/download-artifact@v4
         with:
@@ -1082,7 +1091,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version-file: .node-version
           package-manager-cache: false
       - uses: actions/download-artifact@v4
         with:
@@ -1327,7 +1336,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version-file: .node-version
           package-manager-cache: false
       - name: Install the pinned Codex CLI
         shell: bash
@@ -1359,7 +1368,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version-file: .node-version
           package-manager-cache: false
       # Eligibility problems are recorded, not raised, so they never prevent the planned acceptance jobs from running.
       - name: Record the candidate commit, version and release eligibility
@@ -1393,7 +1402,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version-file: .node-version
           package-manager-cache: false
       # Collection failures leave evidence missing; the decision step then reports the acceptance as incomplete.
       - uses: actions/download-artifact@v4

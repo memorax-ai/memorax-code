@@ -5,12 +5,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { CHANNELS, MANIFEST, npmMatrix, readAcceptance, runCli, verifyNpm } from "./client-acceptance.mjs";
+import { CHANNELS, MANIFEST, npmMatrix, pinNodeVersions, readAcceptance, readNodeVersions, runCli, verifyNpm } from "./client-acceptance.mjs";
 
 const SCRIPT = fileURLToPath(new URL("./client-acceptance.mjs", import.meta.url));
+const ROOT = new URL("../../../", import.meta.url);
 const manifest = JSON.parse(await readFile(MANIFEST, "utf8"));
-const workflow = (await readFile(new URL("../../../.github/workflows/macos-codex-install.yml", import.meta.url), "utf8"))
-  .replaceAll("\r\n", "\n");
+const workflow = (await readFile(new URL(".github/workflows/macos-codex-install.yml", ROOT), "utf8")).replaceAll("\r\n", "\n");
 const NPM = ["codex", "opencode", "claude", "codebuddy"];
 const PLATFORMS = ["ubuntu-24.04", "macos-15", "windows-2025"];
 
@@ -54,25 +54,82 @@ test("pinned npm matrices keep the baseline and oldest Node of the steps that re
     const baseline = step.match(/^          const baseline = '([^']+)';$/m)?.[1];
     const floor = step.match(new RegExp(`^          include\\.push\\(\\{ os: 'ubuntu-24\\.04', node: '(\\d+)', ${client}: baseline, channel: 'baseline' \\}\\);$`, "m"))?.[1];
     assert.ok(baseline && floor, client);
+    // The latest-resolving matrix takes its exact Node releases from the manifest as well.
+    assert.match(step, /^          import \{ pinNodeVersions \} from '\.\/scripts\/ci\/shared\/client-acceptance\.mjs';$/m, client);
+    assert.match(step, /^          appendFileSync\(process\.env\.GITHUB_OUTPUT, `matrix=\$\{JSON\.stringify\(\{ include: pinNodeVersions\(include\) \}\)\}\\n`\);$/m, client);
     const section = readAcceptance(client);
     assert.equal(section.baseline.version, baseline, client);
-    assert.deepEqual(npmMatrix(client, section).include[3], { os: "ubuntu-24.04", node: floor, [client]: baseline, channel: "baseline" });
+    assert.deepEqual(npmMatrix(client, section).include[3], { os: "ubuntu-24.04", node: floor, nodeVersion: manifest.node[floor],
+      [client]: baseline, channel: "baseline" });
   }
 });
 
 test("an npm client runs its baseline on every platform and its oldest Node, and the accepted version only where it differs", () => {
   const section = (accepted) => ({ baseline: { version: "1.2.3" }, accepted: { version: accepted } });
+  const node = (major) => ({ node: major, nodeVersion: manifest.node[major] });
   assert.deepEqual(npmMatrix("claude", section("1.3.0")), { include: [
-    ...PLATFORMS.map((os) => ({ os, node: "24", claude: "1.2.3", channel: "baseline" })),
-    { os: "ubuntu-24.04", node: "22", claude: "1.2.3", channel: "baseline" },
-    ...PLATFORMS.map((os) => ({ os, node: "24", claude: "1.3.0", channel: "accepted" })),
+    ...PLATFORMS.map((os) => ({ os, ...node("24"), claude: "1.2.3", channel: "baseline" })),
+    { os: "ubuntu-24.04", ...node("22"), claude: "1.2.3", channel: "baseline" },
+    ...PLATFORMS.map((os) => ({ os, ...node("24"), claude: "1.3.0", channel: "accepted" })),
   ] });
   assert.deepEqual(npmMatrix("codex", section("1.2.3")), { include: [
-    ...PLATFORMS.map((os) => ({ os, node: "24", codex: "1.2.3", channel: "baseline+accepted" })),
-    { os: "ubuntu-24.04", node: "20", codex: "1.2.3", channel: "baseline" },
+    ...PLATFORMS.map((os) => ({ os, ...node("24"), codex: "1.2.3", channel: "baseline+accepted" })),
+    { os: "ubuntu-24.04", ...node("20"), codex: "1.2.3", channel: "baseline" },
   ] });
   for (const client of ["cursor", "workbuddy", "toString"]) {
     assert.throws(() => npmMatrix(client, section("1.3.0")), { code: "CLIENT_ACCEPTANCE_ARGUMENTS_INVALID" });
+  }
+});
+
+test("each Node major is pinned to one exact release, and .node-version names the pinned Node 24", async () => {
+  const nodes = readNodeVersions();
+  assert.ok(Object.isFrozen(nodes));
+  assert.deepEqual(nodes, manifest.node);
+  assert.deepEqual(Object.keys(nodes), ["20", "22", "24"]);
+  for (const [major, version] of Object.entries(nodes)) assert.match(version, new RegExp(`^${major}\\.\\d+\\.\\d+$`));
+  assert.equal(await readFile(new URL(".node-version", ROOT), "utf8"), `${manifest.node["24"]}\n`);
+});
+
+// Matrix jobs install their cell's pinned release and every other job the release in .node-version; none checks for a newer
+// release or restores a cache.
+test("every setup-node installs a pinned Node release", async () => {
+  const ci = (await readFile(new URL(".github/workflows/ci.yml", ROOT), "utf8")).replaceAll("\r\n", "\n");
+  const pinned = (node) => `        with:\n          ${node}\n          package-manager-cache: false\n`;
+  for (const [source, matrix, file] of [[workflow, 6, 7], [ci, 0, 2]]) {
+    const blocks = source.split(/^      - uses: actions\/setup-node@\S+\n/m).slice(1).map((step) => step.match(/^(?: {8}.*\n)*/)[0]);
+    assert.equal(blocks.filter((block) => block === pinned("node-version: ${{ matrix.nodeVersion }}")).length, matrix);
+    assert.equal(blocks.filter((block) => block === pinned("node-version-file: .node-version")).length, file);
+    assert.equal(blocks.length, matrix + file);
+  }
+});
+
+test("a missing, extra or malformed Node pin fails before any lookup, and so does a cell on an unpinned major", async (t) => {
+  const root = await temporary(t);
+  const cases = [(m) => { delete m.node; }, (m) => { m.node = [m.node["24"]]; }, (m) => { delete m.node["22"]; },
+    (m) => { m.node["18"] = "18.20.8"; }, (m) => { m.node["24"] = m.node["22"]; }, (m) => { m.node["24"] = "24"; },
+    (m) => { m.node["24"] = `v${m.node["24"]}`; }, (m) => { m.node["24"] = `${m.node["24"]}-rc.1`; }, (m) => { m.node["20"] = 20.2; },
+    (m) => { m.node["20"] = [m.node["20"]]; }];
+  for (const [index, change] of cases.entries()) {
+    const file = join(root, `node-${index}.json`);
+    const copy = structuredClone(manifest);
+    change(copy);
+    await writeFile(file, JSON.stringify(copy));
+    assert.throws(() => readNodeVersions(file), { code: "CLIENT_ACCEPTANCE_NODE_INVALID" }, String(index));
+  }
+  await writeFile(join(root, "null.json"), "null");
+  assert.throws(() => readNodeVersions(join(root, "null.json")), { code: "CLIENT_ACCEPTANCE_NODE_INVALID" });
+  assert.throws(() => readNodeVersions(join(root, "missing.json")), { code: "CLIENT_ACCEPTANCE_UNREADABLE" });
+  // The command reads the pins before the registry lookup: a broken section writes no matrix and asks the registry nothing.
+  const lookups = await fakeNpm(await temporary(t), recorded(readAcceptance("codex")));
+  const output = join(root, "output");
+  await assert.rejects(runCli(["npm-matrix", "codex"], { env: { GITHUB_OUTPUT: output }, npm: lookups.npm, file: join(root, "node-0.json") }),
+    { code: "CLIENT_ACCEPTANCE_NODE_INVALID" });
+  await assert.rejects(lookups.calls(), { code: "ENOENT" });
+  await assert.rejects(readFile(output), { code: "ENOENT" });
+  const nodes = readNodeVersions();
+  assert.deepEqual(pinNodeVersions([{ os: "macos-15", node: "22" }], nodes), [{ os: "macos-15", node: "22", nodeVersion: nodes["22"] }]);
+  for (const node of ["18", undefined, "toString", 24]) {
+    assert.throws(() => pinNodeVersions([{ os: "macos-15", node }], nodes), { code: "CLIENT_ACCEPTANCE_NODE_INVALID" }, String(node));
   }
 });
 

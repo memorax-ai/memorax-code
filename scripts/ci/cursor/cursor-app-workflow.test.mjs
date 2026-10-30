@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
+import { pinNodeVersions, readNodeVersions } from "../shared/client-acceptance.mjs";
 import { acceptedMatrix, baselineRelease, validateLinuxRelease } from "./cursor-app-release.mjs";
 import { selectCursorMacosRelease } from "./cursor-app-macos-artifact.mjs";
 import { selectCursorWindowsRelease } from "./cursor-app-windows-artifact.mjs";
@@ -74,7 +75,7 @@ test("Cursor App matrix uses the validated candidate, frozen release inventory a
   assert.match(job("package"), /^        run: node --test scripts\/ci\/cursor\/cursor-app-\*\.test\.mjs scripts\/ci\/cursor\/cursor-lifecycle-\*\.test\.mjs$/m);
   assert.match(canary, /^    needs: \[scope, package\]$/m);
   assert.match(canary, /^    runs-on: \$\{\{ matrix\.os \}\}$/m);
-  assert.match(canary, /^          node-version: \$\{\{ matrix\.node \}\}$/m);
+  assert.match(canary, /^          node-version: \$\{\{ matrix\.nodeVersion \}\}$/m);
   assert.match(canary, /^    name: Cursor App \$\{\{ matrix\.channel \}\} \$\{\{ matrix\.cursor \}\} \(\$\{\{ matrix\.os \}\}, Node \$\{\{ matrix\.node \}\}\)$/m);
   assert.match(canary, /^      fail-fast: false$/m);
   assert.match(canary, /^      matrix: \$\{\{ fromJSON\(needs\.package\.outputs\.cursor-matrix\) \}\}$/m);
@@ -135,6 +136,9 @@ test("Cursor matrix independently merges exact platform releases and keeps Linux
   assert.ok(code);
   assert.match(run, /import \{ selectCursorMacosRelease \} from '\.\/scripts\/ci\/cursor\/cursor-app-macos-artifact\.mjs';/);
   assert.match(run, /import \{ selectCursorWindowsRelease \} from '\.\/scripts\/ci\/cursor\/cursor-app-windows-artifact\.mjs';/);
+  assert.match(run, /import \{ pinNodeVersions \} from '\.\/scripts\/ci\/shared\/client-acceptance\.mjs';/);
+  const nodes = readNodeVersions();
+  const pin = (include) => include.map((cell) => ({ ...cell, nodeVersion: nodes[cell.node] }));
   const baseline = baselineRelease("linux-x64"), macos = baselineRelease("darwin-arm64"), windows = baselineRelease("win32-x64-user");
   const same = { ...baseline, channel: "latest", hashSource: "official-apt-sha256", size: 123456 };
   const sameMacos = { ...macos, channel: "latest" };
@@ -147,7 +151,7 @@ test("Cursor matrix independently merges exact platform releases and keeps Linux
     runInNewContext(code, { process: { env: { RUNNER_TEMP: "/synthetic temp", GITHUB_OUTPUT: "output", GITHUB_STEP_SUMMARY: "summary" } },
       readFileSync(path) { assert.equal(path, "/synthetic temp/cursor-app-releases.json"); return JSON.stringify(manifest); },
       appendFileSync(path, content) { assert.ok(!output.has(path)); output.set(path, content); },
-      validateLinuxRelease, selectCursorMacosRelease, selectCursorWindowsRelease,
+      validateLinuxRelease, selectCursorMacosRelease, selectCursorWindowsRelease, pinNodeVersions,
     }, { timeout: 100 });
     const include = JSON.parse(output.get("output").slice("matrix=".length)).include;
     assert.equal(new Set(include.map((cell) => `${cell.os}-${cell.channel}-${cell.node}`)).size, include.length);
@@ -156,12 +160,12 @@ test("Cursor matrix independently merges exact platform releases and keeps Linux
     assert.equal(include.filter((cell) => cell.node === "22").length, 1);
     return include;
   }
-  assert.deepEqual(execute(same), [
+  assert.deepEqual(execute(same), pin([
     { os: "ubuntu-24.04", node: "24", cursor: baseline.version, release: "baseline", channel: "baseline+latest" },
     { os: "ubuntu-24.04", node: "22", cursor: baseline.version, release: "baseline", channel: "baseline" },
     { os: "macos-15", node: "24", cursor: macos.version, release: "baseline", channel: "baseline+latest" },
     { os: "windows-2025", node: "24", cursor: windows.version, release: "baseline", channel: "baseline+latest" },
-  ]);
+  ]));
   const newer = { ...same, version: "3.23.12", commitSha: "2d29876d567da1607532b23bbf2cd5ddbca496fe",
     url: "https://downloads.cursor.com/production/2d29876d567da1607532b23bbf2cd5ddbca496fe/linux/x64/deb/amd64/deb/cursor_3.23.12_amd64.deb",
     sha256: "4b38d23926c72f2080e2ba108593e38f3688312464d70adc9088db63a53c0346", debVersion: "3.23.12-1790831722" };
@@ -170,7 +174,7 @@ test("Cursor matrix independently merges exact platform releases and keeps Linux
   const newerWindows = { ...sameWindows, version: newer.version, commitSha: newer.commitSha,
     url: `https://downloads.cursor.com/production/${newer.commitSha}/win32/x64/user-setup/CursorUserSetup-x64-${newer.version}.exe` };
   const matrix = execute(newer, newerMacos, 1, macos, newerWindows);
-  assert.deepEqual(matrix, [
+  assert.deepEqual(matrix, pin([
     { os: "ubuntu-24.04", node: "24", cursor: baseline.version, release: "baseline", channel: "baseline" },
     { os: "ubuntu-24.04", node: "22", cursor: baseline.version, release: "baseline", channel: "baseline" },
     { os: "ubuntu-24.04", node: "24", cursor: newer.version, release: "latest", channel: "latest" },
@@ -178,7 +182,7 @@ test("Cursor matrix independently merges exact platform releases and keeps Linux
     { os: "macos-15", node: "24", cursor: newerMacos.version, release: "latest", channel: "latest" },
     { os: "windows-2025", node: "24", cursor: windows.version, release: "baseline", channel: "baseline" },
     { os: "windows-2025", node: "24", cursor: newerWindows.version, release: "latest", channel: "latest" },
-  ]);
+  ]));
   assert.equal(execute(newer).length, 5);
   assert.equal(execute(same, newerMacos).length, 5);
   assert.equal(execute(same, sameMacos, 1, macos, newerWindows).length, 5);

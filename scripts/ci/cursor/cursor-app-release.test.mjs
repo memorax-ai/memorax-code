@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { readAcceptance } from "../shared/client-acceptance.mjs";
+import { readAcceptance, readNodeVersions } from "../shared/client-acceptance.mjs";
 import { acceptedMatrix, acceptedReleases, baselineRelease, downloadDesktopArtifact, resolveDownload, resolveLatest,
   validateDesktopRelease, validateLinuxRelease } from "./cursor-app-release.mjs";
 
@@ -264,8 +264,12 @@ test("a pull request freezes the recorded acceptance releases and fails on a mis
   assert.ok(Object.isFrozen(releases) && Object.isFrozen(releases.baseline) && Object.isFrozen(releases.accepted));
   const { include } = acceptedMatrix(releases);
   assert.equal(new Set(include.map((cell) => `${cell.os}-${cell.channel}-${cell.node}`)).size, include.length);
-  for (const cell of include) assert.equal(cell.cursor, releases[cell.release][pinned[cell.os]].version);
-  assert.deepEqual(include.filter((cell) => cell.node !== "24"), [{ os: "ubuntu-24.04", node: "22",
+  const nodes = readNodeVersions();
+  for (const cell of include) {
+    assert.equal(cell.cursor, releases[cell.release][pinned[cell.os]].version);
+    assert.equal(cell.nodeVersion, nodes[cell.node]);
+  }
+  assert.deepEqual(include.filter((cell) => cell.node !== "24"), [{ os: "ubuntu-24.04", node: "22", nodeVersion: nodes["22"],
     cursor: releases.baseline["linux-x64"].version, release: "baseline", channel: "baseline" }]);
   // An accepted release identical to the baseline runs once per platform.
   const same = structuredClone(section);

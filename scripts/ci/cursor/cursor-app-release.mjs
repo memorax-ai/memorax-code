@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { appendFileSync, readFileSync } from "node:fs";
 import { open, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
-import { readAcceptance } from "../shared/client-acceptance.mjs";
+import { pinNodeVersions, readAcceptance } from "../shared/client-acceptance.mjs";
 import { verifyLinuxAptReleases } from "./cursor-app-apt.mjs";
 
 const platforms = ["linux-x64", "linux-arm64", "darwin-arm64", "win32-x64-user"];
@@ -225,7 +225,7 @@ export function acceptedMatrix(releases) {
     if (platform === "linux-x64") include.push({ os, node: "22", cursor: baseline.version, release: "baseline", channel: "baseline" });
     if (!same) include.push({ os, node: "24", cursor: accepted.version, release: "accepted", channel: "accepted" });
   }
-  return { include };
+  return { include: pinNodeVersions(include) };
 }
 
 async function main(args) {

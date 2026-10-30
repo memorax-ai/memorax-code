@@ -16,6 +16,8 @@ export const CHANNELS = ["baseline", "accepted"];
 const REGISTRY = "https://registry.npmjs.org/";
 // Each npm client also runs its baseline on its oldest supported Node, as the latest-resolving steps do.
 const NODE_FLOOR = { codex: "20", opencode: "20", claude: "22", codebuddy: "20" };
+// Every Node major a native matrix runs; the manifest pins each to one exact release.
+const NODE_MAJORS = ["20", "22", "24"];
 const LABELS = { codex: "Codex", opencode: "OpenCode", claude: "Claude Code", codebuddy: "CodeBuddy Code" };
 const PLATFORMS = ["ubuntu-24.04", "macos-15", "windows-2025"];
 const RUN = /^[1-9]\d{0,15}\/[1-9]\d{0,3}$/;
@@ -61,10 +63,13 @@ function freeze(value) {
   return Object.freeze(value);
 }
 
+function readManifest(file) {
+  try { return JSON.parse(readFileSync(file, "utf8")); } catch { fail("CLIENT_ACCEPTANCE_UNREADABLE"); }
+}
+
 // Read and validate one client's section. Cursor and WorkBuddy releases are checked further by their own validators.
 export function readAcceptance(client, file = MANIFEST) {
-  let manifest;
-  try { manifest = JSON.parse(readFileSync(file, "utf8")); } catch { fail("CLIENT_ACCEPTANCE_UNREADABLE"); }
+  const manifest = readManifest(file);
   check(isObject(manifest) && manifest.schemaVersion === 1 && isObject(manifest.runs) && isObject(manifest.clients)
     && Object.entries(manifest.runs).every(([key, run]) => RUN.test(key) && validRun(run))
     && (manifest.gaps === undefined || (Array.isArray(manifest.gaps) && manifest.gaps.every(text))));
@@ -86,14 +91,32 @@ export function readAcceptance(client, file = MANIFEST) {
   return freeze(section);
 }
 
-export function npmMatrix(client, section) {
+// The exact Node release of each major, for every run that builds a native matrix, not only pull requests. Jobs outside the
+// matrices read the root .node-version, which equals the pinned 24 release.
+export function readNodeVersions(file = MANIFEST) {
+  const versions = readManifest(file)?.node;
+  check(only(versions, NODE_MAJORS) && NODE_MAJORS.every((major) => typeof versions[major] === "string"
+    && new RegExp(`^${major}\\.(0|[1-9]\\d*)\\.(0|[1-9]\\d*)$`).test(versions[major])), "CLIENT_ACCEPTANCE_NODE_INVALID");
+  return Object.freeze({ ...versions });
+}
+
+// A cell keeps its Node major, which job and artifact names and report matching use, and gains the exact release that
+// setup-node installs. A major without a pinned release fails.
+export function pinNodeVersions(include, versions = readNodeVersions()) {
+  return include.map((cell) => {
+    check(typeof cell.node === "string" && Object.hasOwn(versions, cell.node), "CLIENT_ACCEPTANCE_NODE_INVALID");
+    return { ...cell, nodeVersion: versions[cell.node] };
+  });
+}
+
+export function npmMatrix(client, section, nodeVersions = readNodeVersions()) {
   check(npmClient(client), "CLIENT_ACCEPTANCE_ARGUMENTS_INVALID");
   const { baseline, accepted } = section;
   const same = accepted.version === baseline.version;
   const include = PLATFORMS.map((os) => ({ os, node: "24", [client]: baseline.version, channel: same ? "baseline+accepted" : "baseline" }));
   include.push({ os: "ubuntu-24.04", node: NODE_FLOOR[client], [client]: baseline.version, channel: "baseline" });
   if (!same) include.push(...PLATFORMS.map((os) => ({ os, node: "24", [client]: accepted.version, channel: "accepted" })));
-  return { include };
+  return { include: pinNodeVersions(include, nodeVersions) };
 }
 
 // The registry must still serve each pinned version with its recorded integrity, so the install gets exactly that tarball.
@@ -115,8 +138,9 @@ export async function runCli(args, { env = process.env, npm, file } = {}) {
   const [command, client] = args;
   check(command === "npm-matrix" && args.length === 2 && npmClient(client), "CLIENT_ACCEPTANCE_ARGUMENTS_INVALID");
   const section = readAcceptance(client, file);
+  const nodeVersions = readNodeVersions(file);
   await verifyNpm(section, { npm });
-  const matrix = npmMatrix(client, section);
+  const matrix = npmMatrix(client, section, nodeVersions);
   if (env.GITHUB_OUTPUT) appendFileSync(env.GITHUB_OUTPUT, `matrix=${JSON.stringify(matrix)}\n`);
   if (env.GITHUB_STEP_SUMMARY) {
     appendFileSync(env.GITHUB_STEP_SUMMARY, `${LABELS[client]} pinned acceptance inputs: baseline **${section.baseline.version}**, `
