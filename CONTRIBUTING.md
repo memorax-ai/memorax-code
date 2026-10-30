@@ -162,6 +162,7 @@ Current source and executable tests remain authoritative for behavior.
 | [Architecture](ARCHITECTURE.md) | Package and capability ownership, runtime flows, authority, dependencies, packaging boundaries, and test placement | A documented boundary changes; use its [maintenance criteria](ARCHITECTURE.md#9-maintaining-this-document) |
 | [Agent guide](AGENTS.md) | Mandatory agent constraints, runtime and data invariants, and Git permissions | An agent working rule or invariant changes |
 | [Contributor guide](CONTRIBUTING.md) | Shared developer entrypoint: source setup, isolation, running/debugging, verification profiles, harness onboarding, documentation routing, and PR workflow | A development or verification procedure changes |
+| [Native CI failure register](docs/native-ci-failure-register.md) | Native CI failure signatures with their first and later sightings, rechecks, and status | A native CI cell fails, a registered signature recurs or is rechecked, or an entry's status changes; follow the [register rules](#native-ci-failure-register) |
 | [Security policy](SECURITY.md) | Vulnerability reporting, trust policy, and data-protection guarantees | A security or trust boundary changes; implementation maps link to this policy |
 | [Changelog](CHANGELOG.md) | Notable user-facing release changes | Recording a release or its pending notes; internal-only refactors and tests normally do not need an entry |
 | [Canonical shared Skill](packages/ts/memorax-code-codex-adapter/skills/memorax-code/SKILL.md) and its references | Product instructions consumed by coding clients | Agent-facing product behavior changes; preserve shared materialization and keep maintainer runbooks out of the Skill |
@@ -787,6 +788,31 @@ then lists no client versions and marks `clientChecks` as `NOT_APPLICABLE`.
 They are retained for 30 days. A passing re-run does not mark an
 earlier failure as fixed. To keep evidence from a local run, set
 `MEMORAX_CI_EVIDENCE_DIR` to a new directory before starting a wrapper.
+
+### Native CI Failure Register
+
+The [native CI failure register](docs/native-ci-failure-register.md) lists the
+failure signatures of the native client functional workflow with their first
+sighting, later sightings, rechecks, and status. It names runs, attempts, jobs,
+and artifacts only. Maintain it in rounds:
+
+- Work on one issue per round. A new signature that appears during a round is
+  registered, not fixed, in that round.
+- Save the evidence before classifying a failure. The same signature does not
+  mean the same root cause: record "same signature recurred" or "not reproduced
+  this run", not a cause.
+- A cell gets at most one explicitly authorized job-level recheck per run. Do
+  not use `gh run rerun --failed`, a whole-run rerun, or a dispatch to get
+  green. A passing recheck is recorded as "first failure, single recheck
+  passed, root cause undetermined", and the first failure stays on record.
+- Do not relax assertions, add sleeps, or extend timeouts to make a failure
+  pass.
+- A skipped, todo, or cancelled result is not a pass.
+- Do not merge while `PR acceptance` fails: return the pull request to Draft
+  and keep its evidence.
+- A failing cell on a client's latest release is recorded as `client-release`.
+  Hold that version back through the manifest's `deferred` list, as described
+  in [Updating Accepted Versions](#updating-accepted-versions).
 
 ### Codex Functional CI
 
