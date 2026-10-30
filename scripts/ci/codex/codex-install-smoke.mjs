@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { createServer as createTcpServer } from "node:net";
@@ -33,6 +33,8 @@ const cleanupCodes = {
   port_release: "CLEANUP_PORT_RELEASE_FAILED",
   directory_removal: "CLEANUP_DIRECTORY_REMOVAL_FAILED",
 };
+// Budgets in milliseconds for observing a busy Windows directory removal: the whole observation and each of its items.
+const holderBudgetMs = { total: 60_000, entries: 5_000, processes: 15_000, defender: 10_000 };
 let cleanupStage = "entrypoint_check";
 let cleanupTrackedPidIndex;
 let stage = "prerequisites";
@@ -989,7 +991,137 @@ async function removeIsolatedDirectory() {
       if (path) report.directoryRemoval.path = path;
     }
     try { evidence.observe("directoryRemoval", report.directoryRemoval); } catch {}
+    // On Windows, observe what keeps the directory busy before the same failure propagates; nothing here changes it.
+    if (failure && process.platform === "win32" && ["EBUSY", "EPERM", "ENOTEMPTY"].includes(failure.code)) {
+      await observeRemovalHolders(failure);
+    }
   }
+}
+
+// Observes a busy Windows removal without changing its outcome: what remains under the failed path, which processes
+// created since the smoke started are alive, when removal stops failing, and whether Defender real-time protection is
+// on. Each item runs within what remains of one total budget; an unexpected error ends the observation, never the
+// failure it describes.
+async function observeRemovalHolders(failure) {
+  const failedAt = performance.now(), deadline = failedAt + holderBudgetMs.total;
+  const afterMs = () => Math.max(0, Math.round(performance.now() - failedAt));
+  const item = async (name, inspect, limitMs) => {
+    const budgetMs = Math.min(limitMs, Math.floor(deadline - performance.now()));
+    // An item that can no longer start within the total budget records that instead of starting.
+    if (budgetMs <= 0) return { status: "budget_exhausted" };
+    let observed;
+    try { observed = await evidence.collect(name, () => inspect(budgetMs), { budgetMs }); }
+    catch { observed = { status: "FAILED" }; }
+    return boundedObservation(observed);
+  };
+  const holders = report.directoryRemoval.holders = {};
+  try {
+    // A process can name a path in its short or long form; both are resolved while the root still exists.
+    const paths = { root: [root, await realpath(root)], npmPrefix: [npmPrefix, await realpath(npmPrefix)] };
+    const processes = (budgetMs) => snapshotProcesses(paths, budgetMs, afterMs);
+    holders.entries = await item("removalEntries", () => inspectRemovalPath(failure.path), holderBudgetMs.entries);
+    // The probes keep their schedule during the first process query; the queries run one at a time, so none lists another.
+    [holders.processes, holders.probes] = await Promise.all([
+      item("removalProcesses", processes, holderBudgetMs.processes), probeRemoval(failedAt, deadline, afterMs)]);
+    holders.processesAfterProbes = await item("removalProcessesAfterProbes", processes, holderBudgetMs.processes);
+    holders.defender = await item("removalDefender", readDefenderStatus, holderBudgetMs.defender);
+  } catch (error) {
+    Object.assign(holders, withSystemCode({ status: "observation_failed" }, error));
+  }
+  try { console.log(holderWarning(failure.code, holders)); } catch {}
+  try { evidence.observe("directoryRemoval", report.directoryRemoval); } catch {}
+}
+
+// Whether the failed path still exists and, for a directory, up to 20 sorted names relative to it, each projected
+// segment by segment like every other recorded path.
+async function inspectRemovalPath(path) {
+  let info;
+  try { info = await lstat(path); }
+  catch (error) { if (error?.code === "ENOENT") return { exists: false }; throw error; }
+  if (!info.isDirectory()) return { exists: true, directory: false };
+  const names = (await readdir(path, { recursive: true })).sort();
+  return { exists: true, directory: true, total: names.length,
+    names: names.slice(0, 20).map((name) => projectPathAlias(join(path, name), { entry: path }).replace(/^<entry>\//, "")) };
+}
+
+// Tries the same removal again 1, 2, 4, 8 and 15 seconds after the failure, until one attempt succeeds, only to time how
+// long the directory stays busy. The budget is checked after each wait, so a late timer starts no probe past it.
+async function probeRemoval(failedAt, deadline, afterMs) {
+  const probes = [];
+  for (const second of [1, 2, 4, 8, 15]) {
+    const wait = failedAt + second * 1_000 - performance.now();
+    if (wait > 0) await new Promise((done) => setTimeout(done, wait));
+    if (performance.now() >= deadline) break;
+    const probe = { second, afterMs: afterMs() };
+    probes.push(probe);
+    try {
+      await rm(root, { recursive: true, force: true });
+      probe.removed = true;
+      break;
+    } catch (error) { probe.code = projectError(error).code; }
+  }
+  return probes;
+}
+
+// Lists the processes created since the smoke started that are still alive, with the window of the query in
+// milliseconds after the failure. The console writes UTF-8, so any command line is read as it is.
+async function snapshotProcesses(paths, budgetMs, afterMs) {
+  const start = afterMs();
+  const { query, rows } = await queryPowerShell("[Console]::OutputEncoding=[Text.Encoding]::UTF8; $rows=@(Get-CimInstance Win32_Process"
+    + " -Property ProcessId,ParentProcessId,Name,CreationDate,ExecutablePath,CommandLine | Select-Object ProcessId,ParentProcessId,Name,"
+    + "@{n='CreationDate';e={if($_.CreationDate){([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds()}}},ExecutablePath,CommandLine); "
+    + "ConvertTo-Json -InputObject @{ query=$PID; rows=@($rows) } -Compress -Depth 4", budgetMs);
+  return { afterMs: [start, afterMs()], ...classifyHolderProcesses(rows, paths, { self: process.pid, query, since: performance.timeOrigin }) };
+}
+
+// Keeps the processes created at or after `since`, other than the smoke itself and the query with its console host.
+// Each keeps its name, PID, parent PID and creation time, and whether its executable path or command line names the
+// isolated root or the npm prefix in either form; paths and command lines are never returned. Processes naming either
+// path come first, and the list stops at the evidence item limit.
+function classifyHolderProcesses(rows, paths, { self, query, since }) {
+  if (!Array.isArray(rows) || !Number.isSafeInteger(query)) throw new TypeError("Unexpected process query output");
+  const normalize = (value) => String(value ?? "").replaceAll("/", "\\").toLowerCase();
+  const names = (row, forms) => forms.some((form) => [row.ExecutablePath, row.CommandLine].some((text) => normalize(text).includes(normalize(form))));
+  const alive = rows.filter((row) => Number.isSafeInteger(row?.ProcessId) && Number.isSafeInteger(row.CreationDate)
+    && row.CreationDate >= since && row.ProcessId !== self && row.ProcessId !== query && row.ParentProcessId !== query)
+    .map((row) => ({
+      name: typeof row.Name === "string" && /^[\w.-]{1,64}$/.test(row.Name) ? row.Name : "unrecognized",
+      pid: row.ProcessId, parentPid: Number.isSafeInteger(row.ParentProcessId) ? row.ParentProcessId : null,
+      createdAt: new Date(row.CreationDate).toISOString(), inRoot: names(row, paths.root), inNpmPrefix: names(row, paths.npmPrefix),
+    }))
+    .sort((a, b) => (b.inRoot || b.inNpmPrefix) - (a.inRoot || a.inNpmPrefix) || a.createdAt.localeCompare(b.createdAt) || a.pid - b.pid);
+  return { total: alive.length, processes: alive.slice(0, 32) };
+}
+
+// Only whether Defender real-time protection is on, from its read-only status.
+async function readDefenderStatus(budgetMs) {
+  const status = await queryPowerShell(
+    "ConvertTo-Json -InputObject @{ realTimeProtectionEnabled=(Get-MpComputerStatus).RealTimeProtectionEnabled } -Compress", budgetMs);
+  if (typeof status?.realTimeProtectionEnabled !== "boolean") throw new TypeError("Unexpected Defender status");
+  return { realTimeProtectionEnabled: status.realTimeProtectionEnabled };
+}
+
+// Runs one read-only PowerShell query in the smoke's own directory, outside the isolated tree, and parses its JSON.
+// Error-stop and the stderr check keep a failed query from reading as an empty result, and the deadline kills the
+// query when its budget ends, so it cannot outlast the observation or appear in the next query.
+async function queryPowerShell(script, budgetMs) {
+  const windowsRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows";
+  const { stdout, stderr } = await execFileAsync(join(windowsRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+    ["-NoProfile", "-NonInteractive", "-Command", `$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; ${script}`],
+    { timeout: budgetMs, maxBuffer: 16 * 1024 * 1024, encoding: "utf8", windowsHide: true });
+  if (stderr) throw new Error("The query wrote to stderr");
+  return JSON.parse(stdout);
+}
+
+// One job-log line with how long removal stayed busy and the names of the processes the first query found alive.
+function holderWarning(code, { processes, probes }) {
+  const last = probes?.at(-1), seconds = last && (last.afterMs / 1_000).toFixed(1);
+  const busy = !last ? "was not probed again" : last.removed ? `succeeded on a probe ${seconds} s after the failure`
+    : `still failed with ${last.code ?? "an unrecognized error"} ${seconds} s after the failure`;
+  const names = Array.isArray(processes?.processes) ? [...new Set(processes.processes.map(({ name }) => name))].sort().join(", ") || "none"
+    : `unknown (${processes?.status ?? "not observed"})`;
+  return `::warning title=Codex cleanup::Directory removal failed with ${code}; removal ${busy}, and the cleanup still fails. `
+    + `Processes created since the smoke started and alive after the failure: ${names}.`;
 }
 
 async function verifySavedAccountSearch(label) {
