@@ -67,7 +67,7 @@ const SCENARIOS = {
       ["package", "workbuddy-releases", "cursor-app", "cursor-app-result", ...PULL_REQUEST]],
     ["pull request that selects only WorkBuddy", pullRequest(11, false, ["workbuddy"]), ["package", ...WORKBUDDY, ...PULL_REQUEST]],
     ["push to main", push, ["package"]],
-    ["compatibility monitor", schedule, ACCEPTANCE],
+    ["compatibility monitor", schedule, [...ACCEPTANCE, "acceptance-refresh"]],
     ["release acceptance on main", manual({ mode: "release-acceptance", expected_sha: "" }), RELEASE],
     ["release acceptance on a branch", manual({ mode: "release-acceptance", expected_sha: "" }, "refs/heads/feature"), RELEASE],
     ["provider-only diagnostic", manual({ mode: "provider-only", expected_sha: "" }), ["functional-result", "provider"]],
@@ -554,10 +554,11 @@ test("the scope job selects clients only for a pull request, from its merge comm
   assert.deepEqual([...new Set(gates)].sort(), [...CLIENTS].sort());
 });
 
-test("the Tests job runs these workflow contracts, the scope selection, the pinned acceptance manifest and the result classification tests", () => {
+test("the Tests job runs these workflow contracts, the scope selection, the pinned acceptance manifest, the result classification and the acceptance refresh tests", () => {
   const tests = jobs(workflows.ci).find((job) => job.id === "tests").text;
   assert.match(tests, /^        run: node --test scripts\/ci\/shared\/workflow-scenarios\.test\.mjs$/m);
   assert.match(tests, /^        run: node --test scripts\/ci\/shared\/native-scope\.test\.mjs$/m);
   assert.match(tests, /^        run: node --test scripts\/ci\/shared\/client-acceptance\.test\.mjs$/m);
   assert.match(tests, /^        run: node --test scripts\/ci\/shared\/client-result\.test\.mjs$/m);
+  assert.match(tests, /^        run: node --test scripts\/ci\/shared\/client-acceptance-refresh\.test\.mjs$/m);
 });

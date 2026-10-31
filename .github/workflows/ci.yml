@@ -54,6 +54,8 @@ jobs:
         run: node --test scripts/ci/shared/client-acceptance.test.mjs
       - name: Verify native result classification
         run: node --test scripts/ci/shared/client-result.test.mjs
+      - name: Verify the client acceptance refresh
+        run: node --test scripts/ci/shared/client-acceptance-refresh.test.mjs
       - name: Run the existing regression suite
         shell: bash
         run: |
