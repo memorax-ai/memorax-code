@@ -10,7 +10,7 @@ import {
   cleanupDockerResources, cursorAppNodeImage, cursorAppRelease, makeContainerArgs, projectNativeReport,
   readReleaseManifest, resolveLocalDockerEndpoint, runCursorAppContainerNative, stageCursorAppChecks, verifyCursorAppArtifact,
 } from "./cursor-app-container-check.mjs";
-import { readAcceptance } from "../shared/client-acceptance.mjs";
+import { readAcceptance, readNodeVersions } from "../shared/client-acceptance.mjs";
 import { classifyCursorAppExecution } from "./cursor-app-report.mjs";
 import { acceptedReleases, baselineRelease } from "./cursor-app-release.mjs";
 
@@ -186,10 +186,23 @@ test("downloaded artifacts require the frozen SHA-256 and optional exact byte si
 });
 
 test("Node selection uses pinned real container images, not the host runtime", () => {
-  assert.equal(cursorAppNodeImage("22"), "node:22-bookworm@sha256:363e1587494626837fa7f9a23bdb453d13b0ff3c67c705c2805cfc69c2d2fad7");
-  assert.equal(cursorAppNodeImage("24"), "node:24-bookworm@sha256:64af3819f9275802414d7cdc38c27e9d82bd564dec4d4da87d008255d36c63b4");
+  const nodes = readNodeVersions();
+  for (const major of ["22", "24"]) {
+    assert.match(cursorAppNodeImage(major), new RegExp(`^node:${nodes[major].replaceAll(".", "\\.")}-bookworm@sha256:[a-f0-9]{64}$`), major);
+  }
   for (const value of [undefined, null, 22, "20", "23", "22.23.3", "24;echo synthetic"]) {
     assert.throws(() => cursorAppNodeImage(value), { code: "CURSOR_CONTAINER_NODE" });
+  }
+  // The manifest pin decides the release: a major tag, another release or a malformed digest is rejected.
+  const digest = "c".repeat(64), pinned = `node:${nodes["24"]}-bookworm@sha256:${digest}`;
+  assert.equal(cursorAppNodeImage("24", { 24: pinned }), pinned);
+  for (const image of [`node:24-bookworm@sha256:${digest}`, `node:24.21.0-bookworm@sha256:${digest}`,
+    `node:${nodes["22"]}-bookworm@sha256:${digest}`, `node:${nodes["24"]}-slim@sha256:${digest}`, `node:${nodes["24"]}-bookworm`,
+    `${pinned}0`, `${pinned.slice(0, -1)}C`, ` ${pinned}`, undefined]) {
+    assert.throws(() => cursorAppNodeImage("24", { 24: image }), { code: "CURSOR_CONTAINER_NODE" }, String(image));
+  }
+  for (const images of [null, {}, { 22: pinned }]) {
+    assert.throws(() => cursorAppNodeImage("24", images), { code: "CURSOR_CONTAINER_NODE" });
   }
 });
 
@@ -294,6 +307,10 @@ test("Docker build checks the actual package and Node runtime against selected i
   assert.match(dockerfile, /p\.version!==process\.env\.CURSOR_APP_VERSION/);
   assert.match(dockerfile, /String\(major\)!==process\.env\.NODE_MAJOR/);
   assert.match(dockerfile, /major===22&&minor<13/);
+  assert.match(dockerfile, /^ARG NODE_MAJOR\nARG NODE_RELEASE$/m);
+  assert.match(dockerfile, /process\.versions\.node!==process\.env\.NODE_RELEASE/);
+  // The node base image sets NODE_VERSION itself, so the pinned release travels under another name.
+  assert.doesNotMatch(dockerfile, /NODE_VERSION/);
   assert.doesNotMatch(dockerfile, /p\.version!=="3\.21\.18"/);
 });
 

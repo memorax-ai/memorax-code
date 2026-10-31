@@ -1,6 +1,7 @@
 ARG NODE_IMAGE
 FROM ${NODE_IMAGE}
 ARG NODE_MAJOR
+ARG NODE_RELEASE
 
 RUN sed -i 's|http://deb.debian.org/|https://deb.debian.org/|g' /etc/apt/sources.list.d/debian.sources \
     && apt-get -o Acquire::Retries=3 update \
@@ -18,7 +19,7 @@ RUN test "$(dpkg-deb --field /tmp/cursor.deb Package)" = cursor \
     && test "$(dpkg-deb --field /tmp/cursor.deb Architecture)" = "$(dpkg --print-architecture)" \
     && dpkg-deb --extract /tmp/cursor.deb /opt/cursor-app \
     && rm /tmp/cursor.deb \
-    && node -e 'const p=require("/opt/cursor-app/usr/share/cursor/resources/app/package.json"), [major,minor]=process.versions.node.split(".").map(Number); if(p.version!==process.env.CURSOR_APP_VERSION||!["22","24"].includes(process.env.NODE_MAJOR)||String(major)!==process.env.NODE_MAJOR||(major===22&&minor<13)) process.exit(1)'
+    && node -e 'const p=require("/opt/cursor-app/usr/share/cursor/resources/app/package.json"), [major,minor]=process.versions.node.split(".").map(Number); if(p.version!==process.env.CURSOR_APP_VERSION||!["22","24"].includes(process.env.NODE_MAJOR)||String(major)!==process.env.NODE_MAJOR||process.versions.node!==process.env.NODE_RELEASE||(major===22&&minor<13)) process.exit(1)'
 
 RUN npm install --prefix /opt/probe --ignore-scripts --no-audit --no-fund --package-lock=false \
        --registry=https://registry.npmjs.org/ playwright-core@1.58.2
