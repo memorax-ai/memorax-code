@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { readNodeVersions } from "../shared/client-acceptance.mjs";
 import { baselineRelease, validateLinuxRelease } from "./cursor-app-release.mjs";
 import { classifyCursorAppExecution, collectCursorAppNativeReport, projectCursorAppReport, writeCursorAppFinalReport } from "./cursor-app-report.mjs";
 
@@ -42,10 +43,11 @@ export function cursorAppRelease(architecture, { releaseManifest, channel = "bas
   catch { fail("CURSOR_CONTAINER_RELEASE"); }
 }
 
-export function cursorAppNodeImage(nodeMajor) {
+// The manifest's Node pin is the only version authority; provenance records the image digest of that exact release.
+export function cursorAppNodeImage(nodeMajor, baseImages = provenance.baseImages) {
   check(["22", "24"].includes(nodeMajor), "CURSOR_CONTAINER_NODE");
-  const image = provenance.baseImages?.[nodeMajor];
-  check(typeof image === "string" && new RegExp(`^node:${nodeMajor}-bookworm@sha256:[a-f0-9]{64}$`).test(image), "CURSOR_CONTAINER_NODE");
+  const image = baseImages?.[nodeMajor], tag = `node:${readNodeVersions()[nodeMajor]}-bookworm@sha256:`;
+  check(typeof image === "string" && image.startsWith(tag) && /^[a-f0-9]{64}$/.test(image.slice(tag.length)), "CURSOR_CONTAINER_NODE");
   return image;
 }
 
@@ -225,7 +227,7 @@ export async function runContainerCheck(candidatePath, reportPath, { releaseMani
     const directory = await lstat(destination);
     check(directory.isDirectory() && !directory.isSymbolicLink() && (await readdir(destination)).length === 0, "CURSOR_CONTAINER_OUTPUT");
     output = await realpath(destination);
-    const nodeImage = cursorAppNodeImage(nodeMajor);
+    const nodeImage = cursorAppNodeImage(nodeMajor), nodeRelease = readNodeVersions()[nodeMajor];
     check(["baseline", "latest", "accepted"].includes(channel), "CURSOR_CONTAINER_RELEASE");
     root = await mkdtemp(join(tmpdir(), "memorax-cursor-app-ci-"));
     const endpoint = await resolveLocalDockerEndpoint();
@@ -251,7 +253,7 @@ export async function runContainerCheck(candidatePath, reportPath, { releaseMani
     report.stage = "container-build";
     dockerStarted = true;
     await checked(["build", "--label", `${label}=${runId}`, "--tag", names.image,
-      "--build-arg", `NODE_IMAGE=${nodeImage}`, "--build-arg", `NODE_MAJOR=${nodeMajor}`,
+      "--build-arg", `NODE_IMAGE=${nodeImage}`, "--build-arg", `NODE_MAJOR=${nodeMajor}`, "--build-arg", `NODE_RELEASE=${nodeRelease}`,
       "--build-arg", `CURSOR_APP_VERSION=${release.version}`, "--build-arg", `CURSOR_DEB_VERSION=${release.debVersion}`,
       "--file", join(root, "Dockerfile"), root], { timeout: 20 * 60_000, signal });
     report.stage = "container-create";

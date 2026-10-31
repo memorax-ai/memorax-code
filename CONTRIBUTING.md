@@ -548,6 +548,11 @@ releases preinstalled in the runner images, which setup-node reports as
 roll out at different times: a runner whose image lacks the pinned release
 downloads that release from `actions/node-versions` instead, so the pin still
 holds. Node 20 has reached end of life, so `20` stays at its final release.
+When the `24` or `22` pin changes, also replace that major's Cursor App Linux
+base image in `scripts/fixtures/cursor-app/provenance.json` with the new
+release's exact `node:<release>-bookworm` tag at its OCI image index digest,
+which is the same on the x64 runner and an arm64 workstation.
+`client-acceptance.test.mjs` checks both images against the pins.
 
 Nothing commits, opens, or merges these updates automatically. A pull request
 that needs a newer client waits for the next update or carries its own manifest
@@ -1759,7 +1764,12 @@ baseline **3.21.18** and a second release on Node 24: the
 stable release in the compatibility monitor and release acceptance. Identical
 release identities share a cell; Linux also runs baseline on Node 22.13 or newer
 for its native SQLite reader. The native-check process must use the selected
-Node version, including inside the Linux container.
+Node version, including inside the Linux container. The container builds on the
+official `node:<release>-bookworm` image of the release that the manifest's
+`node` section pins for that major, at the digest recorded in
+`scripts/fixtures/cursor-app/provenance.json`; any other tag fails with
+`CURSOR_CONTAINER_NODE`, and the image build fails unless its Node is exactly
+that release.
 
 Release resolution runs once in the package job of each run that includes Cursor
 App; a pull request freezes the recorded releases instead, without a release
