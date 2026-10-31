@@ -391,9 +391,12 @@ client's baseline and official latest versions, not the pinned versions pull
 requests use, and runs every client's complete matrix, including WorkBuddy, but
 it records no release candidate. It neither gates merges nor accepts a release:
 a failure shows that a client release, platform, or service changed, or that
-`main` regressed for a client that no recent pull request selected. A client
-whose matrix passes here becomes a candidate for the next
-[acceptance update](#updating-accepted-versions). GitHub sends a scheduled run's
+`main` regressed for a client that no recent pull request selected. After the
+result jobs, its `Client acceptance refresh (compatibility monitor)` job
+proposes the [acceptance update](#updating-accepted-versions) that the attempt
+supports and uploads it as `client-acceptance-refresh-attempt<N>`; it never
+commits the update or opens a pull request, and it fails only when its own
+contract breaks. GitHub sends a scheduled run's
 failure notification only to the user who last changed its `cron` line, so
 maintainers should review the monitor's runs.
 
@@ -435,8 +438,9 @@ an open pull request to rerun both workflows on the new merge result. This
 setting is managed separately from the workflows. The `Tests` check runs
 `scripts/ci/shared/workflow-scenarios.test.mjs`,
 `scripts/ci/shared/native-scope.test.mjs`,
-`scripts/ci/shared/client-acceptance.test.mjs`, and
-`scripts/ci/shared/client-result.test.mjs`. The first evaluates the
+`scripts/ci/shared/client-acceptance.test.mjs`,
+`scripts/ci/shared/client-result.test.mjs`, and
+`scripts/ci/shared/client-acceptance-refresh.test.mjs`. The first evaluates the
 expressions these workflows use for triggers, job conditions, the package job's
 pinned and latest version lookups, check names, and concurrency groups in each
 event, manual selection, and client selection, and runs each result script,
@@ -446,7 +450,9 @@ merge commit, and this repository's own files. The third validates the client
 acceptance manifest and, without network access, its fail-closed reader. The
 fourth classifies the job listings of recorded monitor and pull request runs
 with their matrices and checks each client's cell names against the workflow.
-All four are source contracts, not a complete model of GitHub Actions
+The fifth decides the acceptance refresh from the trimmed artifacts of a
+recorded monitor run and checks that pull requests read the proposed manifest.
+All five are source contracts, not a complete model of GitHub Actions
 execution.
 
 ### Client Acceptance Versions
@@ -506,14 +512,26 @@ acceptance update is never treated as a change that needs no client tests.
 Accepted versions change only through a reviewed pull request. Collect a week's
 updates in one pull request:
 
-1. For each client, choose the newest version that passed its complete matrix
-   in a recent compatibility monitor or release acceptance run. The run's input
-   record and summaries name the exact versions. Cursor App's frozen inventory
-   and cell evidence record the download hashes and sizes, and the WorkBuddy
-   frozen releases and reports record the reference and downloaded SHA-256.
-2. Record each chosen version under `accepted` with its download source and
-   integrity, add the runs to `runs` and to its `acceptance`, and keep earlier
-   failures and warnings on record.
+1. Download `client-acceptance-refresh-attempt<N>` from the most recent
+   compatibility monitor run. Its `refresh.json` and the job summary give each
+   client's decision: an official latest version is a candidate only when every
+   cell of that version passed in that attempt and the client does not defer
+   it, and a fallback, deferred, failed, or missing cell, or a missing artifact,
+   is reported with its reason instead. `client-acceptance.diff` records each
+   candidate under `accepted` with the integrity, hashes, and sizes that the
+   attempt recorded, cites the run in `runs` and in the entry's `acceptance`,
+   and leaves the `node` section alone; `client-acceptance.proposed.json` is
+   the resulting manifest, which already passed the acceptance reader. A version
+   that only a release acceptance run passed is still recorded by hand from that
+   run's input record, Cursor App inventory and cell evidence, and WorkBuddy
+   reports.
+2. Review the diff against the evidence it names and apply it with
+   `git apply client-acceptance.diff`, leaving out any candidate you do not
+   take; the diff is against the manifest that run checked out, so carry the
+   same changes over by hand when `main` has changed the manifest since. Keep
+   earlier failures and warnings on record: add a `note` where `refresh.json`
+   reports a WorkBuddy download SHA-256 `warning`, and update the `gaps` that
+   the new records make stale.
 3. Check the edit with `node --test scripts/ci/shared/client-acceptance.test.mjs`
    and, for each updated npm client,
    `node scripts/ci/shared/client-acceptance.mjs npm-matrix <client>`, which

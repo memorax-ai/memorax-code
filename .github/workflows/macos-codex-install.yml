@@ -1541,6 +1541,64 @@ jobs:
             exit 1
           fi
 
+  acceptance-refresh:
+    # The compatibility monitor proposes the update of scripts/ci/shared/client-acceptance.json that this attempt supports,
+    # for a reviewed pull request: it reads only this attempt's artifacts, never the jobs API, never commits or opens a pull
+    # request, and fails only when its own contract breaks. A missing artifact leaves its client without a candidate.
+    name: Client acceptance refresh (compatibility monitor)
+    if: always() && !cancelled() && github.event_name == 'schedule'
+    needs: [package, workbuddy-releases, functional-result, opencode-result, claude-result, codebuddy-result, cursor-app-result, workbuddy-result]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: client-result-*-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/acceptance-refresh-inputs/client-result
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: native-client-inputs-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/acceptance-refresh-inputs/native-client-inputs
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: cursor-app-releases-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/acceptance-refresh-inputs/cursor-app-releases
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: cursor-app-*-latest-*-report-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/acceptance-refresh-inputs/cursor-app-reports
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          pattern: workbuddy-report-*-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/acceptance-refresh-inputs/workbuddy-reports
+      - name: Propose the client acceptance refresh
+        shell: bash
+        env:
+          WORKBUDDY_MATRIX: ${{ needs.workbuddy-releases.outputs.matrix }}
+        run: node scripts/ci/shared/client-acceptance-refresh.mjs propose --inputs "$RUNNER_TEMP/acceptance-refresh-inputs" --output "$RUNNER_TEMP/acceptance-refresh" --github-summary "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: client-acceptance-refresh-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/acceptance-refresh
+          if-no-files-found: warn
+          retention-days: 30
+
   provider:
     if: github.event_name == 'workflow_dispatch' && inputs.mode == 'provider-only'
     runs-on: ubuntu-24.04

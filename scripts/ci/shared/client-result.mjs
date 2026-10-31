@@ -43,7 +43,7 @@ export function classify(channel, conclusion, deferred) {
 
 // An entry defers its version for every cell of the client or, when it lists platforms, only for cells on those release
 // platforms; such an entry never defers a cell without a release platform.
-const defers = (entry, version, platform) => entry.version === version
+export const defers = (entry, version, platform) => entry.version === version
   && (entry.platforms === undefined || entry.platforms.includes(platform));
 
 export function decide({ client, needs, apiDir, env = process.env, manifest = MANIFEST }) {
