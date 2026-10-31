@@ -81,13 +81,19 @@ test("an npm client runs its baseline on every platform and its oldest Node, and
   }
 });
 
-test("each Node major is pinned to one exact release, and .node-version names the pinned Node 24", async () => {
+test("each Node major is pinned to one exact release, and .node-version and the Cursor App images name the pinned releases", async () => {
   const nodes = readNodeVersions();
   assert.ok(Object.isFrozen(nodes));
   assert.deepEqual(nodes, manifest.node);
   assert.deepEqual(Object.keys(nodes), ["20", "22", "24"]);
   for (const [major, version] of Object.entries(nodes)) assert.match(version, new RegExp(`^${major}\\.\\d+\\.\\d+$`));
   assert.equal(await readFile(new URL(".node-version", ROOT), "utf8"), `${manifest.node["24"]}\n`);
+  // The Cursor App Linux container runs the same releases: each base image is the pinned release's tag at a digest.
+  const { baseImages } = JSON.parse(await readFile(new URL("scripts/fixtures/cursor-app/provenance.json", ROOT), "utf8"));
+  assert.deepEqual(Object.keys(baseImages), ["22", "24"]);
+  for (const [major, image] of Object.entries(baseImages)) {
+    assert.match(image, new RegExp(`^node:${nodes[major].replaceAll(".", "\\.")}-bookworm@sha256:[a-f0-9]{64}$`), major);
+  }
 });
 
 // Matrix jobs install their cell's pinned release and every other job the release in .node-version; none checks for a newer
