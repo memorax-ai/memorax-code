@@ -397,6 +397,32 @@ whose matrix passes here becomes a candidate for the next
 failure notification only to the user who last changed its `cron` line, so
 maintainers should review the monitor's runs.
 
+Once the package job, and for WorkBuddy the release resolution, has succeeded,
+each client's result job looks up every cell of its matrix, by the job name the
+workflow gives it, in this attempt's job listing from the GitHub API, and
+classifies the cell by its channel, version, and conclusion. A failed cell whose
+channel includes `baseline` or `accepted` is a `baseline-regression`. A failed
+`latest` or WorkBuddy `fallback` cell is `client-release-deferred` when the
+client's `deferred` list in the
+[client acceptance manifest](scripts/ci/shared/client-acceptance.json) holds its
+version back for that cell, and `client-release-new` otherwise: register its
+signature in the
+[native CI failure register](docs/native-ci-failure-register.md) first, then
+defer the version or fix it. A `deferred` entry that lists `platforms` applies
+only to WorkBuddy cells on those release platforms; one without `platforms`
+applies to every cell of its version. On the compatibility monitor, in place of
+the entire-matrix requirement that each client section describes, a client's
+result passes only when every cell succeeded or was deferred, and each deferred
+cell leaves a notice. A regression, a new client release failure, a cell that
+did not complete (cancelled, timed out, or skipped), a cell missing from the
+listing or listed twice, an unreadable listing, a missing matrix, or a matrix
+result that the cells do not explain fails it. A deferred cell still failed, so
+a passing result does not make its version a candidate for an acceptance
+update. Every other run, except a provider-only one, reports the same classes
+but still requires the entire matrix to succeed. The job summary lists each
+cell's channel, version, conclusion, and class, and the record is uploaded as
+`client-result-<client>-attempt<N>`.
+
 Protect `main` in GitHub branch protection by requiring `Tests`,
 `Documentation`, and `PR acceptance` from GitHub Actions, requiring branches to
 be up to date before merging, requiring a pull request before merging, and
@@ -408,16 +434,20 @@ nothing. When `main` moves, update
 an open pull request to rerun both workflows on the new merge result. This
 setting is managed separately from the workflows. The `Tests` check runs
 `scripts/ci/shared/workflow-scenarios.test.mjs`,
-`scripts/ci/shared/native-scope.test.mjs`, and
-`scripts/ci/shared/client-acceptance.test.mjs`. The first evaluates the
+`scripts/ci/shared/native-scope.test.mjs`,
+`scripts/ci/shared/client-acceptance.test.mjs`, and
+`scripts/ci/shared/client-result.test.mjs`. The first evaluates the
 expressions these workflows use for triggers, job conditions, the package job's
 pinned and latest version lookups, check names, and concurrency groups in each
 event, manual selection, and client selection, and runs each result script,
 including `PR acceptance`, against failed, cancelled, and skipped dependencies
 and partial selections. The second checks the selection rules, the command on a
 merge commit, and this repository's own files. The third validates the client
-acceptance manifest and, without network access, its fail-closed reader. All
-three are source contracts, not a complete model of GitHub Actions execution.
+acceptance manifest and, without network access, its fail-closed reader. The
+fourth classifies the job listings of recorded monitor and pull request runs
+with their matrices and checks each client's cell names against the workflow.
+All four are source contracts, not a complete model of GitHub Actions
+execution.
 
 ### Client Acceptance Versions
 

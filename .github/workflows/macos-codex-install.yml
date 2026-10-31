@@ -1146,77 +1146,221 @@ jobs:
     if: always() && (needs.scope.outputs.opencode == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance')
     needs: [scope, package, opencode]
     runs-on: ubuntu-24.04
-    timeout-minutes: 2
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
     steps:
-      - name: Require the package and entire OpenCode matrix to succeed
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Read this attempt's jobs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The listing is written only after every page was read; a failed query leaves a marker, never a listing.
+          api="$RUNNER_TEMP/client-api"
+          mkdir -p "$api"
+          if gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
+            > "$api/attempt-$GITHUB_RUN_ATTEMPT.partial"; then
+            mv "$api/attempt-$GITHUB_RUN_ATTEMPT.partial" "$api/attempt-$GITHUB_RUN_ATTEMPT.json"
+          else
+            rm -f "$api/attempt-$GITHUB_RUN_ATTEMPT.partial"
+            : > "$api/attempt-$GITHUB_RUN_ATTEMPT.failed"
+          fi
+      - name: Require the package and every OpenCode cell to pass
         shell: bash
         env:
           PACKAGE_RESULT: ${{ needs.package.result }}
           OPENCODE_RESULT: ${{ needs.opencode.result }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
           printf 'Package: **%s**\n\nOpenCode matrix: **%s**\n' "$PACKAGE_RESULT" "$OPENCODE_RESULT" >> "$GITHUB_STEP_SUMMARY"
-          if [[ "$PACKAGE_RESULT" != success || "$OPENCODE_RESULT" != success ]]; then
-            echo '::error::All package and OpenCode matrix jobs must succeed. Failed, cancelled or skipped dependencies do not pass this check.'
+          if [[ "$PACKAGE_RESULT" != success ]]; then
+            echo '::error::The package job must succeed. Failed, cancelled or skipped dependencies do not pass this check.'
             exit 1
           fi
+          # The cells decide the compatibility monitor; every other run still requires the entire matrix to succeed.
+          node scripts/ci/shared/client-result.mjs decide --client opencode --needs "$NEEDS_JSON" --api-dir "$RUNNER_TEMP/client-api" \
+            --output "$RUNNER_TEMP/client-result/client-result-opencode-attempt$GITHUB_RUN_ATTEMPT.json" --github-summary "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: client-result-opencode-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/client-result/client-result-opencode-attempt${{ github.run_attempt }}.json
+          if-no-files-found: warn
+          retention-days: 30
 
   claude-result:
     name: ${{ github.event_name == 'pull_request' && 'Claude native smoke result' || format('Claude native smoke result ({0})', github.event_name == 'push' && 'main push' || github.event_name == 'schedule' && 'compatibility monitor' || inputs.mode) }}
     if: always() && (needs.scope.outputs.claude == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance')
     needs: [scope, package, claude]
     runs-on: ubuntu-24.04
-    timeout-minutes: 2
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
     steps:
-      - name: Require the package and entire Claude native smoke matrix to succeed
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Read this attempt's jobs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The listing is written only after every page was read; a failed query leaves a marker, never a listing.
+          api="$RUNNER_TEMP/client-api"
+          mkdir -p "$api"
+          if gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
+            > "$api/attempt-$GITHUB_RUN_ATTEMPT.partial"; then
+            mv "$api/attempt-$GITHUB_RUN_ATTEMPT.partial" "$api/attempt-$GITHUB_RUN_ATTEMPT.json"
+          else
+            rm -f "$api/attempt-$GITHUB_RUN_ATTEMPT.partial"
+            : > "$api/attempt-$GITHUB_RUN_ATTEMPT.failed"
+          fi
+      - name: Require the package and every Claude native smoke cell to pass
         shell: bash
         env:
           PACKAGE_RESULT: ${{ needs.package.result }}
           CLAUDE_RESULT: ${{ needs.claude.result }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
           printf 'Package: **%s**\n\nClaude native smoke matrix: **%s**\n\nShared lifecycle, setup interruption, native memory, Skill, permission and Repo Memory global-configuration checks; client-specific coverage remains bounded.\n' "$PACKAGE_RESULT" "$CLAUDE_RESULT" >> "$GITHUB_STEP_SUMMARY"
-          if [[ "$PACKAGE_RESULT" != success || "$CLAUDE_RESULT" != success ]]; then
-            echo '::error::All package and Claude native smoke matrix jobs must succeed. Failed, cancelled or skipped dependencies do not pass this check.'
+          if [[ "$PACKAGE_RESULT" != success ]]; then
+            echo '::error::The package job must succeed. Failed, cancelled or skipped dependencies do not pass this check.'
             exit 1
           fi
+          # The cells decide the compatibility monitor; every other run still requires the entire matrix to succeed.
+          node scripts/ci/shared/client-result.mjs decide --client claude --needs "$NEEDS_JSON" --api-dir "$RUNNER_TEMP/client-api" \
+            --output "$RUNNER_TEMP/client-result/client-result-claude-attempt$GITHUB_RUN_ATTEMPT.json" --github-summary "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: client-result-claude-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/client-result/client-result-claude-attempt${{ github.run_attempt }}.json
+          if-no-files-found: warn
+          retention-days: 30
 
   codebuddy-result:
     name: ${{ github.event_name == 'pull_request' && 'CodeBuddy functional result' || format('CodeBuddy functional result ({0})', github.event_name == 'push' && 'main push' || github.event_name == 'schedule' && 'compatibility monitor' || inputs.mode) }}
     if: always() && (needs.scope.outputs.codebuddy == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance')
     needs: [scope, package, codebuddy]
     runs-on: ubuntu-24.04
-    timeout-minutes: 2
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
     steps:
-      - name: Require the package and entire CodeBuddy functional matrix to succeed
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Read this attempt's jobs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The listing is written only after every page was read; a failed query leaves a marker, never a listing.
+          api="$RUNNER_TEMP/client-api"
+          mkdir -p "$api"
+          if gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
+            > "$api/attempt-$GITHUB_RUN_ATTEMPT.partial"; then
+            mv "$api/attempt-$GITHUB_RUN_ATTEMPT.partial" "$api/attempt-$GITHUB_RUN_ATTEMPT.json"
+          else
+            rm -f "$api/attempt-$GITHUB_RUN_ATTEMPT.partial"
+            : > "$api/attempt-$GITHUB_RUN_ATTEMPT.failed"
+          fi
+      - name: Require the package and every CodeBuddy functional cell to pass
         shell: bash
         env:
           PACKAGE_RESULT: ${{ needs.package.result }}
           CODEBUDDY_RESULT: ${{ needs.codebuddy.result }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
           printf 'Package: **%s**\n\nCodeBuddy functional matrix: **%s**\n\nShared lifecycle, setup interruption, native memory, Skill, permission and Repo Memory global-configuration checks; WorkBuddy is excluded and client-specific coverage remains bounded.\n' "$PACKAGE_RESULT" "$CODEBUDDY_RESULT" >> "$GITHUB_STEP_SUMMARY"
-          if [[ "$PACKAGE_RESULT" != success || "$CODEBUDDY_RESULT" != success ]]; then
-            echo '::error::All package and CodeBuddy functional matrix jobs must succeed. Failed, cancelled or skipped dependencies do not pass this check.'
+          if [[ "$PACKAGE_RESULT" != success ]]; then
+            echo '::error::The package job must succeed. Failed, cancelled or skipped dependencies do not pass this check.'
             exit 1
           fi
+          # The cells decide the compatibility monitor; every other run still requires the entire matrix to succeed.
+          node scripts/ci/shared/client-result.mjs decide --client codebuddy --needs "$NEEDS_JSON" --api-dir "$RUNNER_TEMP/client-api" \
+            --output "$RUNNER_TEMP/client-result/client-result-codebuddy-attempt$GITHUB_RUN_ATTEMPT.json" --github-summary "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: client-result-codebuddy-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/client-result/client-result-codebuddy-attempt${{ github.run_attempt }}.json
+          if-no-files-found: warn
+          retention-days: 30
 
   cursor-app-result:
     name: ${{ github.event_name == 'pull_request' && 'Cursor App canary result' || format('Cursor App canary result ({0})', github.event_name == 'push' && 'main push' || github.event_name == 'schedule' && 'compatibility monitor' || inputs.mode) }}
     if: always() && (needs.scope.outputs.cursor == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance')
     needs: [scope, package, cursor-app]
     runs-on: ubuntu-24.04
-    timeout-minutes: 2
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
     steps:
-      - name: Require the package and Cursor App canary to succeed
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Read this attempt's jobs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The listing is written only after every page was read; a failed query leaves a marker, never a listing.
+          api="$RUNNER_TEMP/client-api"
+          mkdir -p "$api"
+          if gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
+            > "$api/attempt-$GITHUB_RUN_ATTEMPT.partial"; then
+            mv "$api/attempt-$GITHUB_RUN_ATTEMPT.partial" "$api/attempt-$GITHUB_RUN_ATTEMPT.json"
+          else
+            rm -f "$api/attempt-$GITHUB_RUN_ATTEMPT.partial"
+            : > "$api/attempt-$GITHUB_RUN_ATTEMPT.failed"
+          fi
+      - name: Require the package and every Cursor App canary cell to pass
         shell: bash
         env:
           PACKAGE_RESULT: ${{ needs.package.result }}
           CURSOR_RESULT: ${{ needs.cursor-app.result }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
           printf 'Package: **%s**\n\nCursor App Linux/macOS/Windows matrix: **%s**.\n\nUbuntu 24.04, macOS 15 and Windows 2025, baseline plus the pinned accepted release (pull requests) or official latest (compatibility monitor and release acceptance) on Node 24 and Linux baseline on Node 22. Eleven native App runs per cell cover repeated-prompt follow-up, cross-workspace isolation, App restart/resume, explicit Skill Search/Add, Shell denial, pending-Shell interruption and same-session recovery. A real foreground Hook also delegates a Repo Memory job through native Task: the managed child inherits model selection, claims the job and finishes without a bundle, requiring artifact_validation_failed, no published bundle, exited lease guard and no child automatic Add. Nine completed foreground turns produce exactly nine automatic Adds; the two explicit Skill operations bring the total Memory requests to eleven. Scripted tool requests do not validate model-driven Skill selection or successful Repo Memory generation. macOS and Windows use signature-verified Apps, isolated homes and local fixtures on fresh GitHub-hosted runners, without an additional Seatbelt or WFP prerequisite. Chromium sandboxing remains enabled. This matrix does not validate real login, OS credential-store isolation, hosted models or full functional coverage.\n' "$PACKAGE_RESULT" "$CURSOR_RESULT" >> "$GITHUB_STEP_SUMMARY"
           printf '\nEvery cell also requires the isolated MemoraX package lifecycle check: fresh/repeat setup, uninstall/reinstall, real previous-version upgrade, download and replacement failure recovery, saved account/configuration retention, and four setup interruption stages: after-config-write, before-backend-start, after-backend-start, saved-account-key-cancel. The setup checkpoints use a real PTY, the existing Backend lock and a test-only Node child gate; retries require no account input and verify complete Cursor integration plus a local saved-account Search. This does not simulate power loss or start the Cursor App.\n' >> "$GITHUB_STEP_SUMMARY"
-          if [[ "$PACKAGE_RESULT" != success || "$CURSOR_RESULT" != success ]]; then
-            echo '::error::The package and Cursor App canary must both succeed. Failed, cancelled or skipped dependencies do not pass this check.'
+          if [[ "$PACKAGE_RESULT" != success ]]; then
+            echo '::error::The package job must succeed. Failed, cancelled or skipped dependencies do not pass this check.'
             exit 1
           fi
+          # The cells decide the compatibility monitor; every other run still requires the entire matrix to succeed.
+          node scripts/ci/shared/client-result.mjs decide --client cursor --needs "$NEEDS_JSON" --api-dir "$RUNNER_TEMP/client-api" \
+            --output "$RUNNER_TEMP/client-result/client-result-cursor-attempt$GITHUB_RUN_ATTEMPT.json" --github-summary "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: client-result-cursor-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/client-result/client-result-cursor-attempt${{ github.run_attempt }}.json
+          if-no-files-found: warn
+          retention-days: 30
 
   workbuddy-result:
     # Only pull request runs report the formal result name, and a pull request that does not select WorkBuddy skips it;
@@ -1226,40 +1370,102 @@ jobs:
     if: always() && (needs.scope.outputs.workbuddy == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance' || inputs.mode == 'workbuddy-download-diagnostic')
     needs: [scope, package, workbuddy-releases, workbuddy-native]
     runs-on: ubuntu-24.04
-    timeout-minutes: 2
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
     steps:
-      - name: Require the package and entire WorkBuddy matrix to succeed
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Read this attempt's jobs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The listing is written only after every page was read; a failed query leaves a marker, never a listing.
+          api="$RUNNER_TEMP/client-api"
+          mkdir -p "$api"
+          if gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
+            > "$api/attempt-$GITHUB_RUN_ATTEMPT.partial"; then
+            mv "$api/attempt-$GITHUB_RUN_ATTEMPT.partial" "$api/attempt-$GITHUB_RUN_ATTEMPT.json"
+          else
+            rm -f "$api/attempt-$GITHUB_RUN_ATTEMPT.partial"
+            : > "$api/attempt-$GITHUB_RUN_ATTEMPT.failed"
+          fi
+      - name: Require the package, release resolution and every WorkBuddy cell to pass
         shell: bash
         env:
           PACKAGE_RESULT: ${{ needs.package.result }}
           RELEASES_RESULT: ${{ needs.workbuddy-releases.result }}
           WORKBUDDY_RESULT: ${{ needs.workbuddy-native.result }}
           WORKBUDDY_COVERAGE: ${{ needs.workbuddy-releases.outputs.coverage }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
           printf 'Package: **%s**\n\nWorkBuddy releases: **%s**\n\nWorkBuddy matrix: **%s**\n\n%s\n\nThe two explicit runtime interrupt cases remain separate strict manual diagnostics.\n' "$PACKAGE_RESULT" "$RELEASES_RESULT" "$WORKBUDDY_RESULT" "${WORKBUDDY_COVERAGE:-Coverage unavailable.}" >> "$GITHUB_STEP_SUMMARY"
-          if [[ "$PACKAGE_RESULT" != success || "$RELEASES_RESULT" != success || "$WORKBUDDY_RESULT" != success ]]; then
-            echo '::error::The package, release resolution and entire WorkBuddy matrix must succeed. Failed, cancelled or skipped dependencies do not pass this check.'
+          if [[ "$PACKAGE_RESULT" != success || "$RELEASES_RESULT" != success ]]; then
+            echo '::error::The package and release resolution must succeed. Failed, cancelled or skipped dependencies do not pass this check.'
             exit 1
           fi
           if [[ -z "$WORKBUDDY_COVERAGE" ]]; then
             echo '::error::WorkBuddy release coverage is missing.'
             exit 1
           fi
+          # The cells decide the compatibility monitor; every other run still requires the entire matrix to succeed.
+          node scripts/ci/shared/client-result.mjs decide --client workbuddy --needs "$NEEDS_JSON" --api-dir "$RUNNER_TEMP/client-api" \
+            --output "$RUNNER_TEMP/client-result/client-result-workbuddy-attempt$GITHUB_RUN_ATTEMPT.json" --github-summary "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: client-result-workbuddy-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/client-result/client-result-workbuddy-attempt${{ github.run_attempt }}.json
+          if-no-files-found: warn
+          retention-days: 30
 
   functional-result:
     name: ${{ github.event_name == 'pull_request' && 'Codex functional result' || github.event_name == 'workflow_dispatch' && inputs.mode == 'provider-only' && 'Codex provider-only result' || format('Codex functional result ({0})', github.event_name == 'push' && 'main push' || github.event_name == 'schedule' && 'compatibility monitor' || inputs.mode) }}
     if: always() && (needs.scope.outputs.codex == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance' || inputs.mode == 'provider-only')
     needs: [scope, package, install, provider]
     runs-on: ubuntu-24.04
-    timeout-minutes: 2
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
     steps:
-      - name: Require every job for the requested scope to succeed
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Read this attempt's jobs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The listing is written only after every page was read; a failed query leaves a marker, never a listing.
+          api="$RUNNER_TEMP/client-api"
+          mkdir -p "$api"
+          if gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
+            > "$api/attempt-$GITHUB_RUN_ATTEMPT.partial"; then
+            mv "$api/attempt-$GITHUB_RUN_ATTEMPT.partial" "$api/attempt-$GITHUB_RUN_ATTEMPT.json"
+          else
+            rm -f "$api/attempt-$GITHUB_RUN_ATTEMPT.partial"
+            : > "$api/attempt-$GITHUB_RUN_ATTEMPT.failed"
+          fi
+      - name: Require every job for the requested scope to pass
         shell: bash
         env:
           PACKAGE_RESULT: ${{ needs.package.result }}
           INSTALL_RESULT: ${{ needs.install.result }}
           PROVIDER_RESULT: ${{ needs.provider.result }}
           PROVIDER_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'provider-only' }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
           if [[ "$PROVIDER_ONLY" == true ]]; then
             printf 'Provider-only check: **%s**. This run does not validate the functional matrix.\n' "$PROVIDER_RESULT" >> "$GITHUB_STEP_SUMMARY"
@@ -1267,10 +1473,20 @@ jobs:
             exit
           fi
           printf 'Package: **%s**\n\nCodex matrix: **%s**\n' "$PACKAGE_RESULT" "$INSTALL_RESULT" >> "$GITHUB_STEP_SUMMARY"
-          if [[ "$PACKAGE_RESULT" != success || "$INSTALL_RESULT" != success ]]; then
-            echo '::error::All package and Codex matrix jobs must succeed. Failed, cancelled or skipped dependencies do not pass this check.'
+          if [[ "$PACKAGE_RESULT" != success ]]; then
+            echo '::error::The package job must succeed. Failed, cancelled or skipped dependencies do not pass this check.'
             exit 1
           fi
+          # The cells decide the compatibility monitor; every other run still requires the entire matrix to succeed.
+          node scripts/ci/shared/client-result.mjs decide --client codex --needs "$NEEDS_JSON" --api-dir "$RUNNER_TEMP/client-api" \
+            --output "$RUNNER_TEMP/client-result/client-result-codex-attempt$GITHUB_RUN_ATTEMPT.json" --github-summary "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always() && inputs.mode != 'provider-only'
+        with:
+          name: client-result-codex-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/client-result/client-result-codex-attempt${{ github.run_attempt }}.json
+          if-no-files-found: warn
+          retention-days: 30
 
   pr-acceptance:
     # The pull request merge gate. A client the scope does not select is reported as not validated, never as passed.

@@ -95,7 +95,7 @@ test("each Node major is pinned to one exact release, and .node-version names th
 test("every setup-node installs a pinned Node release", async () => {
   const ci = (await readFile(new URL(".github/workflows/ci.yml", ROOT), "utf8")).replaceAll("\r\n", "\n");
   const pinned = (node) => `        with:\n          ${node}\n          package-manager-cache: false\n`;
-  for (const [source, matrix, file] of [[workflow, 6, 7], [ci, 0, 2]]) {
+  for (const [source, matrix, file] of [[workflow, 6, 13], [ci, 0, 2]]) {
     const blocks = source.split(/^      - uses: actions\/setup-node@\S+\n/m).slice(1).map((step) => step.match(/^(?: {8}.*\n)*/)[0]);
     assert.equal(blocks.filter((block) => block === pinned("node-version: ${{ matrix.nodeVersion }}")).length, matrix);
     assert.equal(blocks.filter((block) => block === pinned("node-version-file: .node-version")).length, file);

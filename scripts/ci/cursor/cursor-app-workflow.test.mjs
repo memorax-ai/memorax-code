@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { runInNewContext } from "node:vm";
 import { pinNodeVersions, readNodeVersions } from "../shared/client-acceptance.mjs";
 import { acceptedMatrix, baselineRelease, validateLinuxRelease } from "./cursor-app-release.mjs";
@@ -258,13 +259,16 @@ test("workflow entrypoints preserve platform selection, quoted inputs and every 
 test("Cursor App summary fails every non-success dependency", { skip: process.platform === "win32" }, async (t) => {
   const root = await mkdtemp(join(tmpdir(), "cursor-app-summary-"));
   t.after(() => rm(root, { recursive: true, force: true }));
-  const run = script("cursor-app-result", "Require the package and Cursor App canary to succeed");
+  const run = script("cursor-app-result", "Require the package and every Cursor App canary cell to pass");
   for (const packageResult of ["success", "failure", "cancelled", "skipped"]) {
     for (const cursorResult of ["success", "failure", "cancelled", "skipped"]) {
       const summary = join(root, `${packageResult}-${cursorResult}.md`);
+      // Outside the compatibility monitor the cell classification keeps the canary's result.
       const actual = spawnSync("/bin/bash", ["-e", "-o", "pipefail", "-c", run], {
-        cwd: root, encoding: "utf8", timeout: 5_000,
-        env: { PATH: "/usr/bin:/bin", HOME: root, GITHUB_STEP_SUMMARY: summary,
+        cwd: fileURLToPath(new URL("../../../", import.meta.url)), encoding: "utf8", timeout: 5_000,
+        env: { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: root, RUNNER_TEMP: root, GITHUB_STEP_SUMMARY: summary,
+          GITHUB_EVENT_NAME: "pull_request", GITHUB_RUN_ID: "1", GITHUB_RUN_ATTEMPT: "1",
+          NEEDS_JSON: JSON.stringify({ package: { result: packageResult }, "cursor-app": { result: cursorResult } }),
           PACKAGE_RESULT: packageResult, CURSOR_RESULT: cursorResult },
       });
       assert.ifError(actual.error);
