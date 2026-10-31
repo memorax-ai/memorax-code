@@ -34,7 +34,7 @@ for (const [id, client, version] of [["install", "codex", "codex"], ["opencode",
   ["codebuddy", "codebuddy", "codebuddy"]]) {
   test(`${client} jobs record inputs, keep evidence outside the runtime and export it without changing the outcome`, () => {
     const list = steps(id);
-    const download = step(id, (item) => item.startsWith("uses: actions/download-artifact@v4"));
+    const download = step(id, (item) => item.startsWith("uses: actions/download-artifact@v8"));
     assert.match(download, /^          name: \$\{\{ needs\.package\.outputs\.package-artifact-name \}\}$/m);
     const inputs = step(id, (item) => item.startsWith("name: Record native test inputs\n"));
     assert.match(inputs, /^        id: record-inputs$/m);
@@ -93,14 +93,14 @@ for (const [id, client, version] of [["install", "codex", "codex"], ["opencode",
 }
 
 test("every uploaded artifact is attempt-qualified and every package reader uses the package job outputs", () => {
-  const uploads = source.split("uses: actions/upload-artifact@v4\n").slice(1).map((item) => item.split("\n      - ")[0]);
+  const uploads = source.split("uses: actions/upload-artifact@v7\n").slice(1).map((item) => item.split("\n      - ")[0]);
   // Package, Cursor releases and input manifest; four clients' evidence; two Cursor reports; WorkBuddy download
   // evidence and version report; the six client result records; the release acceptance record; the acceptance refresh
   // proposal.
   assert.equal(uploads.length, 19);
   for (const upload of uploads) assert.match(upload, /^          name: .*\$\{\{ github\.run_attempt \}\}$/m);
   assert.doesNotMatch(source, /overwrite:/);
-  const downloads = source.split("uses: actions/download-artifact@v4\n").slice(1).map((item) => item.split("\n      - ")[0]);
+  const downloads = source.split("uses: actions/download-artifact@v8\n").slice(1).map((item) => item.split("\n      - ")[0]);
   const packageReaders = downloads.filter((item) => item.includes("path: dist/npm/tarballs"));
   assert.equal(packageReaders.length, 7);
   for (const item of packageReaders) assert.match(item, /^          name: \$\{\{ needs\.package\.outputs\.package-artifact-name \}\}$/m);
