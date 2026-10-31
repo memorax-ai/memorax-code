@@ -158,7 +158,7 @@ const hostOf = (url) => {
   try { return new URL(url).host; } catch { return null; }
 };
 
-function matrixRows(value) {
+export function matrixRows(value) {
   const include = parseJson(value ?? "")?.include;
   return Array.isArray(include) ? include : null;
 }
@@ -200,7 +200,7 @@ function verifyPackage({ outputs, candidate, packageDir, artifact, runId }, fail
 }
 
 // The job name the workflow gives each WorkBuddy cell; the attempts API identifies cells only by name.
-const workbuddyJobName = (row) => `WorkBuddy native (${row.os}, Node ${row.node}, ${row.release?.channel}, ${row.release?.desktopVersion})`;
+export const workbuddyJobName = (row) => `WorkBuddy native (${row.os}, Node ${row.node}, ${row.release?.channel}, ${row.release?.desktopVersion})`;
 
 const TIMESTAMP = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
 
@@ -375,9 +375,9 @@ function parseOptions(args) {
   return options;
 }
 
-// Read one attempt's job listing as the release result wrote it. A failed query, a missing, empty, unreadable or partial
+// Read one attempt's job listing as a result job wrote it. A failed query, a missing, empty, unreadable or partial
 // listing, or a listing of another run or attempt is reported as such and never read as an attempt without failures.
-function readListing(apiDir, attempt, runId) {
+export function readListing(apiDir, attempt, runId) {
   const path = join(apiDir ?? "", `attempt-${attempt}.json`);
   if (apiDir && existsSync(join(apiDir, `attempt-${attempt}.failed`))) return { status: "QUERY_FAILED", jobs: null };
   if (!apiDir || !existsSync(path)) return { status: "MISSING", jobs: null };

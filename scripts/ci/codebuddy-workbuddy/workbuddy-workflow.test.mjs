@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { runInNewContext } from "node:vm";
 import test from "node:test";
 import { baselineRelease } from "./workbuddy-release-matrix.mjs";
@@ -304,7 +305,9 @@ for (const scenario of ["baseline", "latest", "baseline runtime mismatch", "prod
 }
 
 test("WorkBuddy aggregate reports actual coverage and rejects unsuccessful dependencies or missing coverage", { skip: process.platform === "win32" }, async () => {
-  const body = job("workbuddy-result").match(/^        run: \|\n([\s\S]*)$/m)?.[1];
+  const step = job("workbuddy-result").split("      - name: Require the package, release resolution and every WorkBuddy cell to pass\n");
+  assert.equal(step.length, 2);
+  const body = step[1].split("\n      - ")[0].match(/^        run: \|\n([\s\S]*)$/m)?.[1];
   assert.ok(body);
   const script = body.split("\n").map((line) => line.slice(10)).join("\n");
   const root = await mkdtemp(join(tmpdir(), "workbuddy-workflow-"));
@@ -318,10 +321,14 @@ test("WorkBuddy aggregate reports actual coverage and rejects unsuccessful depen
       for (const coverage of ["All official latest releases resolved.",
         "Coverage degraded: Windows latest 5.7.6.40409493 not tested (winget manifest missing); selected 5.6.2.39298511.", ""]) {
         await writeFile(summaryPath, "");
+        // Outside the compatibility monitor the cell classification keeps the matrix result.
         const result = spawnSync("/bin/bash", ["-e", "-o", "pipefail", "-c", script], {
-          cwd: root, encoding: "utf8", timeout: 5_000,
-          env: { PATH: "/usr/bin:/bin", HOME: root, GITHUB_STEP_SUMMARY: summaryPath, PACKAGE_RESULT: packageResult,
-            RELEASES_RESULT: releasesResult, WORKBUDDY_RESULT: nativeResult, WORKBUDDY_COVERAGE: coverage },
+          cwd: fileURLToPath(new URL("../../../", import.meta.url)), encoding: "utf8", timeout: 5_000,
+          env: { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: root, RUNNER_TEMP: root, GITHUB_STEP_SUMMARY: summaryPath,
+            GITHUB_EVENT_NAME: "pull_request", GITHUB_RUN_ID: "1", GITHUB_RUN_ATTEMPT: "1",
+            NEEDS_JSON: JSON.stringify({ package: { result: packageResult }, "workbuddy-releases": { result: releasesResult },
+              "workbuddy-native": { result: nativeResult } }),
+            PACKAGE_RESULT: packageResult, RELEASES_RESULT: releasesResult, WORKBUDDY_RESULT: nativeResult, WORKBUDDY_COVERAGE: coverage },
         });
         assert.ifError(result.error);
         const passes = [packageResult, releasesResult, nativeResult].every((item) => item === "success") && coverage;

@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readdir, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test from "node:test";
+import { fileURLToPath } from "node:url";
 import { runInNewContext } from "node:vm";
+import { decide, render } from "./client-result.mjs";
 import { CLIENTS } from "./native-scope.mjs";
 
 const read = async (name) => (await readFile(new URL(`../../../.github/workflows/${name}`, import.meta.url), "utf8"))
@@ -108,6 +110,7 @@ function context({ event, ref, inputs = {}, payload = {}, sha = "0".repeat(40), 
     github: { event_name: event, ref, event: payload, sha, run_id: runId }, inputs, needs,
     always: () => true, cancelled: () => false, failure: () => false,
     format: (pattern, ...values) => pattern.replace(/\{(\d+)\}/g, (_, index) => String(values[index])),
+    toJSON: (value) => JSON.stringify(value, null, 2),
   };
 }
 
@@ -214,15 +217,21 @@ test("only pull request runs report the formal check names, each from one job th
   }
 });
 
-// Run a formal result's only step against these dependency results, as GitHub would: an unset output reads as ''.
+const REPOSITORY = fileURLToPath(new URL("../../../", import.meta.url));
+
+// Run a formal result's decision step from the repository against these dependency results, as GitHub would: an unset
+// output reads as ''. A client result classifies the cells of attempt 1 of the scenario's run, listed in RUNNER_TEMP.
 function runResult(root, job, scenario, needs, label) {
-  const [step] = job.text.split("\n      - ").slice(1);
+  const steps = job.text.split("\n      - ").slice(1).filter((item) => item.startsWith("name: Require "));
+  assert.equal(steps.length, 1, job.id);
+  const [step] = steps;
   const env = [...step.matchAll(/^          ([A-Z_]+): \$\{\{ (.+) \}\}$/gm)];
   const script = step.split("\n        run: |\n")[1].split("\n").map((line) => line.slice(10)).join("\n");
   const summary = join(root, `${job.id}-${label}.md`);
   const actual = spawnSync("/bin/bash", ["-e", "-o", "pipefail", "-c", script], {
-    cwd: root, encoding: "utf8", timeout: 5_000,
-    env: { PATH: "/usr/bin:/bin", HOME: root, GITHUB_STEP_SUMMARY: summary,
+    cwd: REPOSITORY, encoding: "utf8", timeout: 5_000,
+    env: { PATH: `${dirname(process.execPath)}:/usr/bin:/bin`, HOME: root, RUNNER_TEMP: root, GITHUB_STEP_SUMMARY: summary,
+      GITHUB_EVENT_NAME: scenario.event, GITHUB_RUN_ID: String(scenario.runId ?? 1), GITHUB_RUN_ATTEMPT: "1",
       ...Object.fromEntries(env.map(([, name, expression]) => [name, String(evaluate(expression, context(scenario, needs)) ?? "")])) },
   });
   assert.ifError(actual.error);
@@ -236,7 +245,11 @@ test("every formal result reports after failures and passes only when every exec
   const planned = plan(workflows.native, scenario);
   for (const job of jobs(workflows.native).filter((item) => FORMAL_CHECKS.native[item.id])) {
     assert.match(job.condition, /^always\(\) && /, job.id);
-    assert.equal(job.text.split("\n      - ").length, 2, job.id);
+    // PR acceptance has one step; a client result reads this attempt's jobs, decides and uploads the record it wrote.
+    const heads = job.text.split("\n      - ").slice(1).map((step) => step.split("\n")[0]);
+    if (job.id === "pr-acceptance") assert.equal(heads.length, 1, job.id);
+    else assert.deepEqual(heads.map((head) => head.replace(/^name: Require .+$/, "name: Require")), ["uses: actions/checkout@v7",
+      "uses: actions/setup-node@v7", "name: Read this attempt's jobs", "name: Require", "uses: actions/upload-artifact@v4"], job.id);
     // Dependencies that a pull request run skips by design, such as the provider check, keep that result. A client
     // result needs the scope only for its selection; PR acceptance also requires the scope to succeed.
     const executed = job.needs.filter((id) => planned.get(id).runs && (id !== "scope" || job.id === "pr-acceptance"));
@@ -430,6 +443,87 @@ test("the release result reads every attempt and marks a failed read instead of 
   assert.equal(await readFile(join(api, "attempt-3.json"), "utf8"), '[{"total_count":1,"jobs":[{"id":1}]}]');
 });
 
+test("each client result reads only this attempt's jobs, and a provider-only run uploads no record", { skip: process.platform === "win32" }, async (t) => {
+  const results = jobs(workflows.native).filter((job) => Object.values(CLIENT_RESULTS).includes(job.id));
+  assert.equal(results.length, 6);
+  for (const job of results) {
+    assert.match(job.text, /^    timeout-minutes: 5\n    permissions:\n      contents: read\n      actions: read\n    steps:\n/m, job.id);
+  }
+  // Every client result checks out the repository without credentials, sets up Node and reads the listing alike.
+  const shared = new Set(results.map((job) => job.text.split("\n      - ").slice(1, 4).join("\n      - ")));
+  assert.equal(shared.size, 1);
+  const [checkout, setup, listing] = [...shared][0].split("\n      - ");
+  assert.equal(checkout, "uses: actions/checkout@v7\n        with:\n          persist-credentials: false");
+  assert.equal(setup, "uses: actions/setup-node@v7\n        with:\n          node-version-file: .node-version\n          package-manager-cache: false");
+  assert.match(listing, /^          GH_TOKEN: \$\{\{ github\.token \}\}$/m);
+  const script = listing.split("\n        run: |\n")[1].split("\n").map((line) => line.slice(10)).join("\n");
+  const root = await mkdtemp(join(tmpdir(), "client-api-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  for (const [status, file, content] of [[0, "attempt-3.json", '[{"total_count":1,"jobs":[{"id":1}]}]'], [1, "attempt-3.failed", ""]]) {
+    const temp = await mkdtemp(join(root, "runner-"));
+    // A stand-in for gh that records its arguments and writes a page even when the query fails.
+    const gh = `gh() { printf '%s\\n' "$@" > "$RUNNER_TEMP/gh-args"; printf '[{"total_count":1,"jobs":[{"id":1}]}]'; return ${status}; }`;
+    const run = spawnSync("/bin/bash", ["-e", "-o", "pipefail", "-c", `${gh}\n${script}`], { cwd: temp, encoding: "utf8", timeout: 5_000,
+      env: { PATH: "/usr/bin:/bin", HOME: temp, RUNNER_TEMP: temp, GITHUB_REPOSITORY: "memorax-ai/memorax-code",
+        GITHUB_RUN_ID: "999", GITHUB_RUN_ATTEMPT: "3" } });
+    assert.equal(run.status, 0, run.stderr);
+    assert.deepEqual((await readFile(join(temp, "gh-args"), "utf8")).trimEnd().split("\n"),
+      ["api", "--paginate", "--slurp", "repos/memorax-ai/memorax-code/actions/runs/999/attempts/3/jobs?per_page=100"]);
+    assert.deepEqual(await readdir(join(temp, "client-api")), [file]);
+    assert.equal(await readFile(join(temp, "client-api", file), "utf8"), content);
+  }
+  // Only a provider-only run, which classifies no cell, skips the upload.
+  const plans = SCENARIOS.native.map(([label, scenario]) => [label, scenario, plan(workflows.native, scenario)]);
+  for (const job of results) {
+    const upload = job.text.split("\n      - ").find((step) => step.startsWith("uses: actions/upload-artifact@v4\n"));
+    const condition = upload.match(/^        if: (.+)$/m)?.[1];
+    assert.ok(condition, job.id);
+    for (const [label, scenario, planned] of plans.filter(([, , planned]) => planned.get(job.id).runs)) {
+      assert.equal(Boolean(evaluate(condition, context(scenario))), scenario.inputs?.mode !== "provider-only", `${job.id}: ${label}`);
+    }
+  }
+});
+
+// The real job listing and client matrices of compatibility monitor run 40853420771, attempt 1, which
+// client-result.test.mjs describes.
+const MONITOR = new URL("./fixtures/client-result/", import.meta.url);
+
+test("on the compatibility monitor each client result classifies this attempt's cells and uploads the record it wrote", { skip: process.platform === "win32" }, async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "client-results-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  await mkdir(join(root, "client-api"));
+  await copyFile(new URL("40853420771-1.json", MONITOR), join(root, "client-api", "attempt-1.json"));
+  const matrices = JSON.parse(await readFile(new URL("matrices.json", MONITOR), "utf8"))["40853420771"];
+  const scenario = { ...schedule, runId: 40853420771 };
+  const planned = needsOf(plan(workflows.native, scenario));
+  // The package and release jobs publish that run's matrices; its Codex and WorkBuddy matrices failed.
+  const needs = { ...planned,
+    package: { result: "success", outputs: { ...planned.package.outputs, ...Object.fromEntries(["codex", "opencode", "claude",
+      "codebuddy", "cursor"].map((client) => [`${client}-matrix`, JSON.stringify(matrices[client])])) } },
+    "workbuddy-releases": { result: "success", outputs: { matrix: JSON.stringify(matrices.workbuddy), coverage: "Synthetic release coverage." } },
+    install: { result: "failure", outputs: {} }, "workbuddy-native": { result: "failure", outputs: {} } };
+  const env = { GITHUB_EVENT_NAME: "schedule", GITHUB_RUN_ID: "40853420771", GITHUB_RUN_ATTEMPT: "1" };
+  for (const [client, id] of Object.entries(CLIENT_RESULTS)) {
+    const job = jobs(workflows.native).find((item) => item.id === id);
+    const jobNeeds = Object.fromEntries(job.needs.map((need) => [need, needs[need]]));
+    const { status, summary } = runResult(root, job, scenario, jobNeeds, "monitor");
+    // The step gives the classification this client's matrix, this attempt's listing and the run, and exits with its verdict.
+    const record = JSON.parse(await readFile(join(root, "client-result", `client-result-${client}-attempt1.json`), "utf8"));
+    assert.deepEqual([record.client, record.basis, record.listing, record.cells.length], [client, "cells", "COMPLETE", 7], id);
+    assert.deepEqual(record, decide({ client, needs: jobNeeds, apiDir: join(root, "client-api"), env }), id);
+    assert.equal(status, record.verdict === "PASS" ? 0 : 1, id);
+    // The step summary ends with the classification, one row per cell.
+    assert.ok((await readFile(summary, "utf8")).endsWith(render(record)), id);
+    // The upload step uploads that record under an attempt-qualified name.
+    const upload = job.text.split("\n      - ").find((step) => step.startsWith("uses: actions/upload-artifact@v4\n"));
+    const field = (key) => upload.match(new RegExp(`^          ${key}: (.+)$`, "m"))?.[1];
+    const scope = { github: { run_attempt: 1 }, runner: { temp: root } };
+    assert.equal(expand(field("name"), scope), `client-result-${client}-attempt1`, id);
+    assert.equal(expand(field("path"), scope), join(root, "client-result", `client-result-${client}-attempt1.json`), id);
+    assert.deepEqual([field("if-no-files-found"), field("retention-days")], ["warn", "30"], id);
+  }
+});
+
 function runBlocks(source) {
   const blocks = [], lines = source.split("\n");
   for (let index = 0; index < lines.length; index += 1) {
@@ -460,9 +554,10 @@ test("the scope job selects clients only for a pull request, from its merge comm
   assert.deepEqual([...new Set(gates)].sort(), [...CLIENTS].sort());
 });
 
-test("the Tests job runs these workflow contracts, the scope selection and the pinned acceptance manifest tests", () => {
+test("the Tests job runs these workflow contracts, the scope selection, the pinned acceptance manifest and the result classification tests", () => {
   const tests = jobs(workflows.ci).find((job) => job.id === "tests").text;
   assert.match(tests, /^        run: node --test scripts\/ci\/shared\/workflow-scenarios\.test\.mjs$/m);
   assert.match(tests, /^        run: node --test scripts\/ci\/shared\/native-scope\.test\.mjs$/m);
   assert.match(tests, /^        run: node --test scripts\/ci\/shared\/client-acceptance\.test\.mjs$/m);
+  assert.match(tests, /^        run: node --test scripts\/ci\/shared\/client-result\.test\.mjs$/m);
 });

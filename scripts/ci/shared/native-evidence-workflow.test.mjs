@@ -95,8 +95,8 @@ for (const [id, client, version] of [["install", "codex", "codex"], ["opencode",
 test("every uploaded artifact is attempt-qualified and every package reader uses the package job outputs", () => {
   const uploads = source.split("uses: actions/upload-artifact@v4\n").slice(1).map((item) => item.split("\n      - ")[0]);
   // Package, Cursor releases and input manifest; four clients' evidence; two Cursor reports; WorkBuddy download
-  // evidence and version report; the release acceptance record.
-  assert.equal(uploads.length, 12);
+  // evidence and version report; the six client result records; the release acceptance record.
+  assert.equal(uploads.length, 18);
   for (const upload of uploads) assert.match(upload, /^          name: .*\$\{\{ github\.run_attempt \}\}$/m);
   assert.doesNotMatch(source, /overwrite:/);
   const downloads = source.split("uses: actions/download-artifact@v4\n").slice(1).map((item) => item.split("\n      - ")[0]);
