@@ -129,8 +129,25 @@ test("WorkBuddy consumes the shared candidate package and keeps one aggregate re
   assert.match(result, /RELEASES_RESULT: \$\{\{ needs\.workbuddy-releases\.result \}\}/);
   assert.match(result, /WORKBUDDY_RESULT: \$\{\{ needs\.workbuddy-native\.result \}\}/);
   assert.match(result, /WORKBUDDY_COVERAGE: \$\{\{ needs\.workbuddy-releases\.outputs\.coverage \}\}/);
-  for (const id of ["workbuddy-releases", "workbuddy-native", "workbuddy-result"]) {
+  for (const id of ["workbuddy-releases", "workbuddy-result"]) {
     assert.doesNotMatch(job(id), /continue-on-error:/);
+  }
+});
+
+test("only the compatibility monitor lets a WorkBuddy cell marked deferred fail without failing the run", () => {
+  const native = job("workbuddy-native");
+  assert.deepEqual(native.match(/^ *continue-on-error:.*$/gm),
+    ["    continue-on-error: ${{ github.event_name == 'schedule' && matrix.release.deferred == true }}"]);
+  const expression = native.match(/^    continue-on-error: \$\{\{ (.+) \}\}$/m)[1];
+  for (const [event, mode, release, expected] of [
+    ["schedule", undefined, { deferred: true }, true],
+    ["schedule", undefined, {}, false],
+    ["workflow_dispatch", "release-acceptance", { deferred: true }, false],
+    ["workflow_dispatch", "workbuddy-download-diagnostic", { deferred: true }, false],
+    ["pull_request", undefined, {}, false],
+  ]) {
+    assert.equal(runInNewContext(expression, { github: { event_name: event }, inputs: { mode }, matrix: { release } }, { timeout: 100 }),
+      expected, `${event}, mode=${mode}, ${JSON.stringify(release)}`);
   }
 });
 

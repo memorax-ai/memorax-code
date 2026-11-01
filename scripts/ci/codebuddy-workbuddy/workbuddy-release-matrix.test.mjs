@@ -85,6 +85,38 @@ test("WorkBuddy Linux retains advisory feed hashes and deduplicates the same rel
   assert.throws(() => resolveFeed(platform, { ...feed(platform), version: newer.version }));
 });
 
+test("WorkBuddy latest marks a latest or fallback release deferred only for the version and platforms an entry defers", () => {
+  const version = "5.7.0.40000000";
+  const marked = (deferred, latest = releases(platforms), requested = {}) => buildMatrix(latest, requested, deferred).include
+    .filter((row) => row.release.deferred).map((row) => `${row.release.platform} ${row.release.channel}`);
+  assert.deepEqual(marked([]), []);
+  assert.deepEqual(marked([{ version, platforms: ["darwin-arm64", "win32-x64-user"] }]), ["darwin-arm64 latest", "win32-x64-user latest"]);
+  assert.deepEqual(marked([{ version }]), platforms.map((platform) => `${platform} latest`));
+  assert.deepEqual(marked([{ version: "5.7.0.40000001" }, { version, platforms: ["linux-x64-deb"] }]), ["linux-x64-deb latest"]);
+  // A latest release that is the baseline stays a baseline cell, whose failure is a regression.
+  assert.deepEqual(marked([{ version: baselineRelease("darwin-arm64").desktopVersion }], releases()), []);
+  const fallback = { ...releases(["win32-x64-user"])["win32-x64-user"], channel: "fallback" };
+  assert.deepEqual(marked([{ version, platforms: ["win32-x64-user"] }], { ...releases(), "win32-x64-user": fallback },
+    { "win32-x64-user": "5.8.0.40000000" }), ["win32-x64-user fallback"]);
+  for (const { release } of buildMatrix(releases(platforms), {}, [{ version }]).include) {
+    assert.deepEqual(validateRelease(release, release.platform), release);
+  }
+});
+
+test("WorkBuddy release validation keeps the deferred mark only as true on a latest or fallback release", () => {
+  const latest = { ...releases(["darwin-arm64"])["darwin-arm64"], deferred: true };
+  const fallback = { ...releases(["win32-x64-user"])["win32-x64-user"], channel: "fallback", deferred: true };
+  assert.deepEqual(validateRelease(latest, "darwin-arm64"), latest);
+  assert.deepEqual(validateRelease(fallback, "win32-x64-user"), fallback);
+  assert.equal(Object.hasOwn(validateRelease({ ...latest, deferred: undefined }, "darwin-arm64"), "deferred"), false);
+  const baseline = { ...baselineRelease("darwin-arm64"), deferred: true };
+  for (const release of [...[false, null, "true", 1].map((deferred) => ({ ...latest, deferred })),
+    { ...latest, channel: "accepted", runtimeVersion: "2.160.1" }, baseline, { ...baseline, channel: "baseline+latest" },
+    { ...baseline, channel: "baseline+accepted" }]) {
+    assert.throws(() => validateRelease(release, "darwin-arm64"), /WORKBUDDY_RELEASE_DEFERRED_INVALID/, JSON.stringify(release));
+  }
+});
+
 test("WorkBuddy release validation rejects malformed, cross-platform and untrusted descriptions", () => {
   const valid = resolveFeed("linux-x64-deb", feed("linux-x64-deb", true));
   for (const change of [{ platform: "win32-x64-user" }, { productVersion: "1.0.0" }, { desktopVersion: "5.7.0.1\ninjected" },
@@ -255,7 +287,7 @@ test("WorkBuddy discovery fails without fallback on network, JSON, or winget fai
 });
 
 function fallbackDiscovery({ versions = ["5.6.2"], selectedVersion = "5.6.2", changes = {},
-  manifestError = 404, manifestSource, feedChanges = {}, directoryError, candidateError } = {}) {
+  manifestError = 404, manifestSource, feedChanges = {}, directoryError, candidateError, deferred } = {}) {
   const sha = "1".repeat(40), calls = [];
   const baseline = baselineRelease("win32-x64-user");
   const windows = { ...feed("win32-x64-user", true), sha256hash: "", ...feedChanges };
@@ -264,7 +296,7 @@ function fallbackDiscovery({ versions = ["5.6.2"], selectedVersion = "5.6.2", ch
   const manifest = { PackageIdentifier: "Tencent.WorkBuddy", PackageVersion: selectedVersion, ManifestType: "installer",
     Installers: [{ Architecture: "x64", Scope: "user", InstallerUrl: url,
       InstallerSha256: selectedVersion === baseline.productVersion ? baseline.sha256 : "b".repeat(64) }], ...changes };
-  return { calls, run: () => resolveLatest({ parseYaml: JSON.parse, fetchText: async (url) => {
+  return { calls, run: () => resolveLatest({ parseYaml: JSON.parse, deferred, fetchText: async (url) => {
     calls.push(url);
     if (url.startsWith("https://www.workbuddy.cn/v2/update?")) {
       const platform = new URL(url).searchParams.get("platform").slice("workbuddy-".length);
@@ -310,6 +342,11 @@ test("Windows fallback selects the highest stable lower version numerically, not
   assert.equal(windows[1].release.runtimeVersion, null);
   assert.deepEqual(validateRelease(windows[1].release, "win32-x64-user"), windows[1].release);
   assert.throws(() => validateRelease({ ...releases()["darwin-arm64"], channel: "fallback" }, "darwin-arm64"));
+  // Discovery passes the manifest's deferrals on, so the selected fallback version can be marked.
+  assert.equal(windows[1].release.deferred, undefined);
+  const deferred = await fallbackDiscovery({ versions: ["5.6.2", "5.6.10"], selectedVersion: "5.6.10",
+    deferred: [{ version: "5.6.10.39000000", platforms: ["win32-x64-user"] }] }).run();
+  assert.equal(deferred.include.find((row) => row.release.channel === "fallback").release.deferred, true);
 });
 
 test("Windows fallback is limited to a missing exact manifest, never transport or invalid metadata", async () => {

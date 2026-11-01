@@ -70,6 +70,14 @@ function needsOf(id, client, result) {
   return { package: { result: "success", outputs: {} },
     [source]: { result: "success", outputs: { [output]: JSON.stringify(MATRICES[id][client]) } }, [need]: { result, outputs: {} } };
 }
+// The run's WorkBuddy matrix with these cells marked deferred, as resolve now marks a latest release that the manifest
+// defers; the fixture matrices predate the mark.
+function markDeferred(needs, names = WORKBUDDY_LATEST) {
+  const matrix = JSON.parse(needs["workbuddy-releases"].outputs.matrix);
+  for (const row of matrix.include) if (names.includes(CLIENTS.workbuddy.name(row))) row.release.deferred = true;
+  needs["workbuddy-releases"].outputs.matrix = JSON.stringify(matrix);
+  return needs;
+}
 const envOf = (id, attempt, event = MATRICES[id].event) => ({ GITHUB_RUN_ID: id, GITHUB_RUN_ATTEMPT: String(attempt), GITHUB_EVENT_NAME: event });
 const failures = (record) => Object.fromEntries(record.cells.filter((cell) => cell.class !== "passed").map((cell) => [cell.job, cell.class]));
 
@@ -211,6 +219,42 @@ test("the monitor needs its matrix output and a matrix result that the cells exp
     ["codex", "skipped", "FAIL"], ["workbuddy", "failure", "PASS"], ["workbuddy", "success", "FAIL"], ["workbuddy", "cancelled", "FAIL"]]) {
     const record = decide({ client, needs: needsOf("41037250868", client, result), apiDir, env: envOf("41037250868", 1), manifest });
     assert.deepEqual([record.verdict, record.issues], [verdict, verdict === "PASS" ? [] : [`MATRIX_RESULT_UNEXPLAINED:${result}`]], `${client} ${result}`);
+  }
+});
+
+test("on the monitor a cell marked deferred fails without failing the matrix result, and a marked cell that succeeded fails it", (t) => {
+  const root = scratch(t);
+  const manifest = manifestWith(root);
+  const [macos, windows] = WORKBUDDY_LATEST;
+  const apiDir = listing(root, "41037250868", 1);
+  const needs = (result, names) => markDeferred(needsOf("41037250868", "workbuddy", result), names);
+  const monitor = (result, { names, dir = apiDir, event } = {}) => decide({ client: "workbuddy", needs: needs(result, names), apiDir: dir,
+    env: envOf("41037250868", 1, event), manifest });
+  // Every cell that did not pass is marked, so only a successful matrix result agrees with the cells.
+  for (const [result, verdict, issues] of [["success", "PASS", []], ["failure", "FAIL", ["MATRIX_RESULT_UNEXPLAINED:failure"]],
+    ["cancelled", "FAIL", ["MATRIX_RESULT_UNEXPLAINED:cancelled"]]]) {
+    const record = monitor(result);
+    assert.deepEqual([record.verdict, failures(record), record.issues], [verdict, DEFERRED, issues], result);
+  }
+  assert.deepEqual(annotations(monitor("success")), WORKBUDDY_LATEST.map((name) => `::notice title=client-release-deferred::${name} `
+    + "concluded failure: the version is deferred in scripts/ci/shared/client-acceptance.json."));
+  // A deferred failure on an unmarked cell still fails the matrix result.
+  for (const [result, verdict, issues] of [["failure", "PASS", []], ["success", "FAIL", ["MATRIX_RESULT_UNEXPLAINED:success"]]]) {
+    const record = monitor(result, { names: [macos] });
+    assert.deepEqual([record.verdict, failures(record), record.issues], [verdict, DEFERRED, issues], `unmarked ${result}`);
+  }
+  // A marked cell that succeeded passed its deferred release or had its allowed failure reported as success.
+  const succeeded = listing(root, "41037250868", 1, { change: (jobs) => { jobs.find((job) => job.name === macos).conclusion = "success"; } });
+  const record = monitor("success", { dir: succeeded });
+  assert.deepEqual([record.verdict, failures(record), record.issues],
+    ["FAIL", { [windows]: "client-release-deferred" }, [`DEFERRED_CELL_SUCCEEDED:${macos}`]]);
+  assert.ok(annotations(record).includes(`::error title=WorkBuddy matrix cells::DEFERRED_CELL_SUCCEEDED:${macos}`));
+  // Release acceptance and every other run keep the marked cells able to fail the matrix job.
+  for (const event of ["workflow_dispatch", "pull_request"]) {
+    for (const dir of [apiDir, succeeded]) {
+      const other = monitor("failure", { dir, event });
+      assert.deepEqual([other.verdict, other.basis, other.issues], ["FAIL", "matrix-result", []], event);
+    }
   }
 });
 

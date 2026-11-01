@@ -866,6 +866,9 @@ jobs:
       matrix: ${{ fromJSON(needs.workbuddy-releases.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 35
+    # Only on the compatibility monitor may a cell marked deferred fail without failing the run; its result job still
+    # classifies the cell, and release acceptance still requires every cell to succeed.
+    continue-on-error: ${{ github.event_name == 'schedule' && matrix.release.deferred == true }}
     steps:
       - uses: actions/checkout@v7
         with:

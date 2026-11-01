@@ -3,8 +3,9 @@
 // classified by its channel and conclusion. A failed baseline or accepted version is a regression; a failed official
 // latest release, or the WorkBuddy fallback, is a client release problem, deferred while client-acceptance.json defers its
 // version for that cell. The compatibility monitor passes only when every cell passed or was deferred: a new client
-// release failure, a regression, a cell that did not complete, a missing cell and an unreadable listing all fail it. Every
-// other run still requires the entire matrix to succeed and only reports the classes.
+// release failure, a regression, a cell that did not complete, a missing cell and an unreadable listing all fail it. On
+// the monitor a WorkBuddy cell marked deferred in its matrix may fail without failing the matrix job, and such a cell that
+// succeeds fails the monitor. Every other run still requires the entire matrix to succeed and only reports the classes.
 import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -15,9 +16,9 @@ const SCHEMA = 1;
 const PASSING = ["passed", "client-release-deferred"];
 const USAGE = "Usage: client-result.mjs decide --client <id> --needs <json> --api-dir <dir> --output <file> [--github-summary <file>]";
 const rowFields = (prefix, key) => ({ name: (row) => `${prefix} ${row.channel} ${row[key]} (${row.os}, Node ${row.node})`,
-  channel: (row) => row.channel, version: (row) => row[key], platform: () => undefined });
+  channel: (row) => row.channel, version: (row) => row[key], platform: () => undefined, deferred: () => false });
 // Each client's matrix job, the job output its matrix comes from, and how the workflow names a cell and reads its channel
-// and version. Only WorkBuddy cells name a release platform.
+// and version. Only WorkBuddy cells name a release platform and can be marked deferred.
 export const CLIENTS = {
   codex: { label: "Codex matrix", need: "install", matrix: ["package", "codex-matrix"], ...rowFields("Codex", "codex") },
   opencode: { label: "OpenCode matrix", need: "opencode", matrix: ["package", "opencode-matrix"],
@@ -28,7 +29,8 @@ export const CLIENTS = {
     ...rowFields("CodeBuddy functional", "codebuddy") },
   cursor: { label: "Cursor App canary", need: "cursor-app", matrix: ["package", "cursor-matrix"], ...rowFields("Cursor App", "cursor") },
   workbuddy: { label: "WorkBuddy matrix", need: "workbuddy-native", matrix: ["workbuddy-releases", "matrix"], name: workbuddyJobName,
-    channel: (row) => row.release?.channel, version: (row) => row.release?.desktopVersion, platform: (row) => row.release?.platform },
+    channel: (row) => row.release?.channel, version: (row) => row.release?.desktopVersion, platform: (row) => row.release?.platform,
+    deferred: (row) => row.release?.deferred === true },
 };
 
 // A cell that did not complete never passes, and a failed baseline or accepted version is a regression even when it is
@@ -49,6 +51,7 @@ export const defers = (entry, version, platform) => entry.version === version
 export function decide({ client, needs, apiDir, env = process.env, manifest = MANIFEST }) {
   if (!Object.hasOwn(CLIENTS, client)) throw Object.assign(new Error("CLIENT_RESULT_CLIENT_UNKNOWN"), { code: "CLIENT_RESULT_CLIENT_UNKNOWN" });
   const spec = CLIENTS[client], issues = [];
+  const schedule = env.GITHUB_EVENT_NAME === "schedule";
   const matrixResult = needs?.[spec.need]?.result ?? "missing";
   const rows = matrixRows(needs?.[spec.matrix[0]]?.outputs?.[spec.matrix[1]]);
   if (!rows?.length) issues.push("MATRIX_MISSING");
@@ -77,11 +80,16 @@ export function decide({ client, needs, apiDir, env = process.env, manifest = MA
     return { ...cell, id, conclusion, class: classify(channel, conclusion,
       () => deferrals().some((entry) => defers(entry, version, spec.platform(row)))) };
   });
-  // GitHub's result for the matrix must agree with its cells: failure exactly when a deferred release failed.
+  // On the monitor a cell marked deferred may fail without failing GitHub's result for the matrix, which must agree with the
+  // cells: failure exactly when a deferred release failed on an unmarked cell. A marked cell that succeeded either passed
+  // its deferred release or had its allowed failure reported as success.
+  const marked = (rows ?? []).map((row) => schedule && spec.deferred(row));
   const passing = cells.length > 0 && cells.every((cell) => PASSING.includes(cell.class));
-  const deferredFailure = cells.some((cell) => cell.class === "client-release-deferred");
+  const deferredFailure = cells.some((cell, index) => cell.class === "client-release-deferred" && !marked[index]);
   if (passing && matrixResult !== (deferredFailure ? "failure" : "success")) issues.push(`MATRIX_RESULT_UNEXPLAINED:${matrixResult}`);
-  const schedule = env.GITHUB_EVENT_NAME === "schedule";
+  for (const [index, cell] of cells.entries()) {
+    if (marked[index] && cell.conclusion === "success") issues.push(`DEFERRED_CELL_SUCCEEDED:${cell.job}`);
+  }
   const pass = schedule ? passing && !issues.length : matrixResult === "success";
   return { schemaVersion: SCHEMA, client, event: env.GITHUB_EVENT_NAME ?? null,
     run: { id: env.GITHUB_RUN_ID ?? null, attempt: Number.isSafeInteger(attempt) ? attempt : null },
