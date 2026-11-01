@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { appendFile, readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
 import { pinNodeVersions, readAcceptance } from "../shared/client-acceptance.mjs";
+import { defers } from "../shared/client-result.mjs";
 
 const desktopVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const productVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
@@ -72,6 +73,11 @@ export function validateRelease(value, platform) {
   // An accepted release pins the bundled runtime its acceptance verified.
   else if (release.channel === "accepted") assert.match(release.runtimeVersion ?? "", productVersion);
   else assert.deepEqual({ ...release, channel: "baseline" }, baseline);
+  // Only a latest or fallback release can be marked deferred.
+  if (value.deferred !== undefined) {
+    assert.ok(value.deferred === true && ["latest", "fallback"].includes(release.channel), "WORKBUDDY_RELEASE_DEFERRED_INVALID");
+    release.deferred = true;
+  }
   return release;
 }
 
@@ -97,7 +103,9 @@ export function resolveFeed(platform, feed, wingetManifest) {
   return release;
 }
 
-export function buildMatrix(latestByPlatform, requestedByPlatform = {}) {
+// A latest or fallback release whose version the client acceptance manifest defers for its platform is marked deferred;
+// the compatibility monitor lets such a cell fail without failing the run.
+export function buildMatrix(latestByPlatform, requestedByPlatform = {}, deferred = []) {
   const include = [];
   for (const { platform, os, arch } of platforms) {
     const baseline = baselineRelease(platform);
@@ -112,7 +120,10 @@ export function buildMatrix(latestByPlatform, requestedByPlatform = {}) {
     const same = latest.desktopVersion === baseline.desktopVersion && latest.url === baseline.url
       && (platform === "linux-x64-deb" || latest.sha256 === baseline.sha256);
     include.push({ os, arch, node: "24", release: { ...baseline, channel: same && !fallback ? "baseline+latest" : "baseline" } });
-    if (!same) include.push({ os, arch, node: "24", release: latest });
+    if (!same) {
+      const marked = deferred.some((entry) => defers(entry, latest.desktopVersion, platform));
+      include.push({ os, arch, node: "24", release: marked ? { ...latest, deferred: true } : latest });
+    }
     if (fallback) include.at(-1).requestedDesktopVersion = requestedDesktopVersion;
   }
   include.push({ os: "ubuntu-24.04", arch: "x64", node: "20", release: baselineRelease("linux-x64-deb") });
@@ -172,7 +183,7 @@ async function fetchPublicText(url) {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-export async function resolveLatest({ fetchText = fetchPublicText, parseYaml } = {}) {
+export async function resolveLatest({ fetchText = fetchPublicText, parseYaml, deferred = [] } = {}) {
   const latest = {}, requested = {};
   for (const { platform } of platforms) {
     let stage = "FEED";
@@ -224,7 +235,7 @@ export async function resolveLatest({ fetchText = fetchPublicText, parseYaml } =
       throw error;
     }
   }
-  return buildMatrix(latest, requested);
+  return buildMatrix(latest, requested, deferred);
 }
 
 export function parseWingetManifest(source, parseDocument) {
@@ -256,9 +267,10 @@ async function main(args) {
   } else {
     assert.equal(command, "resolve");
     assert.equal(args.length, 1);
+    const { deferred = [] } = readAcceptance("workbuddy");
     // Only online resolution needs YAML. Native jobs and offline helper tests use built-ins.
     const { parseDocument } = await import(pathToFileURL(process.env.WORKBUDDY_YAML_MODULE).href);
-    matrix = await resolveLatest({ parseYaml: (source) => parseWingetManifest(source, parseDocument) });
+    matrix = await resolveLatest({ parseYaml: (source) => parseWingetManifest(source, parseDocument), deferred });
     coverage = coverageSummary(matrix);
   }
   if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify(matrix)}\ncoverage=${coverage}\n`);

@@ -391,7 +391,10 @@ client's baseline and official latest versions, not the pinned versions pull
 requests use, and runs every client's complete matrix, including WorkBuddy, but
 it records no release candidate. It neither gates merges nor accepts a release:
 a failure shows that a client release, platform, or service changed, or that
-`main` regressed for a client that no recent pull request selected. After the
+`main` regressed for a client that no recent pull request selected. A WorkBuddy
+cell whose release is deferred, as described below, still runs and keeps its
+evidence, but unlike in release acceptance its failure does not fail the run;
+the WorkBuddy result job lists it with a notice. After the
 result jobs, its `Client acceptance refresh (compatibility monitor)` job
 proposes the [acceptance update](#updating-accepted-versions) that the attempt
 supports and uploads it as `client-acceptance-refresh-attempt<N>`; it never
@@ -418,8 +421,9 @@ the entire-matrix requirement that each client section describes, a client's
 result passes only when every cell succeeded or was deferred, and each deferred
 cell leaves a notice. A regression, a new client release failure, a cell that
 did not complete (cancelled, timed out, or skipped), a cell missing from the
-listing or listed twice, an unreadable listing, a missing matrix, or a matrix
-result that the cells do not explain fails it. A deferred cell still failed, so
+listing or listed twice, an unreadable listing, a missing matrix, a matrix
+result that the cells do not explain, or a deferred WorkBuddy cell that
+succeeded fails it. A deferred cell still failed, so
 a passing result does not make its version a candidate for an acceptance
 update. Every other run, except a provider-only one, reports the same classes
 but still requires the entire matrix to succeed. The job summary lists each
