@@ -249,7 +249,7 @@ test("every formal result reports after failures and passes only when every exec
     const heads = job.text.split("\n      - ").slice(1).map((step) => step.split("\n")[0]);
     if (job.id === "pr-acceptance") assert.equal(heads.length, 1, job.id);
     else assert.deepEqual(heads.map((head) => head.replace(/^name: Require .+$/, "name: Require")), ["uses: actions/checkout@v7",
-      "uses: actions/setup-node@v7", "name: Read this attempt's jobs", "name: Require", "uses: actions/upload-artifact@v4"], job.id);
+      "uses: actions/setup-node@v7", "name: Read this attempt's jobs", "name: Require", "uses: actions/upload-artifact@v7"], job.id);
     // Dependencies that a pull request run skips by design, such as the provider check, keep that result. A client
     // result needs the scope only for its selection; PR acceptance also requires the scope to succeed.
     const executed = job.needs.filter((id) => planned.get(id).runs && (id !== "scope" || job.id === "pr-acceptance"));
@@ -475,7 +475,7 @@ test("each client result reads only this attempt's jobs, and a provider-only run
   // Only a provider-only run, which classifies no cell, skips the upload.
   const plans = SCENARIOS.native.map(([label, scenario]) => [label, scenario, plan(workflows.native, scenario)]);
   for (const job of results) {
-    const upload = job.text.split("\n      - ").find((step) => step.startsWith("uses: actions/upload-artifact@v4\n"));
+    const upload = job.text.split("\n      - ").find((step) => step.startsWith("uses: actions/upload-artifact@v7\n"));
     const condition = upload.match(/^        if: (.+)$/m)?.[1];
     assert.ok(condition, job.id);
     for (const [label, scenario, planned] of plans.filter(([, , planned]) => planned.get(job.id).runs)) {
@@ -515,7 +515,7 @@ test("on the compatibility monitor each client result classifies this attempt's 
     // The step summary ends with the classification, one row per cell.
     assert.ok((await readFile(summary, "utf8")).endsWith(render(record)), id);
     // The upload step uploads that record under an attempt-qualified name.
-    const upload = job.text.split("\n      - ").find((step) => step.startsWith("uses: actions/upload-artifact@v4\n"));
+    const upload = job.text.split("\n      - ").find((step) => step.startsWith("uses: actions/upload-artifact@v7\n"));
     const field = (key) => upload.match(new RegExp(`^          ${key}: (.+)$`, "m"))?.[1];
     const scope = { github: { run_attempt: 1 }, runner: { temp: root } };
     assert.equal(expand(field("name"), scope), `client-result-${client}-attempt1`, id);

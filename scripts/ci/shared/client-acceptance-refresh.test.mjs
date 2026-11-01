@@ -374,16 +374,16 @@ test("only the compatibility monitor runs the refresh, on this attempt's artifac
   const steps = job.split("\n      - ").slice(1).map((step) => ({ uses: step.match(/^uses: (\S+)/)?.[1],
     ...Object.fromEntries([...step.matchAll(/^ {8,10}([A-Za-z_-]+): (.+)$/gm)].map(([, key, value]) => [key, value])) }));
   const temp = "${{ runner.temp }}/acceptance-refresh-inputs";
-  const downloads = steps.filter((step) => step.uses === "actions/download-artifact@v4");
+  const downloads = steps.filter((step) => step.uses === "actions/download-artifact@v8");
   assert.deepEqual(downloads, [
     { pattern: "client-result-*-attempt${{ github.run_attempt }}", path: `${temp}/client-result`, "merge-multiple": "true" },
     { name: "native-client-inputs-attempt${{ github.run_attempt }}", path: `${temp}/native-client-inputs` },
     { name: "cursor-app-releases-attempt${{ github.run_attempt }}", path: `${temp}/cursor-app-releases` },
     { pattern: "cursor-app-*-latest-*-report-attempt${{ github.run_attempt }}", path: `${temp}/cursor-app-reports` },
     { pattern: "workbuddy-report-*-attempt${{ github.run_attempt }}", path: `${temp}/workbuddy-reports` },
-  ].map((download) => ({ uses: "actions/download-artifact@v4", "continue-on-error": "true", ...download })));
+  ].map((download) => ({ uses: "actions/download-artifact@v8", "continue-on-error": "true", ...download })));
   // Every artifact the refresh read in the fixture run is uploaded under that name, and exactly one download fetches it.
-  const uploads = [...WORKFLOW.matchAll(/^ {6}- uses: actions\/upload-artifact@v4\n(?: {8}.*\n)*/gm)]
+  const uploads = [...WORKFLOW.matchAll(/^ {6}- uses: actions\/upload-artifact@v7\n(?: {8}.*\n)*/gm)]
     .map(([step]) => `${step.match(/^ {10}name: (.+)$/m)?.[1]} ${step.match(/^ {10}path: (.+)$/m)?.[1]}`);
   const fill = (template, row) => template.replaceAll("${{ github.run_attempt }}", "1")
     .replace(/\$\{\{ matrix\.([a-z.]+) \}\}/g, (_, path) => path.split(".").reduce((value, key) => value[key], row));
@@ -413,6 +413,6 @@ test("only the compatibility monitor runs the refresh, on this attempt's artifac
   assert.deepEqual(propose, { uses: undefined, shell: "bash", WORKBUDDY_MATRIX: "${{ needs.workbuddy-releases.outputs.matrix }}",
     run: 'node scripts/ci/shared/client-acceptance-refresh.mjs propose --inputs "$RUNNER_TEMP/acceptance-refresh-inputs" --output '
       + '"$RUNNER_TEMP/acceptance-refresh" --github-summary "$GITHUB_STEP_SUMMARY"' });
-  assert.deepEqual(steps.at(-1), { uses: "actions/upload-artifact@v4", if: "always()", name: "client-acceptance-refresh-attempt${{ github.run_attempt }}",
+  assert.deepEqual(steps.at(-1), { uses: "actions/upload-artifact@v7", if: "always()", name: "client-acceptance-refresh-attempt${{ github.run_attempt }}",
     path: "${{ runner.temp }}/acceptance-refresh", "if-no-files-found": "warn", "retention-days": "30" });
 });
