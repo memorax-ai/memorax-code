@@ -981,27 +981,31 @@ async function removeIsolatedDirectory() {
   try { evidence.observe("directoryRemoval", { status: "started", attempt: 1 }); } catch {}
   let failure;
   try { await rm(root, { recursive: true, force: true }); }
-  catch (error) { failure = error; throw error; }
-  finally {
-    report.directoryRemoval = { status: failure ? "failed" : "returned", attempt: 1,
-      elapsedMs: Math.max(0, Math.min(600_000, Math.floor(performance.now() - started))) };
-    if (failure) {
-      report.directoryRemoval.error = projectError(failure);
-      const path = projectPathAlias(failure.path, { root });
-      if (path) report.directoryRemoval.path = path;
-    }
-    try { evidence.observe("directoryRemoval", report.directoryRemoval); } catch {}
-    // On Windows, observe what keeps the directory busy before the same failure propagates; nothing here changes it.
-    if (failure && process.platform === "win32" && ["EBUSY", "EPERM", "ENOTEMPTY"].includes(failure.code)) {
-      await observeRemovalHolders(failure);
+  catch (error) { failure = error; }
+  report.directoryRemoval = { status: failure ? "failed" : "returned", attempt: 1,
+    elapsedMs: Math.max(0, Math.min(600_000, Math.floor(performance.now() - started))) };
+  if (failure) {
+    report.directoryRemoval.error = projectError(failure);
+    const path = projectPathAlias(failure.path, { root });
+    if (path) report.directoryRemoval.path = path;
+  }
+  try { evidence.observe("directoryRemoval", report.directoryRemoval); } catch {}
+  // On Windows, observe what keeps the directory busy. The same failure propagates unless that observation shows that a
+  // retry removed the directory while neither process query found a live process created since the smoke started.
+  if (failure && process.platform === "win32" && ["EBUSY", "EPERM", "ENOTEMPTY"].includes(failure.code)) {
+    if (await observeRemovalHolders(failure)) {
+      report.checks.push(`isolated directory removed on a retry after the first removal failed with ${failure.code}; `
+        + "neither process query found a live process created since the smoke started");
+      return;
     }
   }
+  if (failure) throw failure;
 }
 
-// Observes a busy Windows removal without changing its outcome: what remains under the failed path, which processes
-// created since the smoke started are alive, when removal stops failing, and whether Defender real-time protection is
-// on. Each item runs within what remains of one total budget; an unexpected error ends the observation, never the
-// failure it describes.
+// Observes a busy Windows removal: what remains under the failed path, which processes created since the smoke started
+// are alive, when removal stops failing, and whether Defender real-time protection is on. Each item runs within what
+// remains of one total budget; an unexpected error ends the observation, never the failure it describes. Returns the
+// probe that removed the directory when the cleanup passes on that retry, and nothing otherwise.
 async function observeRemovalHolders(failure) {
   const failedAt = performance.now(), deadline = failedAt + holderBudgetMs.total;
   const afterMs = () => Math.max(0, Math.round(performance.now() - failedAt));
@@ -1028,8 +1032,19 @@ async function observeRemovalHolders(failure) {
   } catch (error) {
     Object.assign(holders, withSystemCode({ status: "observation_failed" }, error));
   }
-  try { console.log(holderWarning(failure.code, holders)); } catch {}
+  const retry = removedOnRetry(holders);
+  if (retry) Object.assign(report.directoryRemoval, { status: "removed_on_retry", retry: { second: retry.second, afterMs: retry.afterMs } });
+  try { console.log(holderWarning(failure.code, holders, retry)); } catch {}
   try { evidence.observe("directoryRemoval", report.directoryRemoval); } catch {}
+  return retry;
+}
+
+// The cleanup passes on a retry only when a probe removed the directory and both process queries returned a result that
+// lists no live process created since the smoke started; a query that failed, timed out or never started has no total.
+// Defender's status is recorded, never a condition.
+function removedOnRetry({ processes, processesAfterProbes, probes }) {
+  if (processes?.total !== 0 || processesAfterProbes?.total !== 0) return undefined;
+  return probes?.find((probe) => probe.removed === true);
 }
 
 // Whether the failed path still exists and, for a directory, up to 20 sorted names relative to it, each projected
@@ -1113,8 +1128,14 @@ async function queryPowerShell(script, budgetMs) {
   return JSON.parse(stdout);
 }
 
-// One job-log line with how long removal stayed busy and the names of the processes the first query found alive.
-function holderWarning(code, { processes, probes }) {
+// One job-log line with how long removal stayed busy and the names of the processes the first query found alive, or,
+// when the cleanup passes on a retry, when that retry succeeded.
+function holderWarning(code, { processes, probes }, retry) {
+  if (retry) {
+    return `::warning title=Codex cleanup::Directory removal failed with ${code} and succeeded on a retry `
+      + `${(retry.afterMs / 1_000).toFixed(1)} s after the failure, so the cleanup passes. `
+      + "Neither process query found a live process created since the smoke started.";
+  }
   const last = probes?.at(-1), seconds = last && (last.afterMs / 1_000).toFixed(1);
   const busy = !last ? "was not probed again" : last.removed ? `succeeded on a probe ${seconds} s after the failure`
     : `still failed with ${last.code ?? "an unrecognized error"} ${seconds} s after the failure`;

@@ -1041,6 +1041,22 @@ process cleanup. Reports contain safe case results, versions, effective
 policies, request counts, and evidence kinds; private homes, credentials, raw
 rollouts, model output, and Backend tokens are not uploaded.
 
+On Windows, the lifecycle check (`codex-install-smoke`) removes its isolated
+directory once. If that removal fails with `EBUSY`, `EPERM`, or `ENOTEMPTY`, the
+check observes the directory within one 60-second budget: the entries that
+remain, the processes created since the check started that are alive, the same
+removal tried again 1, 2, 4, 8, and 15 seconds after the failure until one
+attempt succeeds, and whether Defender real-time protection is on. Processes are
+queried once while those retries run and once after them. The cleanup passes
+only when a retry removed the directory and both queries completed without
+finding a live process created since the check started. The report then keeps
+the first error, sets `directoryRemoval.status` to `removed_on_retry` with the
+time of that retry, and adds a check; the job log carries a `Codex cleanup`
+warning. Defender's status is recorded but is not a condition. Otherwise,
+including when a query fails, times out, or cannot start within the budget, the
+first removal failure is reported unchanged. The retry does not establish why
+the directory was busy.
+
 Manual dispatch with `mode=provider-only` runs only the existing provider
 connectivity check, skipping package and functional jobs. It uses the `test`
 environment's `LLM_BASE_URL`, `LLM_MODEL`, and `LLM_API_KEY`. PR and push events

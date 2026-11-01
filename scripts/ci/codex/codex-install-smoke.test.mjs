@@ -640,7 +640,7 @@ async function holderFixture(t, { platform = "win32", code = "EBUSY", probes = [
   let now = 0;
   const timers = [];
   const context = {
-    root, npmPrefix: "/fixture/npm", report: {}, systemCode, projectError, projectPathAlias, join, lstat, readdir,
+    root, npmPrefix: "/fixture/npm", report: { checks: [] }, systemCode, projectError, projectPathAlias, join, lstat, readdir,
     holderBudgetMs: budgets ?? { total: 60_000, entries: 2_000, processes: 2_000, defender: 2_000 },
     process: { platform, pid: 100, env: { SystemRoot: "C:\\Windows" } }, performance: { now: () => now, timeOrigin: 1_000 },
     setTimeout(done, delay) {
@@ -670,7 +670,8 @@ async function holderFixture(t, { platform = "win32", code = "EBUSY", probes = [
     },
   };
   for (const name of ["withSystemCode", "boundedObservation", "queryPowerShell", "classifyHolderProcesses", "snapshotProcesses",
-    "readDefenderStatus", "inspectRemovalPath", "probeRemoval", "holderWarning", "observeRemovalHolders", "removeIsolatedDirectory"]) {
+    "readDefenderStatus", "inspectRemovalPath", "probeRemoval", "holderWarning", "removedOnRetry", "observeRemovalHolders",
+    "removeIsolatedDirectory"]) {
     context[name] = runInNewContext(definitionOf(name), context);
   }
   return { context, root, failure, calls, queries, warnings, observations, record: () => plain(context.report.directoryRemoval) };
@@ -774,11 +775,81 @@ test("a failed, silent-error or unfinished query records only why it has no valu
       + `unknown (${expected.status}).`], label);
     assertHolderPrivate(fx);
   }
-  // A Defender status that is not a boolean is no answer either.
-  const fx = await holderFixture(t, { answers: [holderAnswer(700), holderAnswer(701),
-    { stdout: '{"realTimeProtectionEnabled":"True"}', stderr: "" }] });
+});
+
+test("a busy Windows removal passes on a retry that removed it when neither process query found a live process", { timeout: 10_000 }, async (t) => {
+  const removedAt1 = [{ second: 1, afterMs: 1_000, removed: true }];
+  // Defender's status is recorded but never a condition: an answer that is not a boolean, or none, passes the same way.
+  for (const [label, code, probes, probeRecords, defender, defenderRecord] of [
+    ["EBUSY, removable at 1 s", "EBUSY", [], removedAt1, defenderAnswer(true), { realTimeProtectionEnabled: true }],
+    ["EPERM, removable at 4 s", "EPERM", ["EPERM", "EBUSY"], [{ second: 1, afterMs: 1_000, code: "EPERM" },
+      { second: 2, afterMs: 2_000, code: "EBUSY" }, { second: 4, afterMs: 4_000, removed: true }], defenderAnswer(false),
+    { realTimeProtectionEnabled: false }],
+    ["ENOTEMPTY, Defender status not a boolean", "ENOTEMPTY", [], removedAt1, { stdout: '{"realTimeProtectionEnabled":"True"}', stderr: "" },
+      { status: "observation_failed" }],
+    ["EBUSY, Defender status never returns", "EBUSY", [], removedAt1, never, { status: "timed_out" }],
+  ]) {
+    const fx = await holderFixture(t, { code, probes, answers: [holderAnswer(700), holderAnswer(701), defender],
+      budgets: { total: 60_000, entries: 2_000, processes: 2_000, defender: 50 } });
+    assert.equal(await fx.context.removeIsolatedDirectory(), undefined, label);
+    assert.deepEqual(fx.calls, Array(probeRecords.length + 1).fill([fx.root, { recursive: true, force: true }]), label);
+    const { second, afterMs } = probeRecords.at(-1);
+    // The first failure stays on record next to the retry that removed the directory.
+    const record = { ...busyRecord(code), status: "removed_on_retry", retry: { second, afterMs }, holders: { entries: remainingEntries,
+      processes: { afterMs: [0, 0], total: 0, processes: [] }, probes: probeRecords,
+      processesAfterProbes: { afterMs: [afterMs, afterMs], total: 0, processes: [] }, defender: defenderRecord } };
+    assert.deepEqual(fx.record(), record, label);
+    assert.deepEqual(fx.observations, [{ status: "started", attempt: 1 }, busyRecord(code), record], label);
+    assert.deepEqual(fx.warnings, [`::warning title=Codex cleanup::Directory removal failed with ${code} and succeeded on a retry `
+      + `${(afterMs / 1_000).toFixed(1)} s after the failure, so the cleanup passes. Neither process query found a live process `
+      + "created since the smoke started."], label);
+    assert.deepEqual(plain(fx.context.report.checks), [`isolated directory removed on a retry after the first removal failed with ${code}; `
+      + "neither process query found a live process created since the smoke started"], label);
+    assertHolderPrivate(fx);
+    // The evidence guard journals the whole passing record.
+    const directory = await mkdtemp(join(tmpdir(), "codex-holder-evidence-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const recorder = createEvidenceRecorder({ suite: "codex-install-smoke", client: "codex", directory });
+    recorder.observe("directoryRemoval", record);
+    assert.equal(recorder.finish({ testOutcome: "PASS" }), "COMPLETE", label);
+    const journal = (await readFile(join(directory, "codex-install-smoke", "journal.jsonl"), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    assert.deepEqual(journal.filter(({ kind }) => kind === "observe").map(({ value }) => value), [record], label);
+  }
+});
+
+test("a busy Windows removal keeps its first failure unless a probe removed it and both queries returned no live process", { timeout: 10_000 }, async (t) => {
+  const none = (at) => ({ afterMs: [at, at], total: 0, processes: [] }), wmiAt = (at) => ({ afterMs: [at, at], total: 1, processes: [wmiRecord] });
+  const removedAt1 = [{ second: 1, afterMs: 1_000, removed: true }], defender = { realTimeProtectionEnabled: true };
+  for (const [label, options, processes, probes, processesAfterProbes] of [
+    ["the first query finds a live process", { answers: [holderAnswer(700, wmi), holderAnswer(701), defenderAnswer(true)] },
+      wmiAt(0), removedAt1, none(1_000)],
+    ["the query after the probes finds a live process", { answers: [holderAnswer(700), holderAnswer(701, wmi), defenderAnswer(true)] },
+      none(0), removedAt1, wmiAt(1_000)],
+    ["the first query writes to stderr", { answers: [{ ...holderAnswer(700), stderr: "Get-CimInstance : " + privateText }, holderAnswer(701),
+      defenderAnswer(true)] }, { status: "observation_failed" }, removedAt1, none(1_000)],
+    ["the query after the probes never returns", { answers: [holderAnswer(700), never, defenderAnswer(true)],
+      budgets: { total: 60_000, entries: 2_000, processes: 50, defender: 2_000 } }, none(0), removedAt1, { status: "timed_out" }],
+    ["every probe stays busy", { probes: Array(5).fill("EBUSY"), answers: [holderAnswer(700), holderAnswer(701), defenderAnswer(true)] },
+      none(0), [1, 2, 4, 8, 15].map((second) => ({ second, afterMs: second * 1_000, code: "EBUSY" })), none(15_000)],
+  ]) {
+    const fx = await holderFixture(t, options);
+    await assert.rejects(fx.context.removeIsolatedDirectory(), (actual) => actual === fx.failure, label);
+    assert.deepEqual(fx.record(), { ...busyRecord("EBUSY"), holders: { entries: remainingEntries, processes, probes, processesAfterProbes,
+      defender } }, label);
+    assert.deepEqual([plain(fx.context.report.checks), fx.warnings.length], [[], 1], label);
+    assert.match(fx.warnings[0], /, and the cleanup still fails\. /, label);
+    assertHolderPrivate(fx);
+  }
+  // The first query takes what remains of the total budget after the probe removed the directory, so the second never starts.
+  const fx = await holderFixture(t, { budgets: { total: 2_500, entries: 2_000, processes: 2_000, defender: 2_000 }, answers: [async () => {
+    await new Promise((done) => fx.context.setTimeout(done, 2_500));
+    return holderAnswer(700);
+  }] });
   await assert.rejects(fx.context.removeIsolatedDirectory(), (actual) => actual === fx.failure);
-  assert.deepEqual(fx.record().holders.defender, { status: "observation_failed" });
+  assert.deepEqual(fx.record(), { ...busyRecord("EBUSY"), holders: { entries: remainingEntries,
+    processes: { afterMs: [0, 2_500], total: 0, processes: [] }, probes: removedAt1,
+    processesAfterProbes: { status: "budget_exhausted" }, defender: { status: "budget_exhausted" } } });
+  assert.deepEqual(plain(fx.context.report.checks), []);
 });
 
 test("removal keeps its single attempt and adds no observation off Windows or after an error that is not busy", async (t) => {
