@@ -246,7 +246,7 @@ jobs:
             `Cursor App baseline: **${baseline.version}**; desktop latest frozen for this run: **${latest.version}**.\n\n` +
             `${include.length} required Linux, macOS and Windows App jobs, including Linux baseline on Node 22. No version fallback.\n`);
           NODE
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: needs.scope.outputs.cursor == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance'
         with:
           name: cursor-app-releases-attempt${{ github.run_attempt }}
@@ -291,7 +291,7 @@ jobs:
           if [[ "$#" -eq 1 && -f "$1" && ! -L "$1" ]]; then
             printf 'sha256=%s\n' "$(sha256sum "$1" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         id: upload-package
         if: always() && steps.package-check.outputs.artifact-ready == 'true'
         with:
@@ -325,7 +325,7 @@ jobs:
             --package-artifact-id "$PACKAGE_ARTIFACT_ID" --package-artifact-digest "$PACKAGE_ARTIFACT_DIGEST" \
             --matrix "codex=$CODEX_MATRIX" --matrix "opencode=$OPENCODE_MATRIX" \
             --matrix "claude=$CLAUDE_MATRIX" --matrix "codebuddy=$CODEBUDDY_MATRIX" "${cursor_releases[@]}" "${client_checks[@]}"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always() && steps.package-check.outputs.artifact-ready == 'true'
         continue-on-error: true
         with:
@@ -351,7 +351,7 @@ jobs:
         with:
           node-version: ${{ matrix.nodeVersion }}
           package-manager-cache: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ needs.package.outputs.package-artifact-name }}
           path: dist/npm/tarballs
@@ -414,7 +414,7 @@ jobs:
             --channel "$CLIENT_CHANNEL" --client-version "$CLIENT_VERSION" --node "$MATRIX_NODE" \
             --test-step-outcome "$TEST_OUTCOME" --inputs-step-outcome "$INPUTS_OUTCOME" --run-attempt "$GITHUB_RUN_ATTEMPT" \
             --github-summary "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         id: upload-evidence
         if: always()
         continue-on-error: true
@@ -459,7 +459,7 @@ jobs:
         with:
           node-version: ${{ matrix.nodeVersion }}
           package-manager-cache: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ needs.package.outputs.package-artifact-name }}
           path: dist/npm/tarballs
@@ -524,7 +524,7 @@ jobs:
             --channel "$CLIENT_CHANNEL" --client-version "$CLIENT_VERSION" --node "$MATRIX_NODE" \
             --test-step-outcome "$TEST_OUTCOME" --inputs-step-outcome "$INPUTS_OUTCOME" --run-attempt "$GITHUB_RUN_ATTEMPT" \
             --github-summary "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         id: upload-evidence
         if: always()
         continue-on-error: true
@@ -569,7 +569,7 @@ jobs:
         with:
           node-version: ${{ matrix.nodeVersion }}
           package-manager-cache: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ needs.package.outputs.package-artifact-name }}
           path: dist/npm/tarballs
@@ -632,7 +632,7 @@ jobs:
             --channel "$CLIENT_CHANNEL" --client-version "$CLIENT_VERSION" --node "$MATRIX_NODE" \
             --test-step-outcome "$TEST_OUTCOME" --inputs-step-outcome "$INPUTS_OUTCOME" --run-attempt "$GITHUB_RUN_ATTEMPT" \
             --github-summary "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         id: upload-evidence
         if: always()
         continue-on-error: true
@@ -667,7 +667,7 @@ jobs:
         with:
           node-version: ${{ matrix.nodeVersion }}
           package-manager-cache: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ needs.package.outputs.package-artifact-name }}
           path: dist/npm/tarballs
@@ -730,7 +730,7 @@ jobs:
             --channel "$CLIENT_CHANNEL" --client-version "$CLIENT_VERSION" --node "$MATRIX_NODE" \
             --test-step-outcome "$TEST_OUTCOME" --inputs-step-outcome "$INPUTS_OUTCOME" --run-attempt "$GITHUB_RUN_ATTEMPT" \
             --github-summary "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         id: upload-evidence
         if: always()
         continue-on-error: true
@@ -765,11 +765,11 @@ jobs:
         with:
           node-version: ${{ matrix.nodeVersion }}
           package-manager-cache: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ needs.package.outputs.package-artifact-name }}
           path: dist/npm/tarballs
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ needs.package.outputs.cursor-releases-artifact-name }}
           path: ${{ runner.temp }}/cursor-app-releases
@@ -800,14 +800,14 @@ jobs:
           esac
           node "$entrypoint" "$1" "$RUNNER_TEMP/cursor-app-report" \
             "$RUNNER_TEMP/cursor-app-releases/cursor-app-releases.json" "$CURSOR_RELEASE" "$CURSOR_NODE"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: cursor-lifecycle-${{ matrix.os }}-${{ matrix.channel }}-node-${{ matrix.node }}-report-attempt${{ github.run_attempt }}
           path: ${{ runner.temp }}/cursor-lifecycle-report/report.json
           if-no-files-found: error
           retention-days: 30
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: cursor-app-${{ matrix.os }}-${{ matrix.channel }}-node-${{ matrix.node }}-report-attempt${{ github.run_attempt }}
@@ -874,7 +874,7 @@ jobs:
         with:
           node-version: ${{ matrix.nodeVersion }}
           package-manager-cache: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ needs.package.outputs.package-artifact-name }}
           path: dist/npm/tarballs
@@ -968,7 +968,7 @@ jobs:
             "$RUNNER_TEMP/workbuddy-release.json" > "$RUNNER_TEMP/workbuddy-bundle.json"
       - name: Retain Linux download evidence for manual diagnosis
         if: always() && runner.os == 'Linux' && github.event_name == 'workflow_dispatch' && inputs.mode == 'workbuddy-download-diagnostic'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: workbuddy-linux-download-node-${{ matrix.node }}-${{ matrix.release.channel }}-attempt${{ github.run_attempt }}
           path: |
@@ -1071,7 +1071,7 @@ jobs:
         run: |
           printf 'WorkBuddy %s native checks: **%s**.\n\n' "$RUNNER_OS" "$NATIVE_OUTCOME" >> "$GITHUB_STEP_SUMMARY"
           printf '%s\n' 'Installation, setup interruption, Memory/Skill, four permission cases and Repo Memory worker configuration checks. The two explicit runtime interrupt cases are excluded and remain separate strict manual diagnostics. General runtime interruption, desktop UI and valid Repo Memory generation are not established. This result covers only the selected verified package and current runner; the entire platform, release and Node matrix must pass for an overall result.' >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: workbuddy-report-${{ matrix.os }}-${{ matrix.release.channel }}-node-${{ matrix.node }}-attempt${{ github.run_attempt }}
@@ -1093,7 +1093,7 @@ jobs:
         with:
           node-version-file: .node-version
           package-manager-cache: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ needs.package.outputs.package-artifact-name }}
           path: dist/npm/tarballs
@@ -1188,7 +1188,7 @@ jobs:
           # The cells decide the compatibility monitor; every other run still requires the entire matrix to succeed.
           node scripts/ci/shared/client-result.mjs decide --client opencode --needs "$NEEDS_JSON" --api-dir "$RUNNER_TEMP/client-api" \
             --output "$RUNNER_TEMP/client-result/client-result-opencode-attempt$GITHUB_RUN_ATTEMPT.json" --github-summary "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: client-result-opencode-attempt${{ github.run_attempt }}
@@ -1243,7 +1243,7 @@ jobs:
           # The cells decide the compatibility monitor; every other run still requires the entire matrix to succeed.
           node scripts/ci/shared/client-result.mjs decide --client claude --needs "$NEEDS_JSON" --api-dir "$RUNNER_TEMP/client-api" \
             --output "$RUNNER_TEMP/client-result/client-result-claude-attempt$GITHUB_RUN_ATTEMPT.json" --github-summary "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: client-result-claude-attempt${{ github.run_attempt }}
@@ -1298,7 +1298,7 @@ jobs:
           # The cells decide the compatibility monitor; every other run still requires the entire matrix to succeed.
           node scripts/ci/shared/client-result.mjs decide --client codebuddy --needs "$NEEDS_JSON" --api-dir "$RUNNER_TEMP/client-api" \
             --output "$RUNNER_TEMP/client-result/client-result-codebuddy-attempt$GITHUB_RUN_ATTEMPT.json" --github-summary "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: client-result-codebuddy-attempt${{ github.run_attempt }}
@@ -1354,7 +1354,7 @@ jobs:
           # The cells decide the compatibility monitor; every other run still requires the entire matrix to succeed.
           node scripts/ci/shared/client-result.mjs decide --client cursor --needs "$NEEDS_JSON" --api-dir "$RUNNER_TEMP/client-api" \
             --output "$RUNNER_TEMP/client-result/client-result-cursor-attempt$GITHUB_RUN_ATTEMPT.json" --github-summary "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: client-result-cursor-attempt${{ github.run_attempt }}
@@ -1418,7 +1418,7 @@ jobs:
           # The cells decide the compatibility monitor; every other run still requires the entire matrix to succeed.
           node scripts/ci/shared/client-result.mjs decide --client workbuddy --needs "$NEEDS_JSON" --api-dir "$RUNNER_TEMP/client-api" \
             --output "$RUNNER_TEMP/client-result/client-result-workbuddy-attempt$GITHUB_RUN_ATTEMPT.json" --github-summary "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: client-result-workbuddy-attempt${{ github.run_attempt }}
@@ -1480,7 +1480,7 @@ jobs:
           # The cells decide the compatibility monitor; every other run still requires the entire matrix to succeed.
           node scripts/ci/shared/client-result.mjs decide --client codex --needs "$NEEDS_JSON" --api-dir "$RUNNER_TEMP/client-api" \
             --output "$RUNNER_TEMP/client-result/client-result-codex-attempt$GITHUB_RUN_ATTEMPT.json" --github-summary "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always() && inputs.mode != 'provider-only'
         with:
           name: client-result-codex-attempt${{ github.run_attempt }}
@@ -1560,28 +1560,28 @@ jobs:
         with:
           node-version-file: .node-version
           package-manager-cache: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           pattern: client-result-*-attempt${{ github.run_attempt }}
           path: ${{ runner.temp }}/acceptance-refresh-inputs/client-result
           merge-multiple: true
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           name: native-client-inputs-attempt${{ github.run_attempt }}
           path: ${{ runner.temp }}/acceptance-refresh-inputs/native-client-inputs
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           name: cursor-app-releases-attempt${{ github.run_attempt }}
           path: ${{ runner.temp }}/acceptance-refresh-inputs/cursor-app-releases
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           pattern: cursor-app-*-latest-*-report-attempt${{ github.run_attempt }}
           path: ${{ runner.temp }}/acceptance-refresh-inputs/cursor-app-reports
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           pattern: workbuddy-report-*-attempt${{ github.run_attempt }}
@@ -1591,7 +1591,7 @@ jobs:
         env:
           WORKBUDDY_MATRIX: ${{ needs.workbuddy-releases.outputs.matrix }}
         run: node scripts/ci/shared/client-acceptance-refresh.mjs propose --inputs "$RUNNER_TEMP/acceptance-refresh-inputs" --output "$RUNNER_TEMP/acceptance-refresh" --github-summary "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: client-acceptance-refresh-attempt${{ github.run_attempt }}
@@ -1679,13 +1679,13 @@ jobs:
           node-version-file: .node-version
           package-manager-cache: false
       # Collection failures leave evidence missing; the decision step then reports the acceptance as incomplete.
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         if: needs.package.outputs.package-artifact-id != ''
         continue-on-error: true
         with:
           artifact-ids: ${{ needs.package.outputs.package-artifact-id }}
           path: ${{ runner.temp }}/release-candidate
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         continue-on-error: true
         with:
           pattern: workbuddy-report-*
@@ -1723,7 +1723,7 @@ jobs:
           node scripts/ci/shared/release-acceptance.mjs record --package-dir "$RUNNER_TEMP/release-candidate" \
             --workbuddy-reports "$RUNNER_TEMP/workbuddy-reports" --api-dir "$RUNNER_TEMP/release-api" \
             --output "$RUNNER_TEMP/release-record/release-record.json" --github-summary "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: release-acceptance-record-attempt${{ github.run_attempt }}

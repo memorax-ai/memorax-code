@@ -81,9 +81,9 @@ test("Cursor App matrix uses the validated candidate, frozen release inventory a
   assert.match(canary, /^      fail-fast: false$/m);
   assert.match(canary, /^      matrix: \$\{\{ fromJSON\(needs\.package\.outputs\.cursor-matrix\) \}\}$/m);
   assert.match(job("package"), /^      cursor-matrix: \$\{\{ steps\.cursor-accepted\.outputs\.matrix \|\| steps\.cursor-versions\.outputs\.matrix \}\}$/m);
-  assert.match(canary, /actions\/download-artifact@v4\n        with:\n          name: \$\{\{ needs\.package\.outputs\.package-artifact-name \}\}\n          path: dist\/npm\/tarballs/);
-  assert.match(canary, /actions\/download-artifact@v4\n        with:\n          name: \$\{\{ needs\.package\.outputs\.cursor-releases-artifact-name \}\}\n          path: \$\{\{ runner\.temp \}\}\/cursor-app-releases/);
-  const uploads = canary.split("      - uses: actions/upload-artifact@v4\n");
+  assert.match(canary, /actions\/download-artifact@v8\n        with:\n          name: \$\{\{ needs\.package\.outputs\.package-artifact-name \}\}\n          path: dist\/npm\/tarballs/);
+  assert.match(canary, /actions\/download-artifact@v8\n        with:\n          name: \$\{\{ needs\.package\.outputs\.cursor-releases-artifact-name \}\}\n          path: \$\{\{ runner\.temp \}\}\/cursor-app-releases/);
+  const uploads = canary.split("      - uses: actions/upload-artifact@v7\n");
   assert.equal(uploads.length, 3);
   for (const [index, kind] of [[1, "lifecycle"], [2, "app"]]) {
     assert.match(uploads[index], /^        if: always\(\)$/m);
@@ -113,7 +113,7 @@ test("Cursor release acquisition runs once outside the matrix, pinned for a pull
   const pinned = steps.find((step) => step.startsWith("name: Freeze the pinned Cursor App acceptance releases for this pull request\n"));
   const latest = steps.find((step) => step.startsWith("name: Resolve and freeze Cursor App releases once for this run\n"));
   const upload = steps[steps.indexOf(latest) + 1];
-  assert.ok(pinned && latest && upload?.startsWith("uses: actions/upload-artifact@v4\n"));
+  assert.ok(pinned && latest && upload?.startsWith("uses: actions/upload-artifact@v7\n"));
   const conditions = [pinned, latest, upload].map((step) => step.match(/^        if: (.+)$/m)?.[1]);
   assert.ok(conditions.every(Boolean));
   for (const [event, mode, cursor] of SELECTIONS) {

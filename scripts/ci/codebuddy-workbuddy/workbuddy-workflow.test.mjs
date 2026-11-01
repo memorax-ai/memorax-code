@@ -104,7 +104,7 @@ test("WorkBuddy consumes the shared candidate package and keeps one aggregate re
   assert.match(job("workbuddy-native"), /^    needs: \[scope, package, workbuddy-releases\]$/m);
   assert.match(job("workbuddy-native"), /^      fail-fast: false$/m);
   assert.match(job("workbuddy-native"), /^      matrix: \$\{\{ fromJSON\(needs\.workbuddy-releases\.outputs\.matrix\) \}\}$/m);
-  assert.match(job("workbuddy-native"), /actions\/download-artifact@v4\n        with:\n          name: \$\{\{ needs\.package\.outputs\.package-artifact-name \}\}\n          path: dist\/npm\/tarballs\n/);
+  assert.match(job("workbuddy-native"), /actions\/download-artifact@v8\n        with:\n          name: \$\{\{ needs\.package\.outputs\.package-artifact-name \}\}\n          path: dist\/npm\/tarballs\n/);
   assert.match(job("workbuddy-native"), /^          node-version: \$\{\{ matrix\.nodeVersion \}\}$/m);
   assert.match(job("workbuddy-native"), /^    name: WorkBuddy native \(\$\{\{ matrix\.os \}\}, Node \$\{\{ matrix\.node \}\}, \$\{\{ matrix\.release\.channel \}\}, \$\{\{ matrix\.release\.desktopVersion \}\}\)$/m);
   assert.match(job("workbuddy-native"), /RELEASE_JSON: \$\{\{ toJSON\(matrix\.release\) \}\}/);
@@ -155,7 +155,7 @@ test("Linux download evidence is retained only for explicit manual diagnosis, in
       assert.equal(runInNewContext(condition, { ...context, runner: { os } }), false);
     }
   }
-  assert.match(upload, /uses: actions\/upload-artifact@v4/);
+  assert.match(upload, /uses: actions\/upload-artifact@v7/);
   assert.match(upload, /name: workbuddy-linux-download-node-\$\{\{ matrix.node \}\}-\$\{\{ matrix.release.channel \}\}-attempt\$\{\{ github\.run_attempt \}\}\n/);
   assert.match(upload, /retention-days: 1/);
   assert.match(upload, /compression-level: 0/);
@@ -199,7 +199,7 @@ test("each WorkBuddy cell records its verified versions, hashes and run attempt 
       await rm(root, { recursive: true, force: true });
     }
   }
-  const upload = native.split("      - uses: actions/upload-artifact@v4\n").at(-1);
+  const upload = native.split("      - uses: actions/upload-artifact@v7\n").at(-1);
   assert.match(upload, /^        if: always\(\)$/m);
   assert.match(upload, /^          name: workbuddy-report-\$\{\{ matrix\.os \}\}-\$\{\{ matrix\.release\.channel \}\}-node-\$\{\{ matrix\.node \}\}-attempt\$\{\{ github\.run_attempt \}\}$/m);
   assert.match(upload, /^          path: \$\{\{ runner\.temp \}\}\/workbuddy-report\/report\.json$/m);
