@@ -866,6 +866,10 @@ and artifacts only. Maintain it in rounds:
 - A failing cell on a client's latest release is recorded as `client-release`.
   Hold that version back through the manifest's `deferred` list, as described
   in [Updating Accepted Versions](#updating-accepted-versions).
+- Close a signature only under the closing rule in the register's
+  [Status](docs/native-ci-failure-register.md#columns) column: 10 counted runs
+  of its cell after its last sighting. A closed signature that recurs reopens
+  as `open` instead of being registered again.
 
 ### Codex Functional CI
 
