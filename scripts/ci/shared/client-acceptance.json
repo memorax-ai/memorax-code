@@ -44,6 +44,11 @@
       "head": "7a422e32f202eb83823d7d5c0cc909470b597829",
       "date": "2026-10-28",
       "rerun": "all-jobs"
+    },
+    "41297371104/1": {
+      "event": "schedule",
+      "head": "f9b6d2dca098531f7fd9dabf80c15b1f354d0735",
+      "date": "2026-11-01"
     }
   },
   "clients": {
@@ -78,16 +83,12 @@
         ]
       },
       "accepted": {
-        "version": "0.165.0",
-        "integrity": "sha512-aiwtQVp2KBhJld966CuU5bVfQ46VNB4mNTl6giX3WGZdt4euI3tv2RUqJpnupPNA8DXHg2z+RoQ0Zfw87dy8Lw==",
-        "shasum": "8463a6db435cfb137af964db91a120fe72260b35",
+        "version": "0.166.0",
+        "integrity": "sha512-2Szlp1l1cz5TX1ccpX4Zok3DZrot9xeZe0km+6/1v8JmqxADwyJxKBJah4dBymkwtS25j/u6dipJusTOI97Z8Q==",
+        "shasum": "c53889fd3903c4781cc83a22691e8502a7ef515f",
         "acceptance": [
           {
-            "run": "40623661565/2",
-            "result": "passed"
-          },
-          {
-            "run": "40623666188/2",
+            "run": "41297371104/1",
             "result": "passed"
           }
         ]
@@ -124,28 +125,12 @@
         ]
       },
       "accepted": {
-        "version": "1.19.4",
-        "integrity": "sha512-O3rTc9OCd6CeeJohCAjFYD3MX5U0weKzKnySfsJ9sw9uAbNZZK4meIcjd+7k3inmZB5G2qONSen3yA45yECiFA==",
-        "shasum": "20d2a9916eb87ca1a70090089e67eca1b92a6b85",
+        "version": "1.19.5",
+        "integrity": "sha512-tEqMvQahfhdDj8vceYpXtoIrvjPXm5XRfetWnPN5YISueU7adNx9JcUA3zZ+2GKuDVgDpGdQe1ZLtCZDjqodvA==",
+        "shasum": "4fb49717dfc8ca5fa97ab9823dadf4be3e244e82",
         "acceptance": [
           {
-            "run": "40430762460/1",
-            "result": "passed"
-          },
-          {
-            "run": "40481976093/1",
-            "result": "passed"
-          },
-          {
-            "run": "40513022084/1",
-            "result": "passed"
-          },
-          {
-            "run": "40623661565/2",
-            "result": "passed"
-          },
-          {
-            "run": "40623666188/2",
+            "run": "41297371104/1",
             "result": "passed"
           }
         ]
@@ -186,16 +171,12 @@
         ]
       },
       "accepted": {
-        "version": "2.1.312",
-        "integrity": "sha512-/gx8byG8VOm4YoNuT5tal/Ov5Z5oydJzZkmHCJcBFLbNGGpyYDbKA/CNdB+iIKwcLQC8pVwBoj6Dt7H3L2J5bw==",
-        "shasum": "de62c221b1c50d0a946a0005123b37bf047ba3d4",
+        "version": "2.1.316",
+        "integrity": "sha512-i3BpzyDkcCPnsa0CSkWgxGPs7WMsyqDkxkqT0SDxyEC5XMIxEmcUmluWRHG9VSeBY8Vyv+l9X34JvJ/Bj54nBQ==",
+        "shasum": "6b2759942982d4f2fe4102e34c879fb34a8f3157",
         "acceptance": [
           {
-            "run": "40623661565/2",
-            "result": "passed"
-          },
-          {
-            "run": "40623666188/2",
+            "run": "41297371104/1",
             "result": "passed"
           }
         ]
@@ -236,16 +217,12 @@
         ]
       },
       "accepted": {
-        "version": "2.177.1",
-        "integrity": "sha512-2psN1o7qhgt/GIjWffjXdTkWT1wy7SYcQUUtFkqUakoh8wK1RCR7IAVt5zAbwAaILckKYgGEc+qtNPrJZwW98Q==",
-        "shasum": "187490c672d683e077286a2da3f19b450eb78806",
+        "version": "2.179.1",
+        "integrity": "sha512-ml0+1+yjPtyZNmU5hVcxcX00QtIsRqzpuGWGJHN2YSwC0aGZvXSBrXhbXFLkQ2ES42n6pNxXTMmlRYzLK228IQ==",
+        "shasum": "8acea6cdfb133c00941228b434ae764d055de520",
         "acceptance": [
           {
-            "run": "40623661565/2",
-            "result": "passed"
-          },
-          {
-            "run": "40623666188/2",
+            "run": "41297371104/1",
             "result": "passed"
           }
         ]
@@ -562,7 +539,7 @@
     "Cursor publishes no desktop checksum: the darwin-arm64 and win32-x64-user SHA-256 values and sizes are CI observations from the recorded runs (identical in every recorded run).",
     "The WorkBuddy runtime has no separate artifact or hash: it ships inside the desktop package, and CI checks only its version.",
     "Whether the WorkBuddy win32-x64-user 5.8.3.41334564 reference hash came from the official update feed or the winget manifest was not recorded.",
-    "The first records come only from pull request runs of 2026-10-27 and 2026-10-28; no compatibility monitor run is recorded yet.",
+    "The first records come only from pull request runs of 2026-10-27 and 2026-10-28; the first compatibility monitor run recorded, 41297371104/1 of 2026-11-01, is cited only by the codex, opencode, claude, and codebuddy accepted versions.",
     "The original acceptance of each baseline predates these records and is not part of them.",
     "The WorkBuddy linux-x64-deb baseline reference hash has not matched the download in any recorded run; it stays advisory, and making it strict is a baseline change."
   ]
