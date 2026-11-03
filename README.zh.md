@@ -1,16 +1,3 @@
-Helpful 评价默认开启：自动 Add flush 时，本地 Backend 随请求上传本批内完整的
-N～N+K QA（K 默认 2，最后一轮仅包含用户输入）。跨批或缺失的窗口跳过，不补传。
-需要开启 Add，但不依赖 OSS；使用已有正文脱敏规则。候选 ID 和搜索时正文快照
-由服务端保存。Helpful 沿用本地 Backend 现有鉴权配置，支持未配置 token 的回环模式。
-Codex 轮次顺序来自原生 turn context，也支持先写 task-start、后写对应 context 的日志。
-Helpful QA（`helpful_evaluations`）与原生编码上下文（`coding_context`）可以随同一个自动
-Add 请求发送；`[helpful]` 与 `[coding_sessions]` 分别控制两者，均使用已有 Add 链路。
-Claude 评估证据使用原生用户记录 UUID，轮次开始时生成的关联标识仅留在本地。
-无法确认 Claude 原生轮次身份时跳过对应评估窗口。
-可在 `config.toml` 设置
-`[helpful] enabled = false` 关闭。
-详见[配置说明](docs/configuration.md#helpful-evaluation)。
-
 <h1 align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/memorax-code-lockup-dark.svg">

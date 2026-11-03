@@ -23,7 +23,7 @@ export async function registerHelpfulSearch(
     const connection = resolveBackendConnection({ env, memoraxCodeHome: home });
     const response = await postBackendCommand({
       connection,
-      path: "/memory/helpful-search",
+      path: "/memory/turn-context",
       timeoutMs: 1500,
       fetchImpl,
       body: {

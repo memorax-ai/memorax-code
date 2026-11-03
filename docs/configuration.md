@@ -1483,32 +1483,3 @@ memorax-code-cursor status --json
 
 The status commands do not print the MemoraX API key or Backend token.
 
-## Helpful evaluation
-
-```toml
-[helpful]
-enabled = true
-context_turns_k = 2
-```
-
-Helpful attaches evaluation QA to automatic Add by default, independently of OSS.
-K must be an integer at least 2 and is captured when Search starts. Existing
-Searches retain that K. Disable Helpful to stop new capture and clear its
-metadata in existing turn state and Add buffers on the next observation/flush. Invalid Helpful
-configuration disables capture rather than silently permitting uploads.
-
-At Add flush, select complete consecutive N..N+K windows within that batch.
-Send full QA for N..N+K-1 and only the terminal user message. Missing, truncated,
-ambiguous, or cross-batch windows are skipped, not carried into the next batch.
-With eight turns and K=2, only Searches in the first six turns qualify.
-Actual `search_id` is required; a transport receipt is not a Search identity.
-Candidate IDs/text are registered as server-side Search snapshots, never repeated
-in the Helpful attachment. Pending metadata is bounded to 256 Searches/32 MiB,
-using only existing turn/buffer lifetimes. Each attachment is at most 256 items/1 MiB.
-Only the first Add chunk carries it, with unchanged content across Add retries.
-There is no Helpful timer, separate POST, polling, persistence, or backfill.
-Disabling Add prevents Helpful uploads. Restart loses pending metadata.
-Trae currently has no verifiable native ordinal; its windows are skipped.
-Cursor continuation windows without a distinct ordinal are also skipped.
-HTTP 202 acknowledges Add, not Helpful enqueue or judgment.
-

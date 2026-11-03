@@ -37,12 +37,13 @@ test("Search bridge follows existing Backend transport with or without a configu
       return Response.json({ accepted: true });
     });
     assert.equal(sent.length, 1);
-    assert.equal(new URL(sent[0].url).pathname, "/memory/helpful-search");
+    assert.equal(new URL(sent[0].url).pathname, "/memory/turn-context");
     assert.equal(sent[0].init.headers["x-memorax-code-backend-token"], token);
     assert.deepEqual(JSON.parse(sent[0].init.body), {
       version: 1, context_turns_k: 2, client: "codex",
       sessionId: "native-session", clientTurnId: "native-turn", search_id: searchId,
     });
+    assert.equal("helpful_evaluations" in JSON.parse(sent[0].init.body), false);
   }
 });
 
@@ -122,8 +123,9 @@ for (const client of ["codex", "claude-code", "dsh", "opencode", "codebuddy", "w
     }
     await runtime.drain();
     assert.equal(sent.length, 1);
-    assert.equal(sent[0].helpful_evaluations.length, 6);
-    assert.equal(sent[0].helpful_evaluations[0].client, client);
+    assert.equal(sent[0].h.length, 6);
+    assert.equal(sent[0].h[0].client, client);
+    assert.equal("helpful_evaluations" in sent[0], false);
     assert.equal("coding_context" in sent[0], false);
     assert.equal(budget.size().entries, 0);
   });
@@ -158,7 +160,8 @@ test("Helpful disabled or Add disabled sends no evaluation; closing releases buf
       }
       await runtime.drain();
       assert.equal(sent.length, add ? 1 : 0);
-      if (add) assert.equal(Boolean(sent[0].helpful_evaluations), helpful);
+      if (add) assert.equal(Boolean(sent[0].h), helpful);
+      if (add) assert.equal("helpful_evaluations" in sent[0], false);
       coordinator.close(); runtime.close();
       assert.equal(budget.size().entries, 0);
     }
@@ -202,9 +205,10 @@ test("chunking freezes one attachment for Add retries and never repeats it in la
   }
   await runtime.drain();
   assert.ok(sent.length > 2);
-  assert.deepEqual(sent[0].helpful_evaluations, sent[1].helpful_evaluations);
-  assert.equal(sent[0].helpful_evaluations.length, 1);
-  assert.ok(sent.slice(2).every(p => !("helpful_evaluations" in p)));
+  assert.deepEqual(sent[0].h, sent[1].h);
+  assert.equal(sent[0].h.length, 1);
+  assert.ok(sent.slice(2).every(p => !("h" in p)));
+  assert.ok(sent.every(p => !("helpful_evaluations" in p)));
   assert.equal(JSON.stringify(sent).includes("synthetic-private-credential-value"), false);
   assert.equal(budget.size().entries, 0);
 });

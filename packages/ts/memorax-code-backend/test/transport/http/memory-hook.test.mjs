@@ -346,6 +346,50 @@ test("memory Hook HTTP routes reject invalid commands before dispatch and forwar
   }
 });
 
+test("turn-context is the only Helpful registration route", async () => {
+  const calls = [];
+  const dependencies = {
+    memoryService: {
+      registerHelpfulSearch(body) {
+        calls.push(body);
+        return { accepted: true };
+      },
+    },
+    memoryReminderTraceRecorder: {},
+  };
+  const server = createServer(async (req, res) => {
+    const handled = await handleMemoryHookRequest(
+      dependencies, new URL(req.url, "http://localhost"), req, res,
+    );
+    if (!handled) { res.writeHead(404); res.end(); }
+  });
+  const url = await listen(server);
+  try {
+    const body = {
+      version: 1, client: "codex", sessionId: "s", clientTurnId: "t",
+      context_turns_k: 2, search_id: randomUUID(),
+    };
+    const accepted = await fetch(`${url}/memory/turn-context`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    assert.equal(accepted.status, 200);
+    assert.deepEqual(await accepted.json(), { accepted: true });
+    assert.deepEqual(calls, [body]);
+
+    const legacy = await fetch(`${url}/memory/helpful-search`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    assert.equal(legacy.status, 404);
+    assert.equal(calls.length, 1);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test("pre-compact HTTP validates Cursor observation identity without ordinary turn dispatch", async () => {
   const calls = [];
   const result = { ok: true, recorded: true };

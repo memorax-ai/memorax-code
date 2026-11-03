@@ -28,7 +28,7 @@ let service;
 const fetchImpl = async (url, init) => {
   const path = new URL(url).pathname, body = JSON.parse(init.body);
   if (path === "/v1/memories/search") return incoming.base_url ? fetch(url, init) : Response.json(searchResponse);
-  if (path === "/memory/helpful-search") {
+  if (path === "/memory/turn-context") {
     assert.equal(init.headers["x-memorax-code-backend-token"], "synthetic-local-token");
     const value = service.registerHelpfulSearch(body);
     assert.equal("candidates" in body, false);
@@ -76,7 +76,7 @@ try {
   }
   await service.drain();
   assert.equal(requests.length, 1);
-  assert.equal(requests[0].helpful_evaluations.length, 1);
-  assert.equal("summaries" in requests[0].helpful_evaluations[0], false);
+  assert.equal(requests[0].h.length, 1);
+  assert.equal("summaries" in requests[0].h[0], false);
   process.stdout.write(JSON.stringify(requests[0]));
 } finally { service.close(); await rm(home, { recursive: true, force: true }); }

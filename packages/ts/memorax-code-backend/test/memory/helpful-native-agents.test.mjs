@@ -129,9 +129,9 @@ for (const client of ["codex", "claude-code", "codebuddy", "workbuddy", "dsh", "
       assert.equal(sent[0].coding_context, undefined);
     }
     if (client === "trae") {
-      assert.equal(sent[0].helpful_evaluations, undefined, "no native ordinal: do not invent continuity");
+      assert.equal(sent[0].h, undefined, "no native ordinal: do not invent continuity");
     } else {
-      const [evaluation] = sent[0].helpful_evaluations;
+      const [evaluation] = sent[0].h;
       assert.equal(evaluation.search_id, searchId);
       assert.equal(evaluation.client, client);
       assert.equal(evaluation.turns.length, 3);

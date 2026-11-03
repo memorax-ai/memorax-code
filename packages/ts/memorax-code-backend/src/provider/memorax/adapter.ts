@@ -102,7 +102,7 @@ type MemoraxSearchPayload = {
 };
 
 type MemoraxAddPayload = {
-  helpful_evaluations?: unknown[];
+  h?: unknown[];
   messages: Array<{ role: "user" | "assistant"; content: string; timestamp: number }>;
   user_id: string;
   memory_output_language: "zh" | "en";
@@ -426,7 +426,7 @@ function buildMemoraxAddPayload(
   return {
     messages: stamped,
     ...(Array.isArray(context.helpful_evaluations) && context.helpful_evaluations.length
-      ? { helpful_evaluations: context.helpful_evaluations } : {}),
+      ? { h: context.helpful_evaluations } : {}),
     user_id: repositoryScope.effectiveUserId,
     memory_output_language: config.memoryOutputLanguage ?? MEMORAX_DEFAULT_MEMORY_OUTPUT_LANGUAGE,
     ...(options.mode ? { mode: options.mode } : {}),

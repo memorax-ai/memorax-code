@@ -31,10 +31,10 @@ export async function handleMemoryHookRequest(
     && url.pathname !== "/memory/skill-reminder"
     && url.pathname !== "/memory/search-guidance"
     && url.pathname !== "/memory/writeback"
-    && url.pathname !== "/memory/helpful-search"
+    && url.pathname !== "/memory/turn-context"
   ) return false;
   const body = await readJson(req);
-  if (url.pathname === "/memory/helpful-search") {
+  if (url.pathname === "/memory/turn-context") {
     json(res, 200, dependencies.memoryService.registerHelpfulSearch(body));
     return true;
   }

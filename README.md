@@ -1,22 +1,5 @@
 <!-- Shared behavior is mirrored in README.zh.md. -->
 
-Helpful evaluation is enabled by default: after a Search, the local Backend
-attaches complete N through N+K QA windows to the next automatic Add batch
-(K defaults to 2; the last turn includes only the user message). Windows must
-fit in that batch; missing or cross-batch windows are skipped. Add must be
-enabled, but OSS is not required. Existing payload-redaction rules apply.
-Candidate IDs and search-time text snapshots stay on the server.
-Helpful QA (`helpful_evaluations`) and native coding context (`coding_context`)
-can share an automatic Add request. Their respective `[helpful]` and
-`[coding_sessions]` switches are independent; both use the existing Add pipeline.
-Claude evidence uses native user-record UUIDs; its start-observation keys remain local.
-Windows without verified Claude native identity are skipped.
-Helpful uses the existing local Backend authentication settings, including
-tokenless loopback operation. Codex turn order comes from native turn contexts,
-including contexts written after the corresponding task-start event.
-Set `[helpful] enabled = false` in
-`config.toml` to disable it. See [configuration](docs/configuration.md#helpful-evaluation).
-
 <h1 align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/assets/memorax-code-lockup-dark.svg">
