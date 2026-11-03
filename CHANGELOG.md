@@ -6,6 +6,29 @@ behavior.
 
 ## Unreleased
 
+## [0.1.22] - 2026-11-03
+
+### Changed
+
+- Updated the default MemoraX service endpoint and account links to
+  `https://platform.memoraxai.com`.
+
+### Fixed
+
+- Restored authenticated Search/Add and trial provisioning for installations
+  using the legacy official `https://platform.memorax.net` root endpoint.
+  Requests now go directly to the new domain, avoiding cross-origin redirects
+  that can remove authentication and change POST requests to GET.
+
+### Upgrade notes
+
+Upgrade with `memorax-code update`. Existing API keys, Base User IDs, and
+saved connection settings are preserved. The legacy official HTTPS root
+endpoint is normalized at runtime; custom endpoints remain unchanged.
+You do not need to rerun setup or manually replace the saved legacy endpoint.
+See [MemoraX connection configuration](docs/configuration.md#memorax-connection)
+for configuration details.
+
 ## [0.1.21] - 2026-10-21
 
 ### Added
@@ -529,6 +552,7 @@ Later upgrades do not require this workaround.
 - Required a non-empty MemoraX user ID and API key during interactive setup,
   with clearer registration guidance.
 
+[0.1.22]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.22
 [0.1.21]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.21
 [0.1.20]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.20
 [0.1.19]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.19
