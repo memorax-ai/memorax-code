@@ -4,8 +4,10 @@ import { tmpdir } from "node:os";
 import { dirname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
-import { projectNativeReport, readReleaseManifest } from "./cursor-app-container-check.mjs";
+import { readReleaseManifest } from "./cursor-app-container-check.mjs";
 import { projectCursorMacosDetachDiagnostics, selectCursorMacosRelease, withCursorMacosApp } from "./cursor-app-macos-artifact.mjs";
+
+import { classifyCursorAppExecution, collectCursorAppNativeReport, writeCursorAppFinalReport } from "./cursor-app-report.mjs";
 
 const exec = promisify(execFile);
 const scripts = dirname(fileURLToPath(import.meta.url));
@@ -71,6 +73,7 @@ export async function runMacosCheck(candidatePath, reportPath, { releaseManifest
     await withCursorMacosApp({ release, root, signal }, async ({ appPath, evidence }) => {
       artifact = evidence;
       const nativeOutput = join(root, "native-report");
+      report.stage = "macos-native";
       nativeStarted = true;
       let executionError;
       try {
@@ -79,10 +82,15 @@ export async function runMacosCheck(candidatePath, reportPath, { releaseManifest
           join(root, "probe/node_modules/playwright-core"), nativeOutput, nodeMajor],
         { cwd: root, env, timeout: 10 * 60_000, signal, maxBuffer: 1024 * 1024, killSignal: "SIGKILL" });
       } catch (error) { executionError = error; }
-      const path = join(nativeOutput, "report.json"), info = await lstat(path);
-      check(info.isFile() && !info.isSymbolicLink() && info.size <= 64 * 1024, "CURSOR_APP_MACOS_REPORT");
-      report = projectNativeReport(JSON.parse(await readFile(path, "utf8")),
-        { expectedVersion: release.version, nodeMajor, platform: "darwin" });
+      report = await collectCursorAppNativeReport({
+        readReport: async (name) => {
+          const path = join(nativeOutput, name), info = await lstat(path);
+          check(info.isFile() && !info.isSymbolicLink() && info.size <= 64 * 1024, "CURSOR_APP_MACOS_REPORT");
+          return readFile(path, "utf8");
+        },
+        expected: { expectedVersion: release.version, nodeMajor, platform: "darwin" },
+        fallback: report, execution: classifyCursorAppExecution(executionError), exitErrorCode: "CURSOR_APP_MACOS_NATIVE_EXIT",
+      });
       check(!executionError && report.status === "PASS", "CURSOR_APP_MACOS_NATIVE_EXIT");
     });
   } catch (error) {
@@ -102,7 +110,7 @@ export async function runMacosCheck(candidatePath, reportPath, { releaseManifest
     } else if (root) cleanupFailed = true;
     if (cleanupFailed) { report.status = "FAIL"; report.cleanupError ??= "CURSOR_APP_MACOS_CLEANUP"; }
     if (artifact) report.macos = artifact;
-    if (output) await writeFile(join(output, "report.json"), `${JSON.stringify(report, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+    if (output) await writeCursorAppFinalReport(join(output, "report.json"), report, "CURSOR_APP_MACOS_REPORT_WRITE", writeFile);
   }
   return report;
 }

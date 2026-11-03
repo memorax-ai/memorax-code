@@ -6,9 +6,10 @@ import { stopNativeProcessTree as stopCodex } from "../codex/codex-native-suppor
 import { stopNativeProcessTree as stopClaude } from "../claude/claude-native-support.mjs";
 import { stopNativeProcessTree as stopCodeBuddy } from "../codebuddy-workbuddy/codebuddy-native-support.mjs";
 import { stopNativeProcessTree as stopOpenCode } from "../opencode/opencode-native-support.mjs";
+import { stopNativeProcessTree as stopDsh } from "../dsh/dsh-native-process.mjs";
 
 const pid = 4312;
-const helpers = [["Codex", stopCodex], ["Claude", stopClaude], ["CodeBuddy", stopCodeBuddy], ["OpenCode", stopOpenCode]];
+const helpers = [["Codex", stopCodex], ["Claude", stopClaude], ["CodeBuddy", stopCodeBuddy], ["OpenCode", stopOpenCode], ["DSH", stopDsh]];
 
 function cleanupFixture(implementation, platform = "win32") {
   const env = { SystemRoot: "C:\\Windows" };

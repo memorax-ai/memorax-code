@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import test from "node:test";
 import { assertNativeHookCorrelation, assertNativeSessionBinding, assertNativeWritebackContent,
-  runNativeMemoryCheck, summarizeNativeSkillBashResult } from "./codebuddy-native-memory-support.mjs";
+  runNativeMemoryCheck, selectReportedBashStdout, summarizeNativeSkillBashResult } from "./codebuddy-native-memory-support.mjs";
 
 const sessionId = "native-session";
 const prompt = "First paragraph: caf\u00e9.\n\nSecond paragraph: \u65e5\u672c\u8a9e.";
@@ -73,6 +73,31 @@ for (const client of ["codebuddy", "workbuddy"]) {
         { nativeCode: "NATIVE_HOOK_COMPLETION_CORRELATION_MISSING" });
     }
   });
+
+  test(`${client} invalid Bash stdout adds only its fixed reason to the existing report`, () => {
+    const canary = "PRIVATE_STDOUT_CANARY";
+    for (const [stdout, reason] of [["", "zero_length"], ["(empty)", "literal_empty"], [`${canary}\nExit Code: 1`, "envelope_fields"]]) {
+      const report = { status: "FAIL", stage: "native same-session resume and real tool" };
+      assert.throws(() => selectReportedBashStdout(report, ...bashToolResult(client, stdout)),
+        { nativeCode: "NATIVE_BASH_STDOUT_INVALID", message: "NATIVE_BASH_STDOUT_INVALID", stdoutInvalidReason: reason });
+      assert.deepEqual(report, { status: "FAIL", stage: "native same-session resume and real tool", bashStdoutInvalidReason: reason });
+      assert.ok(!JSON.stringify(report).includes(canary));
+    }
+    const report = {};
+    for (const stdout of ["(empty)", ""]) {
+      assert.throws(() => selectReportedBashStdout(report, ...bashToolResult(client, stdout)), { nativeCode: "NATIVE_BASH_STDOUT_INVALID" });
+    }
+    assert.deepEqual(report, { bashStdoutInvalidReason: "literal_empty" });
+  });
+
+  test(`${client} valid Bash results and other Bash failures leave the report unchanged`, () => {
+    const report = {};
+    assert.equal(selectReportedBashStdout(report, ...bashToolResult(client, "complete output\n")), "complete output\n");
+    assert.throws(() => selectReportedBashStdout(report, ...bashToolResult(client, "complete output\n", "1")),
+      { nativeCode: "NATIVE_BASH_RESULT_MISMATCH" });
+    assert.throws(() => selectReportedBashStdout(report, null, "'fixture-command'", { client }), { nativeCode: "NATIVE_BASH_RESULT_INVALID" });
+    assert.deepEqual(report, {});
+  });
 }
 
 test("WorkBuddy exact and projected Hook digests form one unique candidate set", () => {
@@ -114,7 +139,7 @@ test("Skill Bash diagnostics distinguish shell startup failures without exposing
   const command = `memorax-cli search --query '${secret}' --json`;
   const output = `Command: ${command}\nStdout: (empty)\nStderr: /private/${secret}/memorax-cli: line 2: import: command not found\nline 3: syntax error near unexpected token '('\nENOEXEC\nExit Code: 2\nSignal: (none)`;
   const result = summarizeNativeSkillBashResult(output, command);
-  assert.equal(result.expectedCommandMatched, true);
+  assert.equal(result.commandEchoMatched, true);
   assert.equal(result.structuredEnvelopeMatched, true);
   assert.equal(result.stderr, "nonempty");
   assert.equal(result.exitCode, "nonzero");
@@ -124,6 +149,21 @@ test("Skill Bash diagnostics distinguish shell startup failures without exposing
   assert.ok(!JSON.stringify(result).includes(secret));
   assert.ok(!JSON.stringify(result).includes("/private"));
   assert.ok(!JSON.stringify(result).includes(command));
+});
+
+test("CodeBuddy commandless Skill diagnostics report status without claiming a command echo", () => {
+  const command = "memorax-cli search --query fixture --json";
+  const output = 'Stdout: {"ok":false,"errorCode":"MEMORY_SCOPE_MISMATCH"}\nStderr: (empty)\nExit Code: 1\nSignal: (none)';
+  const result = summarizeNativeSkillBashResult(output, command, { client: "codebuddy" });
+  assert.equal(result.structuredEnvelopeMatched, true);
+  assert.equal(result.commandEchoMatched, false);
+  assert.equal(result.stderr, "empty");
+  assert.equal(result.exitCode, "nonzero");
+  assert.equal(result.signal, "none");
+  assert.equal(result.stdoutJson, true);
+  assert.equal(result.memoryError, "MEMORY_SCOPE_MISMATCH");
+  assert.deepEqual(result.errorSignatures, []);
+  assert.equal(summarizeNativeSkillBashResult(output, command, { client: "workbuddy" }).structuredEnvelopeMatched, false);
 });
 
 test("Skill Bash diagnostics preserve only known scope error enums from JSON", () => {
@@ -150,7 +190,7 @@ test("Skill Bash diagnostics do not classify ordinary successful Memory content 
 test("Skill Bash diagnostics bound malformed output and never return arbitrary enums", () => {
   const result = summarizeNativeSkillBashResult(`ENOEXEC ${"private".repeat(20000)}`, "not-the-command");
   assert.equal(result.resultTruncated, true);
-  assert.equal(result.expectedCommandMatched, false);
+  assert.equal(result.commandEchoMatched, false);
   assert.equal(result.structuredEnvelopeMatched, false);
   assert.equal(result.exitCode, "missing");
   assert.deepEqual(result.errorSignatures, ["enoexec"]);
@@ -164,6 +204,14 @@ test("Skill Bash diagnostics bound malformed output and never return arbitrary e
 
 function messages() {
   return [{ role: "user", content: prompt, timestamp: 1 }, { role: "assistant", content: answer, timestamp: 2 }];
+}
+function bashToolResult(client, stdout, exitCode = "0") {
+  const command = "'fixture-node' '-e' 'fixture'";
+  const call = { id: "bash-call", name: "Bash", input: { command, description: "Run the fixture", timeout: 15000 } };
+  const output = `${client === "codebuddy" ? "" : `Command: ${command}\n`}Stdout: ${stdout}\nStderr: (empty)\nExit Code: ${exitCode}\nSignal: (none)`;
+  const body = { messages: [{ role: "assistant", tool_calls: [{ id: call.id, type: "function",
+    function: { name: call.name, arguments: JSON.stringify(call.input) } }] }, { role: "tool", tool_call_id: call.id, content: output }] };
+  return [output, command, { client, body, call }];
 }
 function hookEvents(client, { session = sessionId, projected = true } = {}) {
   const text = projected ? prompt.replace(/\r\n|\r|\n/g, "") : prompt;

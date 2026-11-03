@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, relative } from "node:path";
 import test from "node:test";
-import { assertNoSensitivePayload, createNativeHarness, createServerInitializationDiagnostics, describeSafeError } from "./opencode-native-support.mjs";
+import { assertNoSensitivePayload, createNativeHarness, createServerInitializationDiagnostics, describeSafeError,
+  listRepoMemoryJobMetadataPaths } from "./opencode-native-support.mjs";
 
 for (const forbidden of ["sk_fixtureOnly", "/tmp/native-fixture", "C:\\Users\\fixture\\native-root"]) {
   test(`outbound fixture checks reject ${forbidden.includes("\\") ? "Windows paths" : forbidden.startsWith("/") ? "POSIX paths" : "credentials"}`, () => {
@@ -183,4 +184,87 @@ test("native harness shares only an explicit test cache and ignores ordinary npm
     process.env.MEMORAX_CODE_TEST_NPM_CACHE = value;
     await assert.rejects(createNativeHarness(options), { nativeCode: "NATIVE_TEST_NPM_CACHE_NOT_ABSOLUTE" });
   }
+});
+
+async function jobsFixture(t) {
+  const root = await mkdtemp(join(tmpdir(), "memorax-opencode-jobs-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const jobsRoot = join(root, "repo-memory-jobs"), reads = [];
+  return { jobsRoot, reads,
+    async put(path, text = "{}") {
+      await mkdir(dirname(join(jobsRoot, path)), { recursive: true });
+      await writeFile(join(jobsRoot, path), text);
+    },
+    // Records each directory read, then reads the real directory unless the test intercepts the call.
+    list(intercept = readdir) {
+      return listRepoMemoryJobMetadataPaths(jobsRoot, { readDirectory: (path, options) => {
+        reads.push(relative(jobsRoot, path));
+        return intercept(path, options);
+      } });
+    } };
+}
+const jobFile = (directory) => join(directory, "job.json");
+
+test("job metadata discovery returns the job.json of every job directory", async (t) => {
+  const fixture = await jobsFixture(t);
+  for (const job of ["job-a", "job-b"]) {
+    await fixture.put(jobFile(job));
+    await fixture.put(join(job, "output.log"), "");
+  }
+  assert.deepEqual((await fixture.list()).sort(), [jobFile("job-a"), jobFile("job-b")]);
+  assert.deepEqual(fixture.reads.sort(), ["", "job-a", "job-b"]);
+});
+
+test("job metadata discovery finds nothing until the root exists and job.json is renamed into place", async (t) => {
+  const fixture = await jobsFixture(t);
+  assert.deepEqual(await fixture.list(), []);
+  await mkdir(join(fixture.jobsRoot, "job-a"), { recursive: true });
+  assert.deepEqual(await fixture.list(), []);
+  // The product publishes job.json by writing a temporary sibling and renaming it.
+  const temporary = `${jobFile("job-a")}.${process.pid}.${Date.now()}.tmp`;
+  await fixture.put(temporary);
+  assert.deepEqual(await fixture.list(), []);
+  await rename(join(fixture.jobsRoot, temporary), join(fixture.jobsRoot, jobFile("job-a")));
+  assert.deepEqual(await fixture.list(), [jobFile("job-a")]);
+});
+
+test("job metadata discovery reads only the root and job directories, never in-progress or the source snapshot", async (t) => {
+  const fixture = await jobsFixture(t);
+  await fixture.put(jobFile("job-a"));
+  for (const path of [jobFile(join("job-a", "source")), jobFile(join("job-a", "source", "nested", "deeper")),
+    jobFile(join("job-a", "git-hooks")), jobFile("in-progress"), join("in-progress", "repo-key.json"),
+    join("in-progress", "repo-key.lockdir", "lock.json"), "job.json"]) await fixture.put(path, "PRIVATE_INVALID_JSON");
+  assert.deepEqual(await fixture.list(), [jobFile("job-a")]);
+  assert.deepEqual(fixture.reads.sort(), ["", "job-a"]);
+});
+
+test("job metadata discovery fails as REPO_JOBS_READ when the root or a job directory cannot be read", async (t) => {
+  const fixture = await jobsFixture(t);
+  for (const job of ["job-a", "job-b"]) await fixture.put(jobFile(job));
+  for (const [target, code] of [[fixture.jobsRoot, "EPERM"], [join(fixture.jobsRoot, "job-b"), "EACCES"]]) {
+    const error = await fixture.list((path, options) => path === target
+      ? Promise.reject(Object.assign(new Error("PRIVATE_DIRECTORY"), { code })) : readdir(path, options))
+      .catch((failure) => failure);
+    assert.deepEqual(describeSafeError(error), { name: "Error", code, operation: "REPO_JOBS_READ" });
+  }
+});
+
+test("job metadata discovery returns no jobs, not a partial list, when a job directory vanishes", async (t) => {
+  const fixture = await jobsFixture(t);
+  for (const job of ["job-a", "job-b"]) await fixture.put(jobFile(job));
+  let jobReads = 0;
+  // Remove whichever job directory is read second, after the first one has already been listed.
+  assert.deepEqual(await fixture.list(async (path, options) => {
+    if (path !== fixture.jobsRoot && ++jobReads === 2) await rm(path, { recursive: true });
+    return readdir(path, options);
+  }), []);
+  assert.equal((await fixture.list()).length, 1);
+});
+
+test("job metadata discovery leaves malformed or foreign job.json files for the caller to reject", async (t) => {
+  const fixture = await jobsFixture(t);
+  await fixture.put(jobFile("job-a"), "PRIVATE_INVALID_JSON");
+  await fixture.put(jobFile("job-b"), JSON.stringify({ repo: "foreign-repository", runner: "codex", status: "succeeded" }));
+  await mkdir(join(fixture.jobsRoot, jobFile("job-c")), { recursive: true });
+  assert.deepEqual((await fixture.list()).sort(), [jobFile("job-a"), jobFile("job-b"), jobFile("job-c")]);
 });

@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
 import { appendFile, readFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
+import { pinNodeVersions, readAcceptance } from "../shared/client-acceptance.mjs";
+import { defers } from "../shared/client-result.mjs";
 
 const desktopVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const productVersion = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
@@ -36,7 +38,8 @@ function validateDownload(platform, version, url) {
   const prefix = `${downloadRoot}/${platform}/WorkBuddy-${platform}-${version}-`;
   assert.equal(typeof url, "string");
   assert.ok(!/[\r\n]/.test(url) && url.startsWith(prefix));
-  assert.match(url.slice(prefix.length), new RegExp(`^[a-f0-9]{8}\\.${pins[platform][3]}$`));
+  const extension = platform.startsWith("darwin-") ? "(?:dmg|zip)" : pins[platform][3];
+  assert.match(url.slice(prefix.length), new RegExp(`^[a-f0-9]{8}\\.${extension}$`));
 }
 
 function compareVersions(left, right) {
@@ -58,7 +61,7 @@ export function validateRelease(value, platform) {
   assert.equal(value.productVersion, value.desktopVersion.split(".").slice(0, 3).join("."));
   validateDownload(platform, value.desktopVersion, value.url);
   assert.match(value.sha256, digest);
-  assert.ok(["baseline", "baseline+latest", "latest", "fallback"].includes(value.channel));
+  assert.ok(["baseline", "baseline+latest", "latest", "fallback", "accepted", "baseline+accepted"].includes(value.channel));
   if (value.channel === "fallback") assert.equal(platform, "win32-x64-user");
   const release = Object.fromEntries(Object.keys(baseline).map((key) => [key, value[key]]));
   release.sha256 = release.sha256.toLowerCase();
@@ -67,16 +70,22 @@ export function validateRelease(value, platform) {
     assert.equal(release.sha256, baseline.sha256, "WORKBUDDY_RELEASE_PIN_CONFLICT");
   }
   if (["latest", "fallback"].includes(release.channel)) assert.equal(release.runtimeVersion, null);
+  // An accepted release pins the bundled runtime its acceptance verified.
+  else if (release.channel === "accepted") assert.match(release.runtimeVersion ?? "", productVersion);
   else assert.deepEqual({ ...release, channel: "baseline" }, baseline);
+  // Only a latest or fallback release can be marked deferred.
+  if (value.deferred !== undefined) {
+    assert.ok(value.deferred === true && ["latest", "fallback"].includes(release.channel), "WORKBUDDY_RELEASE_DEFERRED_INVALID");
+    release.deferred = true;
+  }
   return release;
 }
 
 export function resolveFeed(platform, feed, wingetManifest) {
   assert.match(feed?.version, desktopVersion);
   assert.equal(feed.productVersion, feed.version);
-  let url = feed.url;
-  // The official macOS download page selects DMG from the update-feed ZIP URL.
-  if (platform.startsWith("darwin-") && typeof url === "string") url = url.replace(/\.zip$/, ".dmg");
+  // Keep the feed URL and checksum paired; a ZIP digest cannot verify a DMG.
+  const url = feed.url;
   let sha256 = feed.sha256hash;
   if (platform === "win32-x64-user" && sha256 === "") {
     assert.equal(wingetManifest?.PackageIdentifier, "Tencent.WorkBuddy");
@@ -94,7 +103,9 @@ export function resolveFeed(platform, feed, wingetManifest) {
   return release;
 }
 
-export function buildMatrix(latestByPlatform, requestedByPlatform = {}) {
+// A latest or fallback release whose version the client acceptance manifest defers for its platform is marked deferred;
+// the compatibility monitor lets such a cell fail without failing the run.
+export function buildMatrix(latestByPlatform, requestedByPlatform = {}, deferred = []) {
   const include = [];
   for (const { platform, os, arch } of platforms) {
     const baseline = baselineRelease(platform);
@@ -109,11 +120,43 @@ export function buildMatrix(latestByPlatform, requestedByPlatform = {}) {
     const same = latest.desktopVersion === baseline.desktopVersion && latest.url === baseline.url
       && (platform === "linux-x64-deb" || latest.sha256 === baseline.sha256);
     include.push({ os, arch, node: "24", release: { ...baseline, channel: same && !fallback ? "baseline+latest" : "baseline" } });
-    if (!same) include.push({ os, arch, node: "24", release: latest });
+    if (!same) {
+      const marked = deferred.some((entry) => defers(entry, latest.desktopVersion, platform));
+      include.push({ os, arch, node: "24", release: marked ? { ...latest, deferred: true } : latest });
+    }
     if (fallback) include.at(-1).requestedDesktopVersion = requestedDesktopVersion;
   }
   include.push({ os: "ubuntu-24.04", arch: "x64", node: "20", release: baselineRelease("linux-x64-deb") });
-  return { include };
+  return { include: pinNodeVersions(include) };
+}
+
+// A pull request runs the baseline and the accepted release of each platform from the client acceptance manifest instead
+// of resolving official latest releases. A missing or invalid entry fails; nothing falls back to a latest lookup.
+export function acceptedMatrix(section) {
+  const release = (channel, platform) => {
+    const entries = section?.[channel]?.platforms;
+    assert.ok(entries && Object.hasOwn(entries, platform), "WORKBUDDY_ACCEPTED_RELEASE_MISSING");
+    const { desktop, runtime } = entries[platform];
+    const version = String(desktop?.version ?? "");
+    return validateRelease({ platform, desktopVersion: desktop?.version, productVersion: version.split(".").slice(0, 3).join("."),
+      runtimeVersion: runtime?.version, sha256: desktop?.sha256, url: desktop?.url, channel }, platform);
+  };
+  const include = [];
+  for (const { platform, os, arch } of platforms) {
+    const baseline = release("baseline", platform), accepted = release("accepted", platform);
+    const same = ["desktopVersion", "url", "sha256", "runtimeVersion"].every((key) => baseline[key] === accepted[key]);
+    include.push({ os, arch, node: "24", release: { ...baseline, channel: same ? "baseline+accepted" : "baseline" } });
+    if (!same) include.push({ os, arch, node: "24", release: accepted });
+  }
+  include.push({ os: "ubuntu-24.04", arch: "x64", node: "20", release: release("baseline", "linux-x64-deb") });
+  return { include: pinNodeVersions(include) };
+}
+
+function releaseSummary(matrix, coverage) {
+  return `### WorkBuddy Release Matrix\n\n${coverage}\n\n` + matrix.include.map((row) =>
+    `- ${row.os} (${row.arch}), Node ${row.node}: ${row.release.channel}, desktop ${row.release.desktopVersion}, SHA-256${
+      row.release.platform === "linux-x64-deb" && row.release.channel !== "accepted" ? " (advisory reference)" : ""} ${row.release.sha256}`)
+    .join("\n") + "\n";
 }
 
 export function coverageSummary(matrix) {
@@ -140,7 +183,7 @@ async function fetchPublicText(url) {
   return Buffer.concat(chunks).toString("utf8");
 }
 
-export async function resolveLatest({ fetchText = fetchPublicText, parseYaml } = {}) {
+export async function resolveLatest({ fetchText = fetchPublicText, parseYaml, deferred = [] } = {}) {
   const latest = {}, requested = {};
   for (const { platform } of platforms) {
     let stage = "FEED";
@@ -192,7 +235,7 @@ export async function resolveLatest({ fetchText = fetchPublicText, parseYaml } =
       throw error;
     }
   }
-  return buildMatrix(latest, requested);
+  return buildMatrix(latest, requested, deferred);
 }
 
 export function parseWingetManifest(source, parseDocument) {
@@ -212,24 +255,34 @@ async function main(args) {
       : [release.desktopVersion, release.productVersion, release.runtimeVersion ?? "discover", release.sha256, release.url].join("\t"));
     return;
   }
-  assert.equal(command, "resolve");
-  assert.equal(args.length, 1);
-  // Only online resolution needs YAML. Native jobs and offline helper tests use built-ins.
-  const { parseDocument } = await import(pathToFileURL(process.env.WORKBUDDY_YAML_MODULE).href);
-  const matrix = await resolveLatest({ parseYaml: (source) => parseWingetManifest(source, parseDocument) });
-  const coverage = coverageSummary(matrix);
+  let matrix, coverage;
+  if (command === "accepted") {
+    assert.equal(args.length, 1);
+    try { matrix = acceptedMatrix(readAcceptance("workbuddy")); }
+    catch (error) {
+      if (/^CLIENT_ACCEPTANCE_[A-Z_]+$/.test(error.code ?? "")) throw error;
+      throw Object.assign(new Error("WORKBUDDY_ACCEPTED_RELEASES_INVALID"), { code: "WORKBUDDY_ACCEPTED_RELEASES_INVALID" });
+    }
+    coverage = "Pinned acceptance inputs from the client acceptance manifest; no official latest lookup.";
+  } else {
+    assert.equal(command, "resolve");
+    assert.equal(args.length, 1);
+    const { deferred = [] } = readAcceptance("workbuddy");
+    // Only online resolution needs YAML. Native jobs and offline helper tests use built-ins.
+    const { parseDocument } = await import(pathToFileURL(process.env.WORKBUDDY_YAML_MODULE).href);
+    matrix = await resolveLatest({ parseYaml: (source) => parseWingetManifest(source, parseDocument), deferred });
+    coverage = coverageSummary(matrix);
+  }
   if (process.env.GITHUB_OUTPUT) await appendFile(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify(matrix)}\ncoverage=${coverage}\n`);
   if (matrix.include.some((row) => row.requestedDesktopVersion)) console.error(`::warning::${coverage}`);
-  if (process.env.GITHUB_STEP_SUMMARY) {
-    await appendFile(process.env.GITHUB_STEP_SUMMARY, `### WorkBuddy Release Matrix\n\n${coverage}\n\n` + matrix.include.map((row) =>
-      `- ${row.os} (${row.arch}), Node ${row.node}: ${row.release.channel}, desktop ${row.release.desktopVersion}, SHA-256${row.release.platform === "linux-x64-deb" ? " (advisory reference)" : ""} ${row.release.sha256}`).join("\n") + "\n");
-  }
+  if (process.env.GITHUB_STEP_SUMMARY) await appendFile(process.env.GITHUB_STEP_SUMMARY, releaseSummary(matrix, coverage));
   console.log(JSON.stringify(matrix));
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main(process.argv.slice(2)).catch((error) => {
-    const code = /^WORKBUDDY_LATEST_[A-Z0-9_]+_FAILED$/.test(error.code ?? "") ? error.code : "WORKBUDDY_RELEASE_RESOLUTION_FAILED";
+    const code = /^(?:WORKBUDDY_LATEST_[A-Z0-9_]+_FAILED|WORKBUDDY_ACCEPTED_RELEASES_INVALID|CLIENT_ACCEPTANCE_[A-Z_]+)$/.test(error.code ?? "")
+      ? error.code : "WORKBUDDY_RELEASE_RESOLUTION_FAILED";
     console.error(`${code}: release metadata, checksum or parser validation failed; no unverified version fallback.`);
     process.exitCode = 1;
   });

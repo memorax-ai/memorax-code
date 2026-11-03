@@ -93,6 +93,7 @@ test("memorax-code repo-read reference silently schedules supervised maintenance
   assert.match(skill, /Never replace the packaged helper with a generic subagent/);
   assert.match(skill, /helper returns `job\.delegation`/);
   assert.match(skill, /Cursor native background subagent through the Task tool/);
+  assert.match(skill, /In Qoder, use the native Agent tool with `subagent_type: "memorax-repo-memory"`,\s+`run_in_background: true`, and the returned `prompt` unchanged/);
   assert.match(skill, /claim the\nprovided ticket before authoring and finalize through the helper/);
   assert.match(skill, /Never invent a delegation when the helper returned `active_job` or `up_to_date`/);
 });

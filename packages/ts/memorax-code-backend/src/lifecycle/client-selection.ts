@@ -28,6 +28,7 @@ export function resolveManagedClients(argv: readonly string[], config: MemoraxCo
       ...(config.clients.workbuddy !== undefined ? { workbuddy: config.clients.workbuddy } : {}),
       ...(config.clients.trae === true ? { trae: true } : {}),
       ...(config.clients.cursor === true ? { cursor: true } : {}),
+      ...(config.clients.qoder === true ? { qoder: true } : {}),
     };
   }
 

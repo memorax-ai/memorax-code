@@ -131,7 +131,7 @@ async function runCase(phase) {
     // Trailing whitespace makes a real setup-managed configuration publication
     // observable while the protected semantic choices remain unchanged.
     initialConfig = `[memorax]\nendpoint = ${JSON.stringify(harness.memoryUrl)}\nuser_id = ${JSON.stringify(user)}\napi_key = ${JSON.stringify(key)}\n
-[clients]\ncodex = false\nclaude = true \t\ndsh = false\nopencode = false\ncodebuddy = false\nworkbuddy = false\ntrae = false\ncursor = false\n
+[clients]\ncodex = false\nclaude = true \t\ndsh = false\nopencode = false\ncodebuddy = false\nworkbuddy = false\ntrae = false\ncursor = false\nqoder = false\n
 [memory.writeback]\nenabled = false\n[memory.cli]\nadd_enabled = false\n[memory.add]\noutput_language = "en"\n[jev]\nenabled = false\n`;
     await writeFile(join(harness.stateHome, "config.toml"), initialConfig, { mode: 0o600 });
     protectedConfig = snapshotProtectedConfiguration(parse(initialConfig));

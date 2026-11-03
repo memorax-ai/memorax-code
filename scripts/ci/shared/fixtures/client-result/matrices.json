@@ -1,0 +1,173 @@
+{
+  "40853420771": {
+    "event": "schedule",
+    "codex": { "include": [
+      {"os":"ubuntu-24.04","node":"24","codex":"0.147.0","channel":"baseline"},
+      {"os":"macos-15","node":"24","codex":"0.147.0","channel":"baseline"},
+      {"os":"windows-2025","node":"24","codex":"0.147.0","channel":"baseline"},
+      {"os":"ubuntu-24.04","node":"20","codex":"0.147.0","channel":"baseline"},
+      {"os":"ubuntu-24.04","node":"24","codex":"0.165.0","channel":"latest"},
+      {"os":"macos-15","node":"24","codex":"0.165.0","channel":"latest"},
+      {"os":"windows-2025","node":"24","codex":"0.165.0","channel":"latest"}
+    ] },
+    "opencode": { "include": [
+      {"os":"ubuntu-24.04","node":"24","opencode":"1.18.18","channel":"baseline"},
+      {"os":"macos-15","node":"24","opencode":"1.18.18","channel":"baseline"},
+      {"os":"windows-2025","node":"24","opencode":"1.18.18","channel":"baseline"},
+      {"os":"ubuntu-24.04","node":"20","opencode":"1.18.18","channel":"baseline"},
+      {"os":"ubuntu-24.04","node":"24","opencode":"1.19.5","channel":"latest"},
+      {"os":"macos-15","node":"24","opencode":"1.19.5","channel":"latest"},
+      {"os":"windows-2025","node":"24","opencode":"1.19.5","channel":"latest"}
+    ] },
+    "claude": { "include": [
+      {"os":"ubuntu-24.04","node":"24","claude":"2.1.277","channel":"baseline"},
+      {"os":"macos-15","node":"24","claude":"2.1.277","channel":"baseline"},
+      {"os":"windows-2025","node":"24","claude":"2.1.277","channel":"baseline"},
+      {"os":"ubuntu-24.04","node":"22","claude":"2.1.277","channel":"baseline"},
+      {"os":"ubuntu-24.04","node":"24","claude":"2.1.312","channel":"latest"},
+      {"os":"macos-15","node":"24","claude":"2.1.312","channel":"latest"},
+      {"os":"windows-2025","node":"24","claude":"2.1.312","channel":"latest"}
+    ] },
+    "codebuddy": { "include": [
+      {"os":"ubuntu-24.04","node":"24","codebuddy":"2.159.0","channel":"baseline"},
+      {"os":"macos-15","node":"24","codebuddy":"2.159.0","channel":"baseline"},
+      {"os":"windows-2025","node":"24","codebuddy":"2.159.0","channel":"baseline"},
+      {"os":"ubuntu-24.04","node":"20","codebuddy":"2.159.0","channel":"baseline"},
+      {"os":"ubuntu-24.04","node":"24","codebuddy":"2.178.1","channel":"latest"},
+      {"os":"macos-15","node":"24","codebuddy":"2.178.1","channel":"latest"},
+      {"os":"windows-2025","node":"24","codebuddy":"2.178.1","channel":"latest"}
+    ] },
+    "cursor": { "include": [
+      {"os":"ubuntu-24.04","node":"24","cursor":"3.21.18","channel":"baseline"},
+      {"os":"ubuntu-24.04","node":"22","cursor":"3.21.18","channel":"baseline"},
+      {"os":"ubuntu-24.04","node":"24","cursor":"3.27.22","channel":"latest"},
+      {"os":"macos-15","node":"24","cursor":"3.21.18","channel":"baseline"},
+      {"os":"macos-15","node":"24","cursor":"3.27.22","channel":"latest"},
+      {"os":"windows-2025","node":"24","cursor":"3.21.18","channel":"baseline"},
+      {"os":"windows-2025","node":"24","cursor":"3.27.22","channel":"latest"}
+    ] },
+    "workbuddy": { "include": [
+      {"os":"ubuntu-24.04","arch":"x64","node":"24","release":{"platform":"linux-x64-deb","desktopVersion":"5.5.6.38337834","channel":"baseline"}},
+      {"os":"ubuntu-24.04","arch":"x64","node":"24","release":{"platform":"linux-x64-deb","desktopVersion":"5.6.2.40046327","channel":"latest"}},
+      {"os":"macos-15","arch":"arm64","node":"24","release":{"platform":"darwin-arm64","desktopVersion":"5.6.2.39298511","channel":"baseline"}},
+      {"os":"macos-15","arch":"arm64","node":"24","release":{"platform":"darwin-arm64","desktopVersion":"5.9.3.42398134","channel":"latest"}},
+      {"os":"windows-2025","arch":"x64","node":"24","release":{"platform":"win32-x64-user","desktopVersion":"5.6.2.39298511","channel":"baseline"}},
+      {"os":"windows-2025","arch":"x64","node":"24","release":{"platform":"win32-x64-user","desktopVersion":"5.9.3.42398134","channel":"latest"}},
+      {"os":"ubuntu-24.04","arch":"x64","node":"20","release":{"platform":"linux-x64-deb","desktopVersion":"5.5.6.38337834","channel":"baseline"}}
+    ] }
+  },
+  "41037250868": {
+    "event": "schedule",
+    "codex": { "include": [
+      {"os":"ubuntu-24.04","node":"24","codex":"0.147.0","channel":"baseline"},
+      {"os":"macos-15","node":"24","codex":"0.147.0","channel":"baseline"},
+      {"os":"windows-2025","node":"24","codex":"0.147.0","channel":"baseline"},
+      {"os":"ubuntu-24.04","node":"20","codex":"0.147.0","channel":"baseline"},
+      {"os":"ubuntu-24.04","node":"24","codex":"0.166.0","channel":"latest"},
+      {"os":"macos-15","node":"24","codex":"0.166.0","channel":"latest"},
+      {"os":"windows-2025","node":"24","codex":"0.166.0","channel":"latest"}
+    ] },
+    "opencode": { "include": [
+      {"os":"ubuntu-24.04","node":"24","opencode":"1.18.18","channel":"baseline"},
+      {"os":"macos-15","node":"24","opencode":"1.18.18","channel":"baseline"},
+      {"os":"windows-2025","node":"24","opencode":"1.18.18","channel":"baseline"},
+      {"os":"ubuntu-24.04","node":"20","opencode":"1.18.18","channel":"baseline"},
+      {"os":"ubuntu-24.04","node":"24","opencode":"1.19.5","channel":"latest"},
+      {"os":"macos-15","node":"24","opencode":"1.19.5","channel":"latest"},
+      {"os":"windows-2025","node":"24","opencode":"1.19.5","channel":"latest"}
+    ] },
+    "claude": { "include": [
+      {"os":"ubuntu-24.04","node":"24","claude":"2.1.277","channel":"baseline"},
+      {"os":"macos-15","node":"24","claude":"2.1.277","channel":"baseline"},
+      {"os":"windows-2025","node":"24","claude":"2.1.277","channel":"baseline"},
+      {"os":"ubuntu-24.04","node":"22","claude":"2.1.277","channel":"baseline"},
+      {"os":"ubuntu-24.04","node":"24","claude":"2.1.314","channel":"latest"},
+      {"os":"macos-15","node":"24","claude":"2.1.314","channel":"latest"},
+      {"os":"windows-2025","node":"24","claude":"2.1.314","channel":"latest"}
+    ] },
+    "codebuddy": { "include": [
+      {"os":"ubuntu-24.04","node":"24","codebuddy":"2.159.0","channel":"baseline"},
+      {"os":"macos-15","node":"24","codebuddy":"2.159.0","channel":"baseline"},
+      {"os":"windows-2025","node":"24","codebuddy":"2.159.0","channel":"baseline"},
+      {"os":"ubuntu-24.04","node":"20","codebuddy":"2.159.0","channel":"baseline"},
+      {"os":"ubuntu-24.04","node":"24","codebuddy":"2.178.1","channel":"latest"},
+      {"os":"macos-15","node":"24","codebuddy":"2.178.1","channel":"latest"},
+      {"os":"windows-2025","node":"24","codebuddy":"2.178.1","channel":"latest"}
+    ] },
+    "cursor": { "include": [
+      {"os":"ubuntu-24.04","node":"24","cursor":"3.21.18","channel":"baseline"},
+      {"os":"ubuntu-24.04","node":"22","cursor":"3.21.18","channel":"baseline"},
+      {"os":"ubuntu-24.04","node":"24","cursor":"3.27.22","channel":"latest"},
+      {"os":"macos-15","node":"24","cursor":"3.21.18","channel":"baseline"},
+      {"os":"macos-15","node":"24","cursor":"3.27.22","channel":"latest"},
+      {"os":"windows-2025","node":"24","cursor":"3.21.18","channel":"baseline"},
+      {"os":"windows-2025","node":"24","cursor":"3.27.22","channel":"latest"}
+    ] },
+    "workbuddy": { "include": [
+      {"os":"ubuntu-24.04","arch":"x64","node":"24","release":{"platform":"linux-x64-deb","desktopVersion":"5.5.6.38337834","channel":"baseline"}},
+      {"os":"ubuntu-24.04","arch":"x64","node":"24","release":{"platform":"linux-x64-deb","desktopVersion":"5.6.2.40046327","channel":"latest"}},
+      {"os":"macos-15","arch":"arm64","node":"24","release":{"platform":"darwin-arm64","desktopVersion":"5.6.2.39298511","channel":"baseline"}},
+      {"os":"macos-15","arch":"arm64","node":"24","release":{"platform":"darwin-arm64","desktopVersion":"5.9.3.42398134","channel":"latest"}},
+      {"os":"windows-2025","arch":"x64","node":"24","release":{"platform":"win32-x64-user","desktopVersion":"5.6.2.39298511","channel":"baseline"}},
+      {"os":"windows-2025","arch":"x64","node":"24","release":{"platform":"win32-x64-user","desktopVersion":"5.9.3.42398134","channel":"latest"}},
+      {"os":"ubuntu-24.04","arch":"x64","node":"20","release":{"platform":"linux-x64-deb","desktopVersion":"5.5.6.38337834","channel":"baseline"}}
+    ] }
+  },
+  "41017240796": {
+    "event": "pull_request",
+    "codex": { "include": [
+      {"os":"ubuntu-24.04","node":"24","codex":"0.147.0","channel":"baseline"},
+      {"os":"macos-15","node":"24","codex":"0.147.0","channel":"baseline"},
+      {"os":"windows-2025","node":"24","codex":"0.147.0","channel":"baseline"},
+      {"os":"ubuntu-24.04","node":"20","codex":"0.147.0","channel":"baseline"},
+      {"os":"ubuntu-24.04","node":"24","codex":"0.165.0","channel":"accepted"},
+      {"os":"macos-15","node":"24","codex":"0.165.0","channel":"accepted"},
+      {"os":"windows-2025","node":"24","codex":"0.165.0","channel":"accepted"}
+    ] },
+    "opencode": { "include": [
+      {"os":"ubuntu-24.04","node":"24","opencode":"1.18.18","channel":"baseline"},
+      {"os":"macos-15","node":"24","opencode":"1.18.18","channel":"baseline"},
+      {"os":"windows-2025","node":"24","opencode":"1.18.18","channel":"baseline"},
+      {"os":"ubuntu-24.04","node":"20","opencode":"1.18.18","channel":"baseline"},
+      {"os":"ubuntu-24.04","node":"24","opencode":"1.19.4","channel":"accepted"},
+      {"os":"macos-15","node":"24","opencode":"1.19.4","channel":"accepted"},
+      {"os":"windows-2025","node":"24","opencode":"1.19.4","channel":"accepted"}
+    ] },
+    "claude": { "include": [
+      {"os":"ubuntu-24.04","node":"24","claude":"2.1.277","channel":"baseline"},
+      {"os":"macos-15","node":"24","claude":"2.1.277","channel":"baseline"},
+      {"os":"windows-2025","node":"24","claude":"2.1.277","channel":"baseline"},
+      {"os":"ubuntu-24.04","node":"22","claude":"2.1.277","channel":"baseline"},
+      {"os":"ubuntu-24.04","node":"24","claude":"2.1.312","channel":"accepted"},
+      {"os":"macos-15","node":"24","claude":"2.1.312","channel":"accepted"},
+      {"os":"windows-2025","node":"24","claude":"2.1.312","channel":"accepted"}
+    ] },
+    "codebuddy": { "include": [
+      {"os":"ubuntu-24.04","node":"24","codebuddy":"2.159.0","channel":"baseline"},
+      {"os":"macos-15","node":"24","codebuddy":"2.159.0","channel":"baseline"},
+      {"os":"windows-2025","node":"24","codebuddy":"2.159.0","channel":"baseline"},
+      {"os":"ubuntu-24.04","node":"20","codebuddy":"2.159.0","channel":"baseline"},
+      {"os":"ubuntu-24.04","node":"24","codebuddy":"2.177.1","channel":"accepted"},
+      {"os":"macos-15","node":"24","codebuddy":"2.177.1","channel":"accepted"},
+      {"os":"windows-2025","node":"24","codebuddy":"2.177.1","channel":"accepted"}
+    ] },
+    "cursor": { "include": [
+      {"os":"ubuntu-24.04","node":"24","cursor":"3.21.18","channel":"baseline"},
+      {"os":"ubuntu-24.04","node":"22","cursor":"3.21.18","channel":"baseline"},
+      {"os":"ubuntu-24.04","node":"24","cursor":"3.27.22","channel":"accepted"},
+      {"os":"macos-15","node":"24","cursor":"3.21.18","channel":"baseline"},
+      {"os":"macos-15","node":"24","cursor":"3.27.22","channel":"accepted"},
+      {"os":"windows-2025","node":"24","cursor":"3.21.18","channel":"baseline"},
+      {"os":"windows-2025","node":"24","cursor":"3.27.22","channel":"accepted"}
+    ] },
+    "workbuddy": { "include": [
+      {"os":"ubuntu-24.04","arch":"x64","node":"24","release":{"platform":"linux-x64-deb","desktopVersion":"5.5.6.38337834","channel":"baseline"}},
+      {"os":"ubuntu-24.04","arch":"x64","node":"24","release":{"platform":"linux-x64-deb","desktopVersion":"5.6.2.40046327","channel":"accepted"}},
+      {"os":"macos-15","arch":"arm64","node":"24","release":{"platform":"darwin-arm64","desktopVersion":"5.6.2.39298511","channel":"baseline"}},
+      {"os":"macos-15","arch":"arm64","node":"24","release":{"platform":"darwin-arm64","desktopVersion":"5.8.3.41334564","channel":"accepted"}},
+      {"os":"windows-2025","arch":"x64","node":"24","release":{"platform":"win32-x64-user","desktopVersion":"5.6.2.39298511","channel":"baseline"}},
+      {"os":"windows-2025","arch":"x64","node":"24","release":{"platform":"win32-x64-user","desktopVersion":"5.8.3.41334564","channel":"accepted"}},
+      {"os":"ubuntu-24.04","arch":"x64","node":"20","release":{"platform":"linux-x64-deb","desktopVersion":"5.5.6.38337834","channel":"baseline"}}
+    ] }
+  }
+}

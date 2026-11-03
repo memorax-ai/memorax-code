@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { createServer as createTcpServer } from "node:net";
@@ -9,13 +9,16 @@ import { tmpdir, userInfo } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
-import { assertBackendReplacement, assertCredentialNotEchoed, assertSetupInputRejection,
+import { verifyBackendReplacementState, assertCredentialNotEchoed, assertSetupInputRejection,
   snapshotProtectedConfiguration, assertProtectedConfiguration } from "./codex-lifecycle-assertions.mjs";
+import { createEvidenceRecorder } from "../shared/ci-evidence.mjs";
+import { projectTerminalDisposal } from "./codex-setup-pty-evidence.mjs";
+import { projectError, projectPathAlias, projectProductDiagnostics, semver, signal as knownSignal, systemCode } from "../shared/ci-evidence-projections.mjs";
 
 const execFileAsync = promisify(execFile);
 const pluginName = "memorax-code-codex-adapter";
 const pluginId = `${pluginName}@memorax-code`;
-const otherClients = ["claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor"];
+const otherClients = ["claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor", "qoder"];
 const fixtureKey = `sk_${"E".repeat(43)}`;
 const fixtureUser = "lifecycle-saved-account";
 const searchFixture = "LIFECYCLE_SAVED_ACCOUNT_SEARCH_RESULT";
@@ -30,6 +33,8 @@ const cleanupCodes = {
   port_release: "CLEANUP_PORT_RELEASE_FAILED",
   directory_removal: "CLEANUP_DIRECTORY_REMOVAL_FAILED",
 };
+// Budgets in milliseconds for observing a busy Windows directory removal: the whole observation and each of its items.
+const holderBudgetMs = { total: 60_000, entries: 5_000, processes: 15_000, defender: 10_000 };
 let cleanupStage = "entrypoint_check";
 let cleanupTrackedPidIndex;
 let stage = "prerequisites";
@@ -40,11 +45,18 @@ let requests = 0;
 let allowSearch = false;
 const memoryRequests = [];
 const endpointErrors = [];
-const backendPids = new Set();
+// Every Backend seen, as PID and instance pairs: a PID can recur with another instance, so no pair replaces another.
+const trackedBackends = [];
 let npmCommand, npmPrefix, candidateTarball, ptyPackage, ptyScript;
 let expectedPackageVersion, expectedPluginVersion, expectedEvents, sourceRoot, parse;
+// Upgrade registry request counts, and stop commands issued, for failure evidence.
+let registryRequests;
+let stopInvocations = 0;
 let originalProvider;
 const preservedMemory = new Map();
+// Evidence stays outside `root`, so it survives cleanup failures and killed runners.
+const evidence = createEvidenceRecorder({ suite: "codex-install-smoke", client: "codex" });
+evidence.track(() => ({ stage, cleanupStage, checks: report.checks.length }));
 
 try {
   check(["darwin", "linux", "win32"].includes(process.platform), "This smoke test requires macOS, Linux or Windows");
@@ -278,7 +290,7 @@ try {
   const artifact = await readFile(candidateTarball);
   let servedArtifact = artifact;
   let servedManifest = manifest;
-  const registryRequests = { manifest: 0, artifact: 0, rejectedArtifact: 0 };
+  registryRequests = { manifest: 0, artifact: 0, rejectedArtifact: 0 };
   let rejectDownload = true;
   let registryUrl;
   registry = createServer((request, response) => {
@@ -441,27 +453,48 @@ try {
   if (error.terminalError) report.terminalError = error.terminalError;
   if (error.terminalDiagnostics) report.terminalDiagnostics = error.terminalDiagnostics;
   if (error.terminalNativeError) report.terminalNativeError = error.terminalNativeError;
+  if (error.terminalDisposal) report.terminalDisposal = error.terminalDisposal;
+  // A command timeout is reported by execFile as a killed child with a signal and no exit code.
+  if (knownSignal(error.signal)) report.commandSignal = error.signal;
+  if (error.killed === true) report.commandKilled = true;
+  // Typed name and code only; the message and command output stay private.
+  const errorDetails = projectError(error);
+  if (Object.keys(errorDetails).length) report.errorDetails = errorDetails;
+  // Failure-time state, read before cleanup and without the installed CLI.
+  try { report.failureState = await snapshotFailureState(); }
+  catch { report.failureState = { status: "failed" }; }
+  await collectProductDiagnostics();
 } finally {
+  const functionalOutcome = report.status;
   try {
     if (setupStarted) {
-      cleanupStage = "entrypoint_check";
-      if (await exists(entrypoint)) await stopAndVerify();
-      else await assertStopped();
+      await stopForCleanup();
       report.checks.push("Backend stopped, process exited and port released");
+    } else {
+      report.cleanupStop = { invoked: false, skipReason: "backend_not_started" };
     }
     if (root) {
       cleanupStage = "directory_removal";
-      await rm(root, { recursive: true, force: true });
+      await removeIsolatedDirectory();
     }
     report.cleanup = "PASS";
   } catch (error) {
     report.status = "FAIL";
-    report.cleanup = "FAIL: isolated state retained because shutdown was not confirmed";
+    // Directory removal starts only after every shutdown check above has passed,
+    // or directly when setup never started a Backend.
+    const removalOnly = cleanupStage === "directory_removal";
+    report.cleanup = !removalOnly ? "FAIL: isolated state retained because shutdown was not confirmed"
+      : setupStarted ? "FAIL: shutdown was confirmed but the isolated directory could not be removed"
+        : "FAIL: no Backend was started and the isolated directory could not be removed";
     report.cleanupFailure = { stage: cleanupStage, code: cleanupCodes[cleanupStage] };
+    const busyPath = removalOnly ? projectPathAlias(error.path, { root }) : undefined;
+    if (busyPath) report.cleanupFailure.path = busyPath;
     if (cleanupStage === "tracked_process" && Number.isInteger(cleanupTrackedPidIndex)) {
       report.cleanupFailure.trackedPidIndex = cleanupTrackedPidIndex;
-      report.cleanupFailure.trackedPidCount = backendPids.size;
+      report.cleanupFailure.trackedPidCount = trackedBackends.length;
     }
+    // A remaining PID record ends the shutdown checks; record whether its process is still alive.
+    if (cleanupStage === "pid_record_removal") await observeCleanupBackendPid();
     if (["ENOENT", "EACCES", "EPERM", "EBUSY", "ENOTEMPTY", "ESRCH", "EINVAL", "ETIMEDOUT",
       "EADDRINUSE", "EADDRNOTAVAIL", "EPIPE", "ECONNREFUSED", "ECONNRESET", "ENOTFOUND", "EIO", "EROFS"].includes(error.code)) {
       report.cleanupFailure.systemCode = error.code;
@@ -478,9 +511,149 @@ try {
     server.closeAllConnections();
     await new Promise((done) => server.close(done));
   }
+  report.evidenceStatus = evidence.finish({ testOutcome: report.status, failure: failureEvidence(functionalOutcome) });
 }
 console.log(JSON.stringify(report, null, 2));
 if (report.status !== "PASS") process.exitCode = 1;
+
+// Read the product's validated diagnostic records before cleanup removes them;
+// only typed fields reach the evidence journal. A skipped collection records why.
+async function collectProductDiagnostics() {
+  if (!env || !entrypoint) {
+    report.productDiagnostics = { status: "skipped", reason: "environment_not_ready" };
+    return;
+  }
+  const entry = await inspectEntrypoint();
+  if (entry.status !== "present") {
+    report.productDiagnostics = { status: "skipped", reason: entry.status === "missing" ? "entrypoint_missing" : "entrypoint_stat_error" };
+    return;
+  }
+  const collected = await evidence.collect("productDiagnostics", async () => {
+    const result = await execFileAsync(process.execPath, [entrypoint, "logs", "--diagnostics", "--limit", "20", "--json"], {
+      cwd: workspace, env, timeout: 15_000, maxBuffer: 1024 * 1024, encoding: "utf8", windowsHide: true,
+    }).catch((error) => { if (/^\s*\{/.test(error.stdout ?? "")) return error; throw error; });
+    return projectProductDiagnostics(JSON.parse(result.stdout));
+  }, { budgetMs: 20_000 });
+  report.productDiagnostics = { status: collected.status === "OK" ? "collected" : collected.status === "TIMEOUT" ? "timed_out" : "failed" };
+}
+
+// Failure-time state read directly from disk: an interrupted update can remove or replace the
+// installed CLI. Each item is a separately budgeted collection, so one item that fails or never
+// returns cannot hold back or discard the others.
+async function snapshotFailureState(budgetMs = 5_000) {
+  const item = async (name, inspect) => boundedObservation(await evidence.collect(`failureState.${name}`, inspect, { budgetMs }));
+  const [entrypointState, installedPackage, packageTransition, backendPid] = await Promise.all([
+    item("entrypoint", inspectEntrypoint), item("installedPackage", inspectInstalledPackage),
+    item("packageTransition", inspectPackageTransition), item("backendPid", inspectBackendPid),
+  ]);
+  return {
+    entrypoint: entrypointState, installedPackage, packageTransition, backendPid,
+    registryRequests: registryRequests ? { manifest: registryRequests.manifest, artifact: registryRequests.artifact,
+      rejectedArtifact: registryRequests.rejectedArtifact } : { status: "not_started" },
+  };
+}
+
+// After a remaining PID record ends the shutdown checks, observe its process within a budget;
+// the observation never replaces the cleanup failure it describes.
+async function observeCleanupBackendPid(budgetMs = 5_000) {
+  let observed;
+  try { observed = await evidence.collect("cleanupBackendPid", inspectBackendPid, { budgetMs }); }
+  catch { observed = { status: "FAILED" }; }
+  report.cleanupFailure.backendPid = boundedObservation(observed);
+}
+
+// A bounded collection's value, or why it has none.
+function boundedObservation(observed) {
+  if (observed.status === "OK") return observed.value;
+  return observed.status === "TIMEOUT" ? { status: "timed_out" } : withSystemCode({ status: "observation_failed" }, observed.error);
+}
+
+async function inspectEntrypoint() {
+  if (!entrypoint) return { status: "not_initialized" };
+  try {
+    await stat(entrypoint);
+    return { status: "present" };
+  } catch (error) {
+    return error?.code === "ENOENT" ? { status: "missing" } : withSystemCode({ status: "stat_error" }, error);
+  }
+}
+
+async function inspectInstalledPackage() {
+  if (!entrypoint) return { file: "not_initialized" };
+  const { value, ...record } = await readStateRecord(join(dirname(dirname(entrypoint)), "package.json"));
+  if (record.file !== "present") return record;
+  const version = semver(value?.version);
+  return { ...record, version, relation: !version ? "invalid_version" : version === expectedPackageVersion ? "candidate"
+    : version === semver(process.argv[6]) ? "previous" : "other" };
+}
+
+// Classifies the transition record without importing code from the package being replaced.
+async function inspectPackageTransition() {
+  if (!stateHome) return { file: "not_initialized" };
+  const { value, ...record } = await readStateRecord(join(stateHome, "runtime", "install", "package-transition.json"));
+  if (record.file !== "present") return record;
+  return { ...record,
+    recordVersion: Number.isSafeInteger(value?.version) && value.version >= 0 && value.version <= 1000 ? value.version : undefined,
+    state: ["retiring", "retired"].includes(value?.state) ? value.state : "unrecognized",
+    sourceVersion: semver(value?.sourceVersion) };
+}
+
+// The PID record and its process are separate observations: a record can outlive its process.
+async function inspectBackendPid() {
+  if (!stateHome) return { file: "not_initialized", process: "not_probed" };
+  const { value, ...record } = await readStateRecord(pidPath());
+  if (record.file !== "present") return { ...record, process: "not_probed" };
+  if (!Number.isInteger(value?.pid) || value.pid <= 0) return { file: "invalid", process: "not_probed" };
+  const tracked = trackedBackends.some((entry) => entry.pid === value.pid);
+  try {
+    process.kill(value.pid, 0);
+    return { file: "present", process: "alive", tracked };
+  } catch (error) {
+    return error?.code === "ESRCH" ? { file: "present", process: "exited", tracked }
+      : withSystemCode({ file: "present", process: "unknown", tracked }, error);
+  }
+}
+
+async function readStateRecord(path) {
+  let text;
+  try { text = await readFile(path, "utf8"); }
+  catch (error) { return error?.code === "ENOENT" ? { file: "absent" } : withSystemCode({ file: "unreadable" }, error); }
+  try { return { file: "present", value: JSON.parse(text) }; }
+  catch { return { file: "unparseable" }; }
+}
+
+function withSystemCode(record, error) {
+  const code = systemCode(error?.code);
+  return code ? { ...record, code } : record;
+}
+
+function failureEvidence(functionalOutcome) {
+  if (report.status === "PASS") return undefined;
+  const functionalFailed = functionalOutcome !== "PASS";
+  const cleanup = report.cleanupFailure;
+  const cleanupCode = cleanup ? [cleanup.code, cleanup.systemCode].filter(Boolean).join(":") : undefined;
+  const message = typeof report.error === "string" ? report.error : "";
+  const functionalCode = report.diagnosticCode ?? (/^[A-Z][A-Z0-9_]{1,79}$/.test(message) ? message : undefined)
+    ?? report.terminalError ?? report.nativeErrorCode ?? (Number.isInteger(report.exitCode) ? `EXIT_${report.exitCode}` : undefined)
+    ?? (typeof report.errorDetails?.code === "string" ? report.errorDetails.code : undefined)
+    // Smoke messages are fixed test text; a short digest keeps the signature stable and compact.
+    ?? `MESSAGE_${createHash("sha256").update(message).digest("hex").slice(0, 8).toUpperCase()}`;
+  return {
+    kind: functionalFailed ? (cleanup ? "functional+cleanup" : "functional") : "cleanup",
+    stage: functionalFailed ? report.stage : undefined,
+    code: functionalFailed ? functionalCode : cleanupCode,
+    error: functionalFailed ? message : undefined,
+    exitCode: report.exitCode, commandSignal: report.commandSignal, commandKilled: report.commandKilled,
+    nativeErrorCode: report.nativeErrorCode, diagnosticCode: report.diagnosticCode, terminalError: report.terminalError,
+    errorDetails: report.errorDetails, terminalDisposal: report.terminalDisposal,
+    failureState: report.failureState, productDiagnostics: report.productDiagnostics, cleanupStop: report.cleanupStop,
+    cleanupStage: cleanup?.stage, cleanupCode, cleanupPath: cleanup?.path, cleanupBackendPid: cleanup?.backendPid,
+    directoryRemoval: report.directoryRemoval,
+    backendStarted: setupStarted,
+    shutdownConfirmed: cleanup ? setupStarted && cleanup.stage === "directory_removal" : undefined,
+    checksPassed: report.checks.length,
+  };
+}
 
 async function verifyReady(attempt, expectedUser = fixtureUser) {
   stage = `${attempt} native registration`;
@@ -545,7 +718,7 @@ async function verifyReady(attempt, expectedUser = fixtureUser) {
   "Setup changed the existing Codex model configuration");
   const backend = await readJson(join(stateHome, "runtime", "backend", "backend.pid.json"));
   check(Number.isInteger(backend.pid) && backend.pid > 0, "Backend PID record is invalid");
-  backendPids.add(backend.pid);
+  await trackBackend(backend);
   report.checks.push(`${attempt}: native plugin, trusted Hooks, packaged Skill, Backend and completion verified`);
 }
 
@@ -558,49 +731,193 @@ async function rememberPid() {
   if (await exists(pidPath())) {
     const backend = await readJson(pidPath());
     check(Number.isInteger(backend.pid) && backend.pid > 0, "Backend PID record is invalid");
-    backendPids.add(backend.pid);
+    await trackBackend(backend);
   }
 }
 async function verifyBackendReplacement(before, label) {
   stage = `${label} Backend replacement`;
-  const after = await readJson(pidPath());
-  let oldProcessAlive = true;
-  try { process.kill(before.pid, 0); }
-  catch (error) { if (error.code === "ESRCH") oldProcessAlive = false; else throw error; }
-  try { process.kill(after.pid, 0); }
-  catch { check(false, "Updated Backend PID does not identify a live process"); }
-  check(after.url === `http://127.0.0.1:${backendPort}`, "Updated Backend has an unexpected endpoint");
-  const response = await fetch(new URL("/health", after.url), { signal: AbortSignal.timeout(5_000) });
-  check(response.ok, "Updated Backend did not answer its health endpoint successfully");
-  assertBackendReplacement(before, after, await response.json(), oldProcessAlive);
-  backendPids.delete(before.pid);
-  report.checks.push(`${label}: old Backend exited; new PID, instance and live health identity agree`);
+  const after = await verifyBackendReplacementState(before, {
+    readAfter: () => readJson(pidPath()), expectedUrl: `http://127.0.0.1:${backendPort}`,
+    observe(diagnostic) {
+      report.backendReplacement = diagnostic;
+      evidence.observe("backendReplacement", diagnostic);
+    },
+  });
+  const retired = trackedBackends.findIndex((entry) => entry.pid === before.pid && entry.instanceId === before.instanceId);
+  if (retired >= 0) trackedBackends.splice(retired, 1);
+  await trackBackend(after);
+  report.checks.push(`${label}: Backend instance changed; current process and health identity agree`);
 }
 async function stopAndVerify() {
   cleanupStage = "pid_record_read";
   await rememberPid();
   cleanupStage = "stop_command";
+  stopInvocations += 1;
   const stopped = await product(["stop", "--clients", "codex", "--json"]);
   cleanupStage = "stop_response";
   check(JSON.parse(stopped.stdout).ok === true, "Backend stop did not succeed");
   await assertStopped();
 }
+// The existing cleanup decision, recording whether it issued stop or why it did not.
+async function stopForCleanup() {
+  cleanupStage = "entrypoint_check";
+  const before = stopInvocations;
+  let skipReason = "entrypoint_check_failed";
+  try {
+    if (await exists(entrypoint)) {
+      skipReason = "pid_record_read_failed";
+      await stopAndVerify();
+    } else {
+      skipReason = "entrypoint_missing";
+      await assertStopped();
+    }
+  } finally {
+    report.cleanupStop = stopInvocations > before ? { invoked: true } : { invoked: false, skipReason };
+  }
+}
 async function assertStopped() {
   cleanupStage = "pid_record_removal";
   check(!(await exists(pidPath())), "Backend PID record remains after stop");
   cleanupStage = "tracked_process";
+  const instanceIds = trackedBackends.map((entry) => entry.instanceId).filter(validInstanceId);
   let trackedIndex = 0;
-  for (const pid of backendPids) {
+  for (const entry of trackedBackends) {
     cleanupTrackedPidIndex = trackedIndex++;
-    let alive = true;
-    try { process.kill(pid, 0); } catch (error) { if (error.code === "ESRCH") alive = false; else throw error; }
-    check(!alive, "An installation Backend process remains after stop");
+    if (!signalable(entry.pid)) continue;
+    // Only Windows has a command-line query here; elsewhere a live tracked PID still fails as a remaining Backend.
+    check(process.platform === "win32", "An installation Backend process remains after stop");
+    const identity = await queryBackendIdentity(entry.pid, instanceIds);
+    // A tracked instance on the command line is a remaining Backend. A complete command line without one shows another
+    // process only for a verified pair, and a PID the query no longer finds has exited only if the probe agrees.
+    const outcome = identity === "match" ? "identity_match"
+      : identity === "other_instance" || identity === "no_marker"
+        ? (entry.registration === "verified" ? "identity_mismatch" : "identity_unverified")
+        : identity === "exited" && signalable(entry.pid) ? "query_inconsistent" : identity;
+    (report.backendIdentity ??= []).push({ index: cleanupTrackedPidIndex, outcome, registration: entry.registration });
+    try { evidence.observe("backendIdentity", report.backendIdentity); } catch {}
+    check(outcome !== "identity_match", "An installation Backend process remains after stop");
+    check(outcome === "exited" || outcome === "identity_mismatch",
+      "An installation Backend process identity could not be confirmed after stop");
   }
   cleanupStage = "port_release";
   const probe = createTcpServer();
   await new Promise((done, reject) => { probe.once("error", reject); probe.listen(backendPort, "127.0.0.1", done); });
   await new Promise((done) => probe.close(done));
-  backendPids.clear();
+  trackedBackends.length = 0;
+}
+// Tracks a recorded Backend once per PID and instance pair. On Windows the command line read while that instance is
+// known to run anchors any later mismatch: only a PID once shown to carry exactly this instance's marker can later be
+// judged another process. A failed read leaves the pair unverified; it does not fail the stage. The report counts each
+// read's code, with no PID, instance or command line, so a passing run still shows whether the reads worked.
+async function trackBackend(record) {
+  if (trackedBackends.some((entry) => entry.pid === record.pid && entry.instanceId === record.instanceId)) return;
+  const entry = { pid: record.pid, instanceId: record.instanceId, registration: "not_applicable" };
+  trackedBackends.push(entry);
+  if (process.platform !== "win32") return;
+  const identity = validInstanceId(entry.instanceId) ? await queryBackendIdentity(entry.pid, [entry.instanceId]) : "instance_invalid";
+  entry.registration = identity === "match" ? "verified" : identity;
+  const registrations = report.backendRegistration ??= {};
+  registrations[entry.registration] = (registrations[entry.registration] ?? 0) + 1;
+  try { evidence.observe("backendRegistration", registrations); } catch {}
+}
+// A signal probe that is false only when the PID no longer exists; any other probe error still fails.
+function signalable(pid) {
+  try { process.kill(pid, 0); return true; } catch (error) { if (error.code === "ESRCH") return false; throw error; }
+}
+// Reads one Windows PID's command line in the smoke's own environment and directory, outside the isolated tree, and
+// returns only its classification. Error-stop and the stderr check keep a query error from reading as an absent
+// process; base64 keeps the console encoding from altering the line.
+async function queryBackendIdentity(pid, instanceIds) {
+  const windowsRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows";
+  const script = [
+    "$ErrorActionPreference='Stop'", "$ProgressPreference='SilentlyContinue'",
+    `$rows=@(Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' -Property ProcessId,CommandLine | ForEach-Object {`
+      + " @{ processId=$_.ProcessId; commandLine=[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$_.CommandLine)) } })",
+    "ConvertTo-Json -InputObject @($rows) -Compress",
+  ].join("; ");
+  let result;
+  try {
+    result = await execFileAsync(join(windowsRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+      ["-NoProfile", "-NonInteractive", "-Command", script],
+      { timeout: 30_000, maxBuffer: 1024 * 1024, encoding: "utf8", windowsHide: true });
+  } catch (error) {
+    // execFile marks a child it killed at the deadline; any other launch or exit failure is a failed query.
+    return error?.killed === true ? "query_timeout" : "query_failed";
+  }
+  if (result.stderr) return "query_stderr";
+  let rows;
+  try { rows = JSON.parse(result.stdout); } catch { return "query_invalid"; }
+  if (!Array.isArray(rows) || rows.length > 1) return "query_invalid";
+  if (!rows.length) return "exited";
+  const [row] = rows;
+  if (row?.processId !== pid || typeof row.commandLine !== "string") return "query_invalid";
+  // Only canonical base64 of valid UTF-8 is read. Node decodes both leniently, so a value that does not encode back to
+  // the same input, such as one missing its padding or holding an invalid byte, is malformed, not a line without a marker.
+  const bytes = Buffer.from(row.commandLine, "base64"), line = bytes.toString("utf8");
+  if (bytes.toString("base64") !== row.commandLine || !Buffer.from(line, "utf8").equals(bytes)) return "query_invalid";
+  return classifyBackendCommandLine(line, instanceIds);
+}
+// Classifies a Windows command line by whole arguments: only the exact marker argument followed by one instance value
+// counts. A near-miss or repeated marker, a malformed value, a tracked instance in any other argument, or a line the
+// parsers could split differently is ambiguous, never another process.
+function classifyBackendCommandLine(commandLine, instanceIds) {
+  if (!commandLine.trim()) return "command_line_missing";
+  const { args, certain } = windowsArgv(commandLine);
+  if (!certain) return "parse_uncertain";
+  const marker = args.indexOf("--memorax-code-backend-instance"), valueAt = marker < 0 ? -1 : marker + 1;
+  const value = args[valueAt];
+  if ((marker >= 0 && !validInstanceId(value)) || args.some((arg, index) => index !== marker
+    && (arg.toLowerCase().includes("memorax-code-backend-instance")
+      || ((index !== valueAt || !instanceIds.includes(arg)) && instanceIds.some((id) => arg.includes(id)))))) {
+    return "marker_ambiguous";
+  }
+  if (marker < 0) return "no_marker";
+  return instanceIds.includes(value) ? "match" : "other_instance";
+}
+function validInstanceId(value) { return typeof value === "string" && /^[A-Za-z0-9_-]+$/.test(value); }
+// Splits a Windows command line by the C runtime rules Node applies to its own arguments. `certain` is false for an
+// unterminated quote, a doubled quote inside quotes or a quote within the program name, where parsers can disagree.
+function windowsArgv(commandLine) {
+  const blank = (char) => char === " " || char === "\t";
+  let index = 0, quoted = false, arg = "";
+  // The program name: quotes toggle and backslashes are literal.
+  while (index < commandLine.length && (quoted || !blank(commandLine[index]))) {
+    if (commandLine[index] === '"') quoted = !quoted; else arg += commandLine[index];
+    index += 1;
+  }
+  const name = commandLine.slice(0, index), quotes = name.split('"').length - 1;
+  let certain = quotes === 0 || (quotes === 2 && name.startsWith('"') && name.endsWith('"'));
+  const args = [arg];
+  for (;;) {
+    while (blank(commandLine[index])) index += 1;
+    if (index >= commandLine.length) break;
+    arg = "";
+    quoted = false;
+    while (index < commandLine.length && (quoted || !blank(commandLine[index]))) {
+      if (commandLine[index] === "\\") {
+        // Backslashes are literal unless a quote follows: then each pair yields one, and an odd one escapes the quote.
+        let end = index;
+        while (commandLine[end] === "\\") end += 1;
+        const count = end - index;
+        if (commandLine[end] !== '"') arg += "\\".repeat(count);
+        else {
+          arg += "\\".repeat(count >> 1);
+          if (count % 2) { arg += '"'; end += 1; }
+        }
+        index = end;
+      } else if (commandLine[index] === '"') {
+        if (quoted && commandLine[index + 1] === '"') { certain = false; arg += '"'; index += 1; }
+        else quoted = !quoted;
+        index += 1;
+      } else {
+        arg += commandLine[index];
+        index += 1;
+      }
+    }
+    if (quoted) certain = false;
+    args.push(arg);
+  }
+  return { args, certain };
 }
 async function verifyPreserved(config) {
   assertProtectedConfiguration(parse(await readFile(join(stateHome, "config.toml"), "utf8")),
@@ -626,8 +943,10 @@ async function terminalSetup(mode) {
   // this initial input; every reuse, update and request reads persisted state.
   if (mode === "complete" || mode === "cancel") env.MEMORAX_CODE_MEMORAX_ENDPOINT = savedEndpoint;
   try {
-    return JSON.parse((await run(process.execPath, [ptyScript, ptyPackage, entrypoint, mode],
+    const result = JSON.parse((await run(process.execPath, [ptyScript, ptyPackage, entrypoint, mode],
       JSON.stringify({ username: fixtureUser, apiKey: fixtureKey }))).stdout);
+    recordTerminalDisposal(mode, result.terminalDisposal);
+    return result;
   } catch (error) {
     // The helper emits only a bounded safe JSON report; raw terminal output
     // stays private even when a test assertion or native terminal launch fails.
@@ -638,12 +957,194 @@ async function terminalSetup(mode) {
         "usernamePromptSeen", "keyPromptSeen", "languagePromptSeen", "accountInputSent", "outputBytes", "cursorPositionReplies", "exitCode", "signal",
       ].filter((key) => typeof safe[key] === "boolean" || Number.isFinite(safe[key])).map((key) => [key, safe[key]]));
       if (/^[A-Z][A-Z0-9_]{1,79}$/.test(safe.nativeErrorCode)) error.terminalNativeError = safe.nativeErrorCode;
+      const disposal = recordTerminalDisposal(mode, safe.terminalDisposal);
+      if (disposal) error.terminalDisposal = disposal;
     } catch {}
     throw error;
   } finally {
     delete env.MEMORAX_CODE_MEMORAX_ENDPOINT;
   }
 }
+function recordTerminalDisposal(mode, value) {
+  const disposal = projectTerminalDisposal(value);
+  if (disposal) {
+    try { evidence.observe("terminalDisposal", {
+      mode: ["complete", "cancel", "reuse", "update", "force-update"].includes(mode) ? mode : "unknown", ...disposal,
+    }); } catch { /* Optional evidence must not replace the terminal outcome. */ }
+  }
+  return disposal;
+}
+
+async function removeIsolatedDirectory() {
+  const started = performance.now();
+  // Preserve the existing single removal attempt and publish only its outcome.
+  try { evidence.observe("directoryRemoval", { status: "started", attempt: 1 }); } catch {}
+  let failure;
+  try { await rm(root, { recursive: true, force: true }); }
+  catch (error) { failure = error; }
+  report.directoryRemoval = { status: failure ? "failed" : "returned", attempt: 1,
+    elapsedMs: Math.max(0, Math.min(600_000, Math.floor(performance.now() - started))) };
+  if (failure) {
+    report.directoryRemoval.error = projectError(failure);
+    const path = projectPathAlias(failure.path, { root });
+    if (path) report.directoryRemoval.path = path;
+  }
+  try { evidence.observe("directoryRemoval", report.directoryRemoval); } catch {}
+  // On Windows, observe what keeps the directory busy. The same failure propagates unless that observation shows that a
+  // retry removed the directory while neither process query found a live process created since the smoke started.
+  if (failure && process.platform === "win32" && ["EBUSY", "EPERM", "ENOTEMPTY"].includes(failure.code)) {
+    if (await observeRemovalHolders(failure)) {
+      report.checks.push(`isolated directory removed on a retry after the first removal failed with ${failure.code}; `
+        + "neither process query found a live process created since the smoke started");
+      return;
+    }
+  }
+  if (failure) throw failure;
+}
+
+// Observes a busy Windows removal: what remains under the failed path, which processes created since the smoke started
+// are alive, when removal stops failing, and whether Defender real-time protection is on. Each item runs within what
+// remains of one total budget; an unexpected error ends the observation, never the failure it describes. Returns the
+// probe that removed the directory when the cleanup passes on that retry, and nothing otherwise.
+async function observeRemovalHolders(failure) {
+  const failedAt = performance.now(), deadline = failedAt + holderBudgetMs.total;
+  const afterMs = () => Math.max(0, Math.round(performance.now() - failedAt));
+  const item = async (name, inspect, limitMs) => {
+    const budgetMs = Math.min(limitMs, Math.floor(deadline - performance.now()));
+    // An item that can no longer start within the total budget records that instead of starting.
+    if (budgetMs <= 0) return { status: "budget_exhausted" };
+    let observed;
+    try { observed = await evidence.collect(name, () => inspect(budgetMs), { budgetMs }); }
+    catch { observed = { status: "FAILED" }; }
+    return boundedObservation(observed);
+  };
+  const holders = report.directoryRemoval.holders = {};
+  try {
+    // A process can name a path in its short or long form; both are resolved while the root still exists.
+    const paths = { root: [root, await realpath(root)], npmPrefix: [npmPrefix, await realpath(npmPrefix)] };
+    const processes = (budgetMs) => snapshotProcesses(paths, budgetMs, afterMs);
+    holders.entries = await item("removalEntries", () => inspectRemovalPath(failure.path), holderBudgetMs.entries);
+    // The probes keep their schedule during the first process query; the queries run one at a time, so none lists another.
+    [holders.processes, holders.probes] = await Promise.all([
+      item("removalProcesses", processes, holderBudgetMs.processes), probeRemoval(failedAt, deadline, afterMs)]);
+    holders.processesAfterProbes = await item("removalProcessesAfterProbes", processes, holderBudgetMs.processes);
+    holders.defender = await item("removalDefender", readDefenderStatus, holderBudgetMs.defender);
+  } catch (error) {
+    Object.assign(holders, withSystemCode({ status: "observation_failed" }, error));
+  }
+  const retry = removedOnRetry(holders);
+  if (retry) Object.assign(report.directoryRemoval, { status: "removed_on_retry", retry: { second: retry.second, afterMs: retry.afterMs } });
+  try { console.log(holderWarning(failure.code, holders, retry)); } catch {}
+  try { evidence.observe("directoryRemoval", report.directoryRemoval); } catch {}
+  return retry;
+}
+
+// The cleanup passes on a retry only when a probe removed the directory and both process queries returned a result that
+// lists no live process created since the smoke started; a query that failed, timed out or never started has no total.
+// Defender's status is recorded, never a condition.
+function removedOnRetry({ processes, processesAfterProbes, probes }) {
+  if (processes?.total !== 0 || processesAfterProbes?.total !== 0) return undefined;
+  return probes?.find((probe) => probe.removed === true);
+}
+
+// Whether the failed path still exists and, for a directory, up to 20 sorted names relative to it, each projected
+// segment by segment like every other recorded path.
+async function inspectRemovalPath(path) {
+  let info;
+  try { info = await lstat(path); }
+  catch (error) { if (error?.code === "ENOENT") return { exists: false }; throw error; }
+  if (!info.isDirectory()) return { exists: true, directory: false };
+  const names = (await readdir(path, { recursive: true })).sort();
+  return { exists: true, directory: true, total: names.length,
+    names: names.slice(0, 20).map((name) => projectPathAlias(join(path, name), { entry: path }).replace(/^<entry>\//, "")) };
+}
+
+// Tries the same removal again 1, 2, 4, 8 and 15 seconds after the failure, until one attempt succeeds, only to time how
+// long the directory stays busy. The budget is checked after each wait, so a late timer starts no probe past it.
+async function probeRemoval(failedAt, deadline, afterMs) {
+  const probes = [];
+  for (const second of [1, 2, 4, 8, 15]) {
+    const wait = failedAt + second * 1_000 - performance.now();
+    if (wait > 0) await new Promise((done) => setTimeout(done, wait));
+    if (performance.now() >= deadline) break;
+    const probe = { second, afterMs: afterMs() };
+    probes.push(probe);
+    try {
+      await rm(root, { recursive: true, force: true });
+      probe.removed = true;
+      break;
+    } catch (error) { probe.code = projectError(error).code; }
+  }
+  return probes;
+}
+
+// Lists the processes created since the smoke started that are still alive, with the window of the query in
+// milliseconds after the failure. The console writes UTF-8, so any command line is read as it is.
+async function snapshotProcesses(paths, budgetMs, afterMs) {
+  const start = afterMs();
+  const { query, rows } = await queryPowerShell("[Console]::OutputEncoding=[Text.Encoding]::UTF8; $rows=@(Get-CimInstance Win32_Process"
+    + " -Property ProcessId,ParentProcessId,Name,CreationDate,ExecutablePath,CommandLine | Select-Object ProcessId,ParentProcessId,Name,"
+    + "@{n='CreationDate';e={if($_.CreationDate){([DateTimeOffset]$_.CreationDate).ToUnixTimeMilliseconds()}}},ExecutablePath,CommandLine); "
+    + "ConvertTo-Json -InputObject @{ query=$PID; rows=@($rows) } -Compress -Depth 4", budgetMs);
+  return { afterMs: [start, afterMs()], ...classifyHolderProcesses(rows, paths, { self: process.pid, query, since: performance.timeOrigin }) };
+}
+
+// Keeps the processes created at or after `since`, other than the smoke itself and the query with its console host.
+// Each keeps its name, PID, parent PID and creation time, and whether its executable path or command line names the
+// isolated root or the npm prefix in either form; paths and command lines are never returned. Processes naming either
+// path come first, and the list stops at the evidence item limit.
+function classifyHolderProcesses(rows, paths, { self, query, since }) {
+  if (!Array.isArray(rows) || !Number.isSafeInteger(query)) throw new TypeError("Unexpected process query output");
+  const normalize = (value) => String(value ?? "").replaceAll("/", "\\").toLowerCase();
+  const names = (row, forms) => forms.some((form) => [row.ExecutablePath, row.CommandLine].some((text) => normalize(text).includes(normalize(form))));
+  const alive = rows.filter((row) => Number.isSafeInteger(row?.ProcessId) && Number.isSafeInteger(row.CreationDate)
+    && row.CreationDate >= since && row.ProcessId !== self && row.ProcessId !== query && row.ParentProcessId !== query)
+    .map((row) => ({
+      name: typeof row.Name === "string" && /^[\w.-]{1,64}$/.test(row.Name) ? row.Name : "unrecognized",
+      pid: row.ProcessId, parentPid: Number.isSafeInteger(row.ParentProcessId) ? row.ParentProcessId : null,
+      createdAt: new Date(row.CreationDate).toISOString(), inRoot: names(row, paths.root), inNpmPrefix: names(row, paths.npmPrefix),
+    }))
+    .sort((a, b) => (b.inRoot || b.inNpmPrefix) - (a.inRoot || a.inNpmPrefix) || a.createdAt.localeCompare(b.createdAt) || a.pid - b.pid);
+  return { total: alive.length, processes: alive.slice(0, 32) };
+}
+
+// Only whether Defender real-time protection is on, from its read-only status.
+async function readDefenderStatus(budgetMs) {
+  const status = await queryPowerShell(
+    "ConvertTo-Json -InputObject @{ realTimeProtectionEnabled=(Get-MpComputerStatus).RealTimeProtectionEnabled } -Compress", budgetMs);
+  if (typeof status?.realTimeProtectionEnabled !== "boolean") throw new TypeError("Unexpected Defender status");
+  return { realTimeProtectionEnabled: status.realTimeProtectionEnabled };
+}
+
+// Runs one read-only PowerShell query in the smoke's own directory, outside the isolated tree, and parses its JSON.
+// Error-stop and the stderr check keep a failed query from reading as an empty result, and the deadline kills the
+// query when its budget ends, so it cannot outlast the observation or appear in the next query.
+async function queryPowerShell(script, budgetMs) {
+  const windowsRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows";
+  const { stdout, stderr } = await execFileAsync(join(windowsRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
+    ["-NoProfile", "-NonInteractive", "-Command", `$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; ${script}`],
+    { timeout: budgetMs, maxBuffer: 16 * 1024 * 1024, encoding: "utf8", windowsHide: true });
+  if (stderr) throw new Error("The query wrote to stderr");
+  return JSON.parse(stdout);
+}
+
+// One job-log line with how long removal stayed busy and the names of the processes the first query found alive, or,
+// when the cleanup passes on a retry, when that retry succeeded.
+function holderWarning(code, { processes, probes }, retry) {
+  if (retry) {
+    return `::warning title=Codex cleanup::Directory removal failed with ${code} and succeeded on a retry `
+      + `${(retry.afterMs / 1_000).toFixed(1)} s after the failure, so the cleanup passes. `
+      + "Neither process query found a live process created since the smoke started.";
+  }
+  const last = probes?.at(-1), seconds = last && (last.afterMs / 1_000).toFixed(1);
+  const busy = !last ? "was not probed again" : last.removed ? `succeeded on a probe ${seconds} s after the failure`
+    : `still failed with ${last.code ?? "an unrecognized error"} ${seconds} s after the failure`;
+  const names = Array.isArray(processes?.processes) ? [...new Set(processes.processes.map(({ name }) => name))].sort().join(", ") || "none"
+    : `unknown (${processes?.status ?? "not observed"})`;
+  return `::warning title=Codex cleanup::Directory removal failed with ${code}; removal ${busy}, and the cleanup still fails. `
+    + `Processes created since the smoke started and alive after the failure: ${names}.`;
+}
+
 async function verifySavedAccountSearch(label) {
   stage = `${label} saved-account Search`;
   check(requests === 0, "A lifecycle operation contacted the model or MemoraX fixture before explicit Search");
@@ -763,6 +1264,7 @@ function isolatedEnv(userHome, codexCommand) {
     CODEBUDDY_HOME: join(userHome, ".codebuddy"), CODEBUDDY_CONFIG_DIR: join(userHome, ".codebuddy"),
     WORKBUDDY_HOME: join(userHome, ".workbuddy"), WORKBUDDY_CONFIG_DIR: join(userHome, ".workbuddy"),
     TRAE_CN_HOME: join(userHome, ".trae-cn"), TRAE_HOME: join(userHome, ".trae-cn"), CURSOR_HOME: join(userHome, ".cursor"),
+    QODER_CONFIG_DIR: join(userHome, ".qoder"),
     MEMORAX_CODE_CODEX_TRACE_ENABLED: "false",
   };
   if (process.platform === "win32") Object.assign(isolated, {

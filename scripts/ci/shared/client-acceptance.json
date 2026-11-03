@@ -1,0 +1,546 @@
+{
+  "schemaVersion": 1,
+  "node": {
+    "24": "24.22.1",
+    "22": "22.23.4",
+    "20": "20.20.2"
+  },
+  "runs": {
+    "40430762460/1": {
+      "event": "pull_request",
+      "pullRequest": 235,
+      "head": "941a735faf598ec9bc805a66d5d8634382c76100",
+      "date": "2026-10-27"
+    },
+    "40481976093/1": {
+      "event": "pull_request",
+      "pullRequest": 236,
+      "head": "24f37a628beef1d0a2741fbfcf05cf2572dd5399",
+      "date": "2026-10-27"
+    },
+    "40513022084/1": {
+      "event": "pull_request",
+      "pullRequest": 236,
+      "head": "6b10ea3eee1e42e851f476021a1ad9bfaf1b7587",
+      "date": "2026-10-27"
+    },
+    "40513022084/2": {
+      "event": "pull_request",
+      "pullRequest": 236,
+      "head": "6b10ea3eee1e42e851f476021a1ad9bfaf1b7587",
+      "date": "2026-10-27",
+      "rerun": "single-job"
+    },
+    "40623661565/2": {
+      "event": "pull_request",
+      "pullRequest": 236,
+      "head": "b72b8fa0e12fb398ba4c5dc1abb6c1a4510957a8",
+      "date": "2026-10-28",
+      "rerun": "all-jobs"
+    },
+    "40623666188/2": {
+      "event": "pull_request",
+      "pullRequest": 235,
+      "head": "7a422e32f202eb83823d7d5c0cc909470b597829",
+      "date": "2026-10-28",
+      "rerun": "all-jobs"
+    },
+    "41297371104/1": {
+      "event": "schedule",
+      "head": "f9b6d2dca098531f7fd9dabf80c15b1f354d0735",
+      "date": "2026-11-01"
+    }
+  },
+  "clients": {
+    "codex": {
+      "package": "@openai/codex",
+      "registry": "https://registry.npmjs.org/",
+      "baseline": {
+        "version": "0.147.0",
+        "integrity": "sha512-EQLEXecAG2ptxI7UpBMo2TR/ga5596/c/OsYF/0LoUDh5JANZ7IoGqlzBEWbuEVQ76JePIbtTW/ihCkp1a7Z3w==",
+        "shasum": "1792030d147156695a2b86db0ec1a000ab9a83fc",
+        "acceptance": [
+          {
+            "run": "40430762460/1",
+            "result": "passed"
+          },
+          {
+            "run": "40481976093/1",
+            "result": "passed"
+          },
+          {
+            "run": "40513022084/1",
+            "result": "passed"
+          },
+          {
+            "run": "40623661565/2",
+            "result": "passed"
+          },
+          {
+            "run": "40623666188/2",
+            "result": "passed"
+          }
+        ]
+      },
+      "accepted": {
+        "version": "0.166.0",
+        "integrity": "sha512-2Szlp1l1cz5TX1ccpX4Zok3DZrot9xeZe0km+6/1v8JmqxADwyJxKBJah4dBymkwtS25j/u6dipJusTOI97Z8Q==",
+        "shasum": "c53889fd3903c4781cc83a22691e8502a7ef515f",
+        "acceptance": [
+          {
+            "run": "41297371104/1",
+            "result": "passed"
+          }
+        ]
+      }
+    },
+    "opencode": {
+      "package": "opencode-ai",
+      "registry": "https://registry.npmjs.org/",
+      "baseline": {
+        "version": "1.18.18",
+        "integrity": "sha512-J+5HFq8tf+wPBBpBpMPSNjSytF2/EkNWYfFZh4si1d9auFbQriqDyqZv+vFUsLWERfdMU32Eajwuiq3rKBvZLQ==",
+        "shasum": "a78971b6affe7ed27a207218465d1a80e36a018c",
+        "acceptance": [
+          {
+            "run": "40430762460/1",
+            "result": "passed"
+          },
+          {
+            "run": "40481976093/1",
+            "result": "passed"
+          },
+          {
+            "run": "40513022084/1",
+            "result": "passed"
+          },
+          {
+            "run": "40623661565/2",
+            "result": "passed"
+          },
+          {
+            "run": "40623666188/2",
+            "result": "passed"
+          }
+        ]
+      },
+      "accepted": {
+        "version": "1.19.5",
+        "integrity": "sha512-tEqMvQahfhdDj8vceYpXtoIrvjPXm5XRfetWnPN5YISueU7adNx9JcUA3zZ+2GKuDVgDpGdQe1ZLtCZDjqodvA==",
+        "shasum": "4fb49717dfc8ca5fa97ab9823dadf4be3e244e82",
+        "acceptance": [
+          {
+            "run": "41297371104/1",
+            "result": "passed"
+          }
+        ]
+      }
+    },
+    "claude": {
+      "package": "@anthropic-ai/claude-code",
+      "registry": "https://registry.npmjs.org/",
+      "baseline": {
+        "version": "2.1.277",
+        "integrity": "sha512-JedQvDxaHIWr303Ymlqlz43j3LqRaUe7rNtDKjEDQaHt8MkKPpCR+jKI6K0TKU5gquTqodgYLfTNM3qfGkTbpQ==",
+        "shasum": "e86092ab0190597f5f8be00c6ddf2ccaf46bff04",
+        "acceptance": [
+          {
+            "run": "40430762460/1",
+            "result": "passed"
+          },
+          {
+            "run": "40481976093/1",
+            "result": "passed"
+          },
+          {
+            "run": "40513022084/1",
+            "result": "passed"
+          },
+          {
+            "run": "40623661565/2",
+            "result": "passed"
+          },
+          {
+            "run": "40623666188/2",
+            "result": "failed",
+            "failed": [
+              "windows-2025 Node 24"
+            ],
+            "note": "BACKGROUND_JOB_DID_NOT_FINISH; root cause undetermined"
+          }
+        ]
+      },
+      "accepted": {
+        "version": "2.1.316",
+        "integrity": "sha512-i3BpzyDkcCPnsa0CSkWgxGPs7WMsyqDkxkqT0SDxyEC5XMIxEmcUmluWRHG9VSeBY8Vyv+l9X34JvJ/Bj54nBQ==",
+        "shasum": "6b2759942982d4f2fe4102e34c879fb34a8f3157",
+        "acceptance": [
+          {
+            "run": "41297371104/1",
+            "result": "passed"
+          }
+        ]
+      }
+    },
+    "codebuddy": {
+      "package": "@tencent-ai/codebuddy-code",
+      "registry": "https://registry.npmjs.org/",
+      "baseline": {
+        "version": "2.159.0",
+        "integrity": "sha512-j8gpWUFuQICBpUfazvizZQ5sNBu+ooaft+Pc3rTg8ow/flZZNKquf//9iTDs67kbTs3cpITTz+EbSTyaA1KazA==",
+        "shasum": "7e1b3e92927a85e66a151aaa0c1bb19c1b15e3e4",
+        "acceptance": [
+          {
+            "run": "40430762460/1",
+            "result": "passed"
+          },
+          {
+            "run": "40481976093/1",
+            "result": "failed",
+            "failed": [
+              "windows-2025 Node 24"
+            ],
+            "note": "SETUP_EXITED_BEFORE_INTERRUPTION_STAGE at interrupt-setup; root cause undetermined"
+          },
+          {
+            "run": "40513022084/1",
+            "result": "passed"
+          },
+          {
+            "run": "40623661565/2",
+            "result": "passed"
+          },
+          {
+            "run": "40623666188/2",
+            "result": "passed"
+          }
+        ]
+      },
+      "accepted": {
+        "version": "2.179.1",
+        "integrity": "sha512-ml0+1+yjPtyZNmU5hVcxcX00QtIsRqzpuGWGJHN2YSwC0aGZvXSBrXhbXFLkQ2ES42n6pNxXTMmlRYzLK228IQ==",
+        "shasum": "8acea6cdfb133c00941228b434ae764d055de520",
+        "acceptance": [
+          {
+            "run": "41297371104/1",
+            "result": "passed"
+          }
+        ]
+      }
+    },
+    "cursor": {
+      "baseline": {
+        "version": "3.21.18",
+        "commitSha": "c4730f7d93d787d9ab120af715999f0345ee5bc5",
+        "platforms": {
+          "linux-x64": {
+            "url": "https://downloads.cursor.com/production/c4730f7d93d787d9ab120af715999f0345ee5bc5/linux/x64/deb/amd64/deb/cursor_3.21.18_amd64.deb",
+            "sha256": "6966b4a4082b802d10e985b8228d428020690b2ca43d6d1d74c10a0703d1e1b1",
+            "hashSource": "observed-sha256",
+            "debVersion": "3.21.18-1790045713"
+          },
+          "darwin-arm64": {
+            "url": "https://downloads.cursor.com/production/c4730f7d93d787d9ab120af715999f0345ee5bc5/darwin/arm64/Cursor-darwin-arm64.dmg",
+            "sha256": "215afa787b6ce837c1dc1d0f2370aad775131466868450f4746178f909748e37",
+            "hashSource": "observed-sha256",
+            "size": 287778382
+          },
+          "win32-x64-user": {
+            "url": "https://downloads.cursor.com/production/c4730f7d93d787d9ab120af715999f0345ee5bc5/win32/x64/user-setup/CursorUserSetup-x64-3.21.18.exe",
+            "sha256": "11993b535943d94ed2b9039932b2ee5a75ca8b2630100f3d11ed5489fc670ddd",
+            "hashSource": "observed-sha256",
+            "size": 211894904
+          }
+        },
+        "acceptance": [
+          {
+            "run": "40430762460/1",
+            "result": "passed"
+          },
+          {
+            "run": "40481976093/1",
+            "result": "passed"
+          },
+          {
+            "run": "40513022084/1",
+            "result": "passed"
+          },
+          {
+            "run": "40623661565/2",
+            "result": "passed"
+          },
+          {
+            "run": "40623666188/2",
+            "result": "failed",
+            "failed": [
+              "windows-2025 Node 24"
+            ],
+            "note": "CURSOR_APP_WINDOWS_PROCESS_QUERY_TIMEOUT at workspace-switch; root cause undetermined"
+          }
+        ]
+      },
+      "accepted": {
+        "version": "3.27.22",
+        "commitSha": "b1aa50cb6db84fd3e8c808259cb172ea73425c1f",
+        "platforms": {
+          "linux-x64": {
+            "url": "https://downloads.cursor.com/production/b1aa50cb6db84fd3e8c808259cb172ea73425c1f/linux/x64/deb/amd64/deb/cursor_3.27.22_amd64.deb",
+            "sha256": "863a9dd15ca5fe84dd2f8e74fe2e926e8b438692f202277a89dd0ec3d928bf98",
+            "hashSource": "official-apt-sha256",
+            "debVersion": "3.27.22-1793067078",
+            "size": 223442636
+          },
+          "darwin-arm64": {
+            "url": "https://downloads.cursor.com/production/b1aa50cb6db84fd3e8c808259cb172ea73425c1f/darwin/arm64/Cursor-darwin-arm64.dmg",
+            "sha256": "fd9288d67f17d8510d19b9aa3daf8204c636377f3748273bc0fbdd38d6919580",
+            "hashSource": "observed-sha256",
+            "size": 315918342
+          },
+          "win32-x64-user": {
+            "url": "https://downloads.cursor.com/production/b1aa50cb6db84fd3e8c808259cb172ea73425c1f/win32/x64/user-setup/CursorUserSetup-x64-3.27.22.exe",
+            "sha256": "54e5562afb2d0a37f84cc77728294dedc2215022b33ae6901d6c360d1ee5eeea",
+            "hashSource": "observed-sha256",
+            "size": 229732008
+          }
+        },
+        "acceptance": [
+          {
+            "run": "40623661565/2",
+            "result": "passed"
+          },
+          {
+            "run": "40623666188/2",
+            "result": "passed"
+          }
+        ]
+      }
+    },
+    "workbuddy": {
+      "baseline": {
+        "platforms": {
+          "linux-x64-deb": {
+            "desktop": {
+              "version": "5.5.6.38337834",
+              "url": "https://download.codebuddy.cn/workbuddy/saas/linux-x64-deb/WorkBuddy-linux-x64-deb-5.5.6.38337834-5f969292.deb",
+              "sha256": "2ef1bca217d29d9c2ba988c82079aa6ea0077e9f1ff882c6ab5dd7998bddf721",
+              "observedSha256": "2b86814a9f1fa7b62328dad4d99ee43d6ae6206155f553d77b26f81b2b73725c"
+            },
+            "runtime": {
+              "version": "2.137.1"
+            },
+            "note": "Every recorded run downloaded observedSha256 instead of the reference hash and recorded a warning; Linux baseline hashes stay advisory.",
+            "acceptance": [
+              {
+                "run": "40430762460/1",
+                "result": "failed",
+                "failed": [
+                  "ubuntu-24.04 Node 20"
+                ],
+                "note": "NATIVE_CODEBUDDY_TURN_FAILED with NATIVE_BASH_STDOUT_INVALID; root cause undetermined"
+              },
+              {
+                "run": "40481976093/1",
+                "result": "passed"
+              },
+              {
+                "run": "40513022084/1",
+                "result": "failed",
+                "failed": [
+                  "ubuntu-24.04 Node 20"
+                ],
+                "note": "Same failure signature, bashStdoutInvalidReason literal_empty; root cause undetermined"
+              },
+              {
+                "run": "40513022084/2",
+                "result": "passed",
+                "note": "Single-job recheck of the failed Node 20 cell; not reproduced in this attempt."
+              },
+              {
+                "run": "40623661565/2",
+                "result": "passed"
+              },
+              {
+                "run": "40623666188/2",
+                "result": "passed"
+              }
+            ]
+          },
+          "darwin-arm64": {
+            "desktop": {
+              "version": "5.6.2.39298511",
+              "url": "https://download.codebuddy.cn/workbuddy/saas/darwin-arm64/WorkBuddy-darwin-arm64-5.6.2.39298511-37a65c0b.dmg",
+              "sha256": "251d3e56a940a6061752534e5466e7dab332d4ee06148824a569a739892e1c21"
+            },
+            "runtime": {
+              "version": "2.147.0"
+            },
+            "acceptance": [
+              {
+                "run": "40430762460/1",
+                "result": "passed"
+              },
+              {
+                "run": "40481976093/1",
+                "result": "passed"
+              },
+              {
+                "run": "40513022084/1",
+                "result": "passed"
+              },
+              {
+                "run": "40623661565/2",
+                "result": "passed"
+              },
+              {
+                "run": "40623666188/2",
+                "result": "passed"
+              }
+            ]
+          },
+          "win32-x64-user": {
+            "desktop": {
+              "version": "5.6.2.39298511",
+              "url": "https://download.codebuddy.cn/workbuddy/saas/win32-x64-user/WorkBuddy-win32-x64-user-5.6.2.39298511-37a65c0b.exe",
+              "sha256": "627e5a565436d0876740af69c2747759648662c52958d2a5df1ba330a82c3025"
+            },
+            "runtime": {
+              "version": "2.147.0"
+            },
+            "acceptance": [
+              {
+                "run": "40430762460/1",
+                "result": "passed"
+              },
+              {
+                "run": "40481976093/1",
+                "result": "passed"
+              },
+              {
+                "run": "40513022084/1",
+                "result": "passed"
+              },
+              {
+                "run": "40623661565/2",
+                "result": "passed"
+              },
+              {
+                "run": "40623666188/2",
+                "result": "passed"
+              }
+            ]
+          }
+        }
+      },
+      "accepted": {
+        "platforms": {
+          "linux-x64-deb": {
+            "desktop": {
+              "version": "5.6.2.40046327",
+              "url": "https://download.codebuddy.cn/workbuddy/saas/linux-x64-deb/WorkBuddy-linux-x64-deb-5.6.2.40046327-c7b525f3.deb",
+              "sha256": "12149ad8c0cd748fd5062d8f62c7827d688d8095427ada99b1ae9e7019897523"
+            },
+            "runtime": {
+              "version": "2.147.0"
+            },
+            "note": "The download matched this SHA-256 in every recorded run.",
+            "acceptance": [
+              {
+                "run": "40430762460/1",
+                "result": "passed"
+              },
+              {
+                "run": "40481976093/1",
+                "result": "passed"
+              },
+              {
+                "run": "40513022084/1",
+                "result": "passed"
+              },
+              {
+                "run": "40623661565/2",
+                "result": "passed"
+              },
+              {
+                "run": "40623666188/2",
+                "result": "passed"
+              }
+            ]
+          },
+          "darwin-arm64": {
+            "desktop": {
+              "version": "5.8.3.41334564",
+              "url": "https://download.codebuddy.cn/workbuddy/saas/darwin-arm64/WorkBuddy-darwin-arm64-5.8.3.41334564-db0e9b51.zip",
+              "sha256": "5a88f67b0bfeb46d320be9d4e3c1f3b5f58ee8a24225a26f0d387c6f8c5f78d6"
+            },
+            "runtime": {
+              "version": "2.161.0"
+            },
+            "acceptance": [
+              {
+                "run": "40430762460/1",
+                "result": "passed"
+              },
+              {
+                "run": "40481976093/1",
+                "result": "passed"
+              },
+              {
+                "run": "40513022084/1",
+                "result": "passed"
+              }
+            ]
+          },
+          "win32-x64-user": {
+            "desktop": {
+              "version": "5.8.3.41334564",
+              "url": "https://download.codebuddy.cn/workbuddy/saas/win32-x64-user/WorkBuddy-win32-x64-user-5.8.3.41334564-db0e9b51.exe",
+              "sha256": "824de10f3196c501004f540eb84ee881292fef2f5df9fb3fc48af9ea5366c03c"
+            },
+            "runtime": {
+              "version": "2.161.0"
+            },
+            "acceptance": [
+              {
+                "run": "40430762460/1",
+                "result": "passed"
+              },
+              {
+                "run": "40481976093/1",
+                "result": "passed"
+              },
+              {
+                "run": "40513022084/1",
+                "result": "passed"
+              }
+            ]
+          }
+        }
+      },
+      "deferred": [
+        {
+          "version": "5.9.3.42398134",
+          "platforms": [
+            "darwin-arm64",
+            "win32-x64-user"
+          ],
+          "date": "2026-10-28",
+          "runs": [
+            "40623661565/2",
+            "40623666188/2"
+          ],
+          "reason": "Official latest failed package validation (macOS bundled cli/package.json lacks publishConfig.customPackage.name; Windows WORKBUDDY_BUNDLE_LAYOUT_INVALID); root cause undetermined, so these platforms stay on 5.8.3.41334564."
+        }
+      ]
+    }
+  },
+  "gaps": [
+    "Cursor linux-arm64 and WorkBuddy darwin-x64 are outside the pull request matrix and are not pinned here.",
+    "npm entries pin each client package's own tarball (integrity and shasum); its dependencies and platform packages still resolve at install time.",
+    "Cursor publishes no desktop checksum: the darwin-arm64 and win32-x64-user SHA-256 values and sizes are CI observations from the recorded runs (identical in every recorded run).",
+    "The WorkBuddy runtime has no separate artifact or hash: it ships inside the desktop package, and CI checks only its version.",
+    "Whether the WorkBuddy win32-x64-user 5.8.3.41334564 reference hash came from the official update feed or the winget manifest was not recorded.",
+    "The first records come only from pull request runs of 2026-10-27 and 2026-10-28; the first compatibility monitor run recorded, 41297371104/1 of 2026-11-01, is cited only by the codex, opencode, claude, and codebuddy accepted versions.",
+    "The original acceptance of each baseline predates these records and is not part of them.",
+    "The WorkBuddy linux-x64-deb baseline reference hash has not matched the download in any recorded run; it stays advisory, and making it strict is a baseline change."
+  ]
+}

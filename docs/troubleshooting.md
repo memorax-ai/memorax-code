@@ -13,6 +13,7 @@ memorax-code-opencode doctor
 memorax-code-codebuddy status --json
 memorax-code-trae status --json
 memorax-code-cursor status --json
+memorax-code-qoder status --json
 memorax-code logs
 ```
 
@@ -23,10 +24,10 @@ same command once with `memorax-cli.cmd`, preserving its arguments and working
 directory. Do not run `Set-ExecutionPolicy` for MemoraX commands.
 
 `memorax-code status` checks the Backend and selected client integrations,
-including DSH, OpenCode, CodeBuddy/WorkBuddy, Trae, and Cursor. `memorax-cli status`
+including DSH, OpenCode, CodeBuddy/WorkBuddy, Trae, Cursor, and Qoder. `memorax-cli status`
 checks credentials, scope, and memory switches without printing secrets.
 Codex, Claude Code, and OpenCode provide client-specific `doctor` commands;
-CodeBuddy/WorkBuddy, Trae, and Cursor provide adapter status commands, and DSH uses the
+CodeBuddy/WorkBuddy, Trae, Cursor, and Qoder provide adapter status commands, and DSH uses the
 shared lifecycle status.
 
 Lifecycle summaries include every selected client. A configured integration
@@ -769,6 +770,45 @@ Start an ordinary prompt to establish fresh authority, or explicitly save a
 selected lesson through the Skill. See
 [Cursor configuration](configuration.md#cursor-integration-paths).
 
+## Qoder Hooks or Skill is inactive
+
+```bash
+memorax-code start --clients qoder
+memorax-code-qoder status --json
+```
+
+Use the same `QODER_CONFIG_DIR` as Qoder (default `~/.qoder`). Setup writes
+managed entries to `settings.json` and the shared Skill to
+`skills/memorax-code/`, plus the managed `agents/memorax-repo-memory.md` subagent.
+It does not require a Qoder CLI installation or plugin
+registry edits. Restart Qoder and begin a new task. The verified native target
+is Desktop 0.4.3/runtime 1.1.64; CLI and IDE behavior needs separate validation.
+
+A configured Hook with `hook-runtime=unverified` has not yet been observed for
+the installed runtime. Run a small task, then check status again. Qoder's
+Settings → Hooks view proves only that configuration is present. Preserve
+unrelated settings when repairing invalid JSON, and rerun setup for damaged
+managed artifacts rather than editing runtime paths or markers by hand.
+
+Automatic Add requires a completed QueryEnd and an exact matching native
+transcript branch. Missing, partial, conflicting, or interrupted turns do not
+fall back to the Hook's text. Search and manual Add remain available through
+the shared Skill. Native task notifications are excluded. A user prompt that
+matches the strict task-notification shape is deferred until completed native
+human content is verified; that turn has no immediate Jev guidance or reminder.
+
+Repo Memory jobs run through Qoder's native background Agent. If a job stays
+pending, confirm that the parent launched `memorax-repo-memory` with
+`run_in_background: true` and that the child is not waiting for tool approval.
+A launch or completion notification is not success: the helper must validate
+and finalize the bundle. Do not start a replacement while the original child
+is still editing, including after lease expiry. If the managed Agent is missing
+or modified, rerun setup after resolving the conflict; do not substitute a CLI.
+
+If diagnostics report `session_turn_history_full`, start a new Qoder task; the
+live session has reached its 4,096-request replay-protection limit.
+See [Qoder paths](configuration.md#qoder-integration-paths).
+
 ## Trae Global Hooks or Skill is inactive
 
 ```sh
@@ -823,10 +863,19 @@ means neither the selected DSH command nor an existing Profile-linked DSH
 runtime supplied a valid semantic version. A `dsh_profile_runtime_stale` result
 means that Profile-linked package is invalid or its original package cache is
 no longer available. Repair or relaunch DSH itself, then rerun the MemoraX Code
-start command. MemoraX Code never invokes `npx` or installs or updates DSH. The
-tested versions are `0.1.0-rc.6` and `0.1.2-rc.1`; another valid version is allowed but marked
-untested. A `pnpm_not_found` result means DSH's native Profile plugin manager
+start command. MemoraX Code never invokes `npx` or installs or updates DSH. A
+`pnpm_not_found` result means DSH's native Profile plugin manager
 could not find `pnpm` on `PATH`; install `pnpm`, then rerun the start command.
+
+For Desktop, open the application once to initialize its reserved `desktop`
+Profile, then fully quit it before changing plugins. A
+`dsh_desktop_command_unavailable` result means its bundled launcher could not be
+validated. Restore the Desktop installation or set
+`MEMORAX_CODE_DSH_DESKTOP_COMMAND` to its native launcher; an npm CLI cannot
+manage this Profile. CLI and Desktop commands may point to different versions.
+`dsh_desktop_version_changed` means the pinned Desktop installation changed:
+run `memorax-code start --clients dsh` to reconcile its new version. Status
+reports the Desktop version separately.
 
 After repairing the command, Profile manifest, or home selection, rerun the
 start command and restart or refresh DSH. `profile_drift`,

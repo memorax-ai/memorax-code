@@ -18,7 +18,15 @@ $tempRoot = Join-Path $testRoot 'tmp'
 New-Item -ItemType Directory -Force $userRoot, $tempRoot, $prefix | Out-Null
 [IO.File]::WriteAllText((Join-Path $prefix '.memorax-code-ci-owned'), "claude-install-check`n")
 
+# Evidence stays outside the isolated runtime and never changes the native result.
+. (Join-Path $PSScriptRoot '../shared/ci-evidence.ps1')
+Initialize-CiEvidence -Tool (Join-Path $repoRoot 'scripts/ci/shared/ci-evidence.mjs') -RuntimeRoot $testRoot
+
 . (Join-Path $PSScriptRoot '../shared/codex-install-user-path.ps1')
+$plannedSuites = 'claude-install-smoke,claude-install-interruption-check,claude-native-check,claude-permissions-check'
+Write-CiLedger plan $plannedSuites
+Write-CiLedger phase setup
+try {
 Invoke-WithCodexTestUserPath -Prefix $prefix -Action {
   $allowedEnvironment = @('PATH', 'SystemRoot', 'WINDIR', 'ComSpec', 'PATHEXT',
     'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432', 'PSModulePath',
@@ -49,7 +57,7 @@ Invoke-WithCodexTestUserPath -Prefix $prefix -Action {
     & npm.cmd install --global --prefix $prefix --no-audit --no-fund `
       --registry=https://registry.npmjs.org/ "@anthropic-ai/claude-code@$ClaudeVersion" $tarball `
       *> (Join-Path $testRoot 'npm-install.log')
-    if ($LASTEXITCODE -ne 0) { throw 'npm installation failed; isolated state retained.' }
+    if ($LASTEXITCODE -ne 0) { throw 'npm installation failed; its runtime stays on this runner and is not exported.' }
     if ((Test-Path -LiteralPath (Join-Path $testRoot 'state/config.toml')) -or
       (Test-Path -LiteralPath (Join-Path $testRoot 'state/runtime/backend/backend.pid.json'))) {
       throw 'Fresh package installation unexpectedly configured or started MemoraX Code.'
@@ -57,7 +65,7 @@ Invoke-WithCodexTestUserPath -Prefix $prefix -Action {
     & npm.cmd install --prefix (Join-Path $testRoot 'terminal') --no-audit --no-fund `
       --registry=https://registry.npmjs.org/ node-pty@1.1.0 `
       *> (Join-Path $testRoot 'npm-terminal-install.log')
-    if ($LASTEXITCODE -ne 0) { throw 'The test-only terminal dependency installation failed; isolated state retained.' }
+    if ($LASTEXITCODE -ne 0) { throw 'The test-only terminal dependency installation failed; its runtime stays on this runner and is not exported.' }
     & (Join-Path $prefix 'memorax-code.cmd') --help *> (Join-Path $testRoot 'product-help.log')
     if ($LASTEXITCODE -ne 0) { throw 'The installed MemoraX Code command shim failed.' }
     $versionOutput = (& (Join-Path $prefix 'claude.cmd') --version 2> (Join-Path $testRoot 'claude-version.log') | Out-String).Trim()
@@ -65,25 +73,44 @@ Invoke-WithCodexTestUserPath -Prefix $prefix -Action {
       throw 'Installed Claude Code version does not match the requested version.'
     }
     Write-Output "Claude Code requested: $ClaudeVersion; installed: $ClaudeVersion"
+    # Only test runners receive the evidence location after setup.
+    if ($CiEvidenceDir) { $env:MEMORAX_CI_EVIDENCE_DIR = $CiEvidenceDir }
+    Write-CiLedger phase suites
+    Write-CiLedger start claude-install-smoke
     & node (Join-Path $repoRoot 'scripts/ci/claude/claude-install-smoke.mjs') `
       (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'claude.cmd') `
       $tarball $npmCommand $PreviousVersion (Join-Path $testRoot 'terminal/node_modules/node-pty') `
       (Join-Path $repoRoot 'scripts/ci/claude/claude-setup-pty.mjs') $ClaudeVersion
-    if ($LASTEXITCODE -ne 0) { throw 'The Claude installation smoke failed; isolated state retained.' }
+    $suiteExit = $LASTEXITCODE
+    Write-CiLedger end claude-install-smoke $suiteExit
+    if ($suiteExit -ne 0) { throw 'The Claude installation smoke failed; its runtime stays on this runner and is not exported.' }
+    Write-CiLedger start claude-install-interruption-check
     & node (Join-Path $repoRoot 'scripts/ci/claude/claude-install-interruption-check.mjs') `
       (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'claude.cmd') `
       (Join-Path $testRoot 'terminal/node_modules/node-pty') $ClaudeVersion
-    if ($LASTEXITCODE -ne 0) { throw 'The Claude setup interruption check failed; isolated state retained.' }
+    $suiteExit = $LASTEXITCODE
+    Write-CiLedger end claude-install-interruption-check $suiteExit
+    if ($suiteExit -ne 0) { throw 'The Claude setup interruption check failed; its runtime stays on this runner and is not exported.' }
+    Write-CiLedger start claude-native-check
     & node (Join-Path $repoRoot 'scripts/ci/claude/claude-native-check.mjs') `
       (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'claude.cmd') $ClaudeVersion
-    if ($LASTEXITCODE -ne 0) { throw 'The Claude native flow check failed; isolated state retained.' }
+    $suiteExit = $LASTEXITCODE
+    Write-CiLedger end claude-native-check $suiteExit
+    if ($suiteExit -ne 0) { throw 'The Claude native flow check failed; its runtime stays on this runner and is not exported.' }
+    Write-CiLedger start claude-permissions-check
     & node (Join-Path $repoRoot 'scripts/ci/claude/claude-permissions-check.mjs') `
       (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'claude.cmd') $ClaudeVersion
-    if ($LASTEXITCODE -ne 0) { throw 'The Claude native permission check failed; isolated state retained.' }
+    $suiteExit = $LASTEXITCODE
+    Write-CiLedger end claude-permissions-check $suiteExit
+    if ($suiteExit -ne 0) { throw 'The Claude native permission check failed; its runtime stays on this runner and is not exported.' }
   } finally {
     Pop-Location
   }
 
   # Each suite confirms owned process cleanup before removing this runtime.
+  Write-CiLedger phase cleanup
   Remove-Item -LiteralPath $testRoot -Recurse -Force
+}
+} finally {
+  Write-CiLedger finalize $plannedSuites
 }

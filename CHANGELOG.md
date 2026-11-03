@@ -6,6 +6,53 @@ behavior.
 
 ## Unreleased
 
+## [0.1.21] - 2026-10-21
+
+### Added
+
+- Added Qoder Desktop integration with managed Hooks, shared Skill Search/Add,
+  personal-memory reminders, and automatic writeback from verified native
+  turns. Recognized default chat directories use General memory scope.
+- Added a managed Qoder background Repo Memory agent with single-use job claims
+  and validated finalization.
+
+### Changed
+
+- DSH status now reports CLI and Desktop versions and integration readiness.
+  Removed tested/untested labels and the `dshVersionTested` and
+  `testedDshVersions` JSON fields.
+
+### Fixed
+
+- Restored DSH memory handling for native Session format 4, including agent
+  creation and resume, producer-attributed context, and compaction, while
+  retaining support for formats 0 and 3.
+- Fixed DSH Desktop Profile management to use its bundled launcher, including
+  installations with both CLI and Desktop or Desktop alone.
+- Stopped automatic DSH memory handling after a native working-directory
+  change, including after resume, to preserve the Session's original scope.
+
+### Upgrade notes
+
+For DSH Desktop, open the application once to initialize its Profile, then
+fully quit it before changing plugins. Run `memorax-code start --clients dsh`
+after changing the runtime or Profiles. Start a new Session after changing its
+working directory. Update scripts that consume the removed DSH status fields.
+See [DSH configuration](docs/configuration.md#deepseek-harness-integration-paths).
+
+For Qoder, run setup or `memorax-code start --clients qoder`, then restart Qoder
+and open a new task. A separate Qoder CLI is not required. Setup and update
+reconciliation can enable a detected Qoder installation when its client setting
+is absent; an explicit `qoder = false` remains disabled.
+See [Qoder configuration](docs/configuration.md#qoder-integration-paths).
+
+### Known limitations
+
+Qoder's complete native Repo Memory build and publication flow remains
+unverified. The native probe stopped at `Unknown agent type` before the worker
+claimed its job. In containers whose PID 1 does not reap orphaned children,
+Qoder Repo Memory lease guards can also leave defunct processes.
+
 ## [0.1.20] - 2026-10-12
 
 ### Added
@@ -482,6 +529,7 @@ Later upgrades do not require this workaround.
 - Required a non-empty MemoraX user ID and API key during interactive setup,
   with clearer registration guidance.
 
+[0.1.21]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.21
 [0.1.20]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.20
 [0.1.19]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.19
 [0.1.18]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.18

@@ -78,6 +78,16 @@ export function resolveWorkBuddyWorkspaceKind(input, options = {}) {
   return validTaskTimestamp(relative) ? "projectless" : undefined;
 }
 
+export function isQoderManagedTaskWorkspace(value, options = {}) {
+  const context = workspaceContext(options);
+  const workspace = canonicalPath(typeof value === "string" ? value : undefined, context);
+  if (!workspace) return false;
+  const root = canonicalPath(context.path.join(context.home, "Documents", "Qoder"), context);
+  if (!root) return false;
+  const parts = context.path.relative(root, workspace).split(context.path.sep);
+  return parts.length === 2 && validIsoDate(parts[0]) && /^[A-Za-z0-9][A-Za-z0-9._-]{0,7}$/.test(parts[1]);
+}
+
 export function isOpenCodeDefaultWorkspace(cwd, options = {}) {
   const context = workspaceContext(options);
   const workspace = canonicalPath(stringValue(cwd), context);

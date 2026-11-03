@@ -9,13 +9,14 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   readdirSync,
   rmSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -29,6 +30,238 @@ const npmCommand = process.platform === "win32"
   : ["npm"];
 
 const HEADLESS_BUNDLE_NAME = "@deepseek-ai/dsh-headless";
+
+test("CLI and Desktop coexist with separate authority, reject version drift, and reconcile upgrades", async (t) => {
+  const fixture = await createReconciliationFixture(t);
+  const { root, initialOptions, profilesRoot, installAdapter, removeAdapter, statePath } = fixture;
+  const desktop = writeDesktopLauncher(root);
+  const cliBin = join(root, "npm-bin");
+  mkdirSync(cliBin, { recursive: true });
+  writeFileSync(join(cliBin, "dsh"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  writeProfile(profilesRoot, "desktop");
+  const mutations = [];
+  let desktopVersion = "0.2.0-rc.2";
+  const options = {
+    ...initialOptions,
+    homeDir: root,
+    env: { HOME: root, PATH: [cliBin, dirname(desktop)].join(delimiter) },
+    windowsCliResolution: { platform: "darwin" },
+    runDsh(invocation) {
+      if (invocation.args[0] === "--version") {
+        return { status: 0, stdout: invocation.command === desktop ? desktopVersion : "0.1.0-rc.6" };
+      }
+      const [, , name, operation, spec] = invocation.args;
+      assert.equal(invocation.command, name === "desktop" ? desktop : "dsh");
+      mutations.push({ name, operation, command: invocation.command });
+      if (operation === "add") installAdapter(name, spec.slice("file:".length));
+      else removeAdapter(name);
+      return { status: 0 };
+    },
+  };
+  const installed = await withDshPluginLifecycleLock(options, (lifecycle) => lifecycle.ensureInstalled());
+  assert.equal(installed.ok, true, JSON.stringify(installed));
+  const state = JSON.parse(readFileSync(statePath, "utf8"));
+  assert.equal(state.dshCommand, "dsh");
+  assert.deepEqual(state.desktopRuntime, { version: 1, command: desktop, dshVersion: "0.2.0-rc.2" });
+  assert.deepEqual(mutations.map(({ name }) => name), ["desktop", "web"]);
+  assert.deepEqual(
+    JSON.parse(readFileSync(join(state.runtimeBundleRoot, ".memorax-code-package.json"), "utf8")).desktopRuntime,
+    state.desktopRuntime,
+  );
+  const noDesktopOnPath = { ...options, env: { HOME: root, PATH: cliBin } };
+  const status = collectDshAdapterStatus(noDesktopOnPath);
+  assert.equal(status.enabled, true, JSON.stringify(status));
+  assert.equal(status.version, "0.1.0-rc.6");
+  assert.equal(status.desktopVersion, "0.2.0-rc.2");
+  const beforeUpgrade = readFileSync(statePath, "utf8");
+  desktopVersion = "0.2.1-alpha.4";
+  const drift = collectDshAdapterStatus(noDesktopOnPath);
+  assert.equal(drift.ok, false);
+  assert.equal(drift.enabled, false);
+  assert.equal(drift.reason, "dsh_desktop_version_changed");
+  assert.equal(drift.desktopVersion, desktopVersion);
+  const activation = await withDshPluginLifecycleLock(noDesktopOnPath, (lifecycle) => lifecycle.activate());
+  assert.equal(activation.ok, false);
+  assert.equal(activation.reason, "dsh_desktop_version_changed");
+  assert.equal(readFileSync(statePath, "utf8"), beforeUpgrade);
+  const upgraded = await withDshPluginLifecycleLock(noDesktopOnPath, (lifecycle) => lifecycle.ensureInstalled());
+  assert.equal(upgraded.ok, true, JSON.stringify(upgraded));
+  for (const report of [installed, status, drift, activation, upgraded]) {
+    assert.deepEqual(Object.keys(report).filter((key) => /tested/i.test(key)), []);
+  }
+  assert.equal(JSON.parse(readFileSync(statePath, "utf8")).desktopRuntime.dshVersion, desktopVersion);
+  assert.equal(collectDshAdapterStatus(noDesktopOnPath).enabled, true);
+  mutations.length = 0;
+  const removed = await withDshPluginLifecycleLock(noDesktopOnPath, (lifecycle) => lifecycle.disable());
+  assert.equal(removed.ok, true, JSON.stringify(removed));
+  assert.deepEqual(mutations.map(({ name, operation }) => `${operation}:${name}`), [
+    "remove:desktop", "remove:web",
+  ]);
+});
+
+test("Desktop-only installation initializes a regular headless Profile using native bundled config", async (t) => {
+  const fixture = await createReconciliationFixture(t);
+  const { root, initialOptions, profilesRoot, installAdapter, removeAdapter, statePath, memoraxCodeHome } = fixture;
+  rmSync(memoraxCodeHome, { recursive: true, force: true });
+  rmSync(profilesRoot, { recursive: true, force: true });
+  writeProfile(profilesRoot, "desktop", [HEADLESS_BUNDLE_NAME]);
+  rmSync(join(profilesRoot, "node_modules"), { recursive: true, force: true });
+  const desktop = writeDesktopLauncher(root);
+  const commands = [];
+  const options = {
+    ...initialOptions,
+    homeDir: root,
+    env: { HOME: root, PATH: "", MEMORAX_CODE_DSH_DESKTOP_COMMAND: desktop },
+    windowsCliResolution: { platform: "darwin" },
+    runDsh(invocation) {
+      if (invocation.command === "dsh") return { status: 1, error: { code: "ENOENT" } };
+      assert.equal(invocation.command, desktop);
+      if (invocation.args[0] === "--version") return { status: 0, stdout: "0.2.0-rc.2\n" };
+      commands.push(invocation.args);
+      if (invocation.args.includes("--dump-default-config")) {
+        assert.deepEqual(invocation.args, ["--profile", "headless", "--dump-default-config"]);
+        return { status: 0, stdout: `# == ${HEADLESS_BUNDLE_NAME} ==\n` };
+      }
+      const [, , name, operation, spec] = invocation.args;
+      if (operation === "add") {
+        if (!existsSync(join(profilesRoot, name))) {
+          writeProfile(profilesRoot, name, [HEADLESS_BUNDLE_NAME]);
+          rmSync(join(profilesRoot, "node_modules"), { recursive: true, force: true });
+        }
+        installAdapter(name, spec.slice("file:".length));
+      } else removeAdapter(name);
+      return { status: 0 };
+    },
+  };
+  const installed = await withDshPluginLifecycleLock(options, (lifecycle) => lifecycle.ensureInstalled());
+  assert.equal(installed.ok, true, JSON.stringify(installed));
+  const state = JSON.parse(readFileSync(statePath, "utf8"));
+  assert.equal(state.dshCommand, desktop);
+  assert.deepEqual(state.profiles, ["desktop", "headless"]);
+  assert.equal(commands.some((args) => args[0] === "--profile" && args[1] === "desktop"), false);
+  const persistedOptions = { ...options, env: { HOME: root, PATH: "" } };
+  const status = collectDshAdapterStatus(persistedOptions);
+  assert.equal(status.installed, true, JSON.stringify(status));
+  assert.equal(status.enabled, true, JSON.stringify(status));
+  const removed = await withDshPluginLifecycleLock(persistedOptions, (lifecycle) => lifecycle.remove());
+  assert.equal(removed.ok, true, JSON.stringify(removed));
+});
+
+test("missing or stale Desktop authority fails closed without routing desktop to the npm CLI", async (t) => {
+  const fixture = await createReconciliationFixture(t);
+  const { root, initialOptions, profilesRoot, statePath, installAdapter, removeAdapter } = fixture;
+  writeProfile(profilesRoot, "desktop");
+  const desktop = writeDesktopLauncher(root);
+  const mutations = [];
+  const options = {
+    ...initialOptions,
+    homeDir: root,
+    env: { HOME: root, PATH: "" },
+    windowsCliResolution: { platform: "darwin" },
+    dshDesktopCommand: desktop,
+    runDsh(invocation) {
+      if (invocation.args[0] === "--version") return { status: 0, stdout: "0.2.0-rc.2\n" };
+      const [, , name, operation, spec] = invocation.args;
+      assert.equal(invocation.command, name === "desktop" ? desktop : "dsh");
+      mutations.push(`${operation}:${name}`);
+      if (operation === "add") installAdapter(name, spec.slice("file:".length));
+      else removeAdapter(name);
+      return { status: 0 };
+    },
+  };
+  const missing = await withDshPluginLifecycleLock({
+    ...options, dshDesktopCommand: join(root, "missing-desktop"),
+  }, (lifecycle) => lifecycle.ensureInstalled());
+  assert.equal(missing.ok, false);
+  assert.equal(missing.reason, "dsh_desktop_command_unavailable");
+  assert.deepEqual(mutations, []);
+  assert.equal(JSON.parse(readFileSync(statePath, "utf8")).enabled, false);
+
+  const installed = await withDshPluginLifecycleLock(options, (lifecycle) => lifecycle.ensureInstalled());
+  assert.equal(installed.ok, true, JSON.stringify(installed));
+  rmSync(desktop);
+  const persisted = { ...options, dshDesktopCommand: undefined };
+  const status = collectDshAdapterStatus(persisted);
+  assert.equal(status.enabled, false);
+  assert.equal(status.reason, "dsh_desktop_command_unavailable");
+  mutations.length = 0;
+  const restarted = await withDshPluginLifecycleLock(persisted, (lifecycle) => lifecycle.ensureInstalled());
+  assert.equal(restarted.ok, false);
+  assert.equal(restarted.reason, "dsh_desktop_command_unavailable");
+  assert.deepEqual(mutations, []);
+  const stopped = await withDshPluginLifecycleLock(persisted, (lifecycle) => lifecycle.disable());
+  assert.equal(stopped.ok, false);
+  assert.deepEqual(stopped.failedProfiles.map(({ name, reason }) => ({ name, reason })), [
+    { name: "desktop", reason: "dsh_desktop_command_unavailable" },
+  ]);
+  assert.deepEqual(mutations, ["remove:web"]);
+  assert.deepEqual(JSON.parse(readFileSync(statePath, "utf8")).profiles, ["desktop"]);
+});
+
+test("failed Desktop reconciliation restores each Profile through its prior native authority", async (t) => {
+  const fixture = await createReconciliationFixture(t);
+  const { root, initialOptions, profilesRoot, statePath, installAdapter } = fixture;
+  writeProfile(profilesRoot, "desktop");
+  const desktop = writeDesktopLauncher(join(root, "old-install"));
+  const replacement = writeDesktopLauncher(join(root, "new-install"));
+  const mutations = [];
+  let failUpdate = false;
+  let desktopVersion = "0.2.0-rc.2";
+  const options = {
+    ...initialOptions,
+    dshDesktopCommand: desktop,
+    windowsCliResolution: { platform: "darwin" },
+    runDsh(invocation) {
+      if (invocation.args[0] === "--version") {
+        return { status: 0, stdout: invocation.command === desktop ? desktopVersion : "0.2.0-rc.2" };
+      }
+      const [, , name, operation, spec] = invocation.args;
+      mutations.push({ name, operation, command: invocation.command, spec });
+      if (failUpdate && name === "zulu") return { status: 1 };
+      installAdapter(name, spec.slice("file:".length));
+      return { status: 0 };
+    },
+  };
+  const installed = await withDshPluginLifecycleLock(options, (lifecycle) => lifecycle.ensureInstalled());
+  assert.equal(installed.ok, true, JSON.stringify(installed));
+  const priorState = JSON.parse(readFileSync(statePath, "utf8"));
+  writeProfile(profilesRoot, "zulu");
+  mutations.length = 0;
+  failUpdate = true;
+  const failed = await withDshPluginLifecycleLock({
+    ...options, dshDesktopCommand: replacement,
+  }, (lifecycle) => lifecycle.ensureInstalled());
+  assert.equal(failed.ok, false);
+  assert.equal(failed.enabled, true, JSON.stringify(failed));
+  assert.deepEqual(JSON.parse(readFileSync(statePath, "utf8")), priorState);
+  assert.deepEqual(mutations.filter(({ name }) => name === "desktop").map(({ command }) => command), [
+    replacement, desktop,
+  ]);
+  assert.equal(mutations.at(-1).spec, `file:${priorState.runtimeBundleRoot}`);
+
+  desktopVersion = "0.2.1-alpha.4";
+  const cannotRestore = await withDshPluginLifecycleLock(options, (lifecycle) => lifecycle.ensureInstalled());
+  assert.equal(cannotRestore.ok, false);
+  assert.equal(cannotRestore.enabled, false);
+  assert.equal(cannotRestore.rollbackFailedProfiles[0].reason, "dsh_desktop_version_changed");
+  assert.equal(JSON.parse(readFileSync(statePath, "utf8")).enabled, false);
+});
+
+function writeDesktopLauncher(root, platform = "darwin") {
+  const resources = platform === "win32"
+    ? join(root, "DeepSeek Harness", "resources")
+    : join(root, "DeepSeek Harness.app", "Contents", "Resources");
+  const command = join(resources, "runtime", "cli", "bin", platform === "win32" ? "dsh.cmd" : "dsh");
+  const executable = platform === "win32"
+    ? resolve(resources, "..", "DeepSeek Harness.exe")
+    : resolve(resources, "..", "MacOS", "DeepSeek Harness");
+  mkdirSync(dirname(command), { recursive: true });
+  mkdirSync(dirname(executable), { recursive: true });
+  writeFileSync(command, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  writeFileSync(executable, "");
+  writeFileSync(join(resources, "app.asar"), "");
+  return realpathSync(command);
+}
 
 test("failed reconciliation restores the prior authority and removes newly installed Profiles", async (t) => {
   const fixture = await createReconciliationFixture(t);
@@ -1224,6 +1457,8 @@ async function createReconciliationFixture(t) {
     adapterRoot,
     dshHome,
     memoraxCodeHome,
+    homeDir: root,
+    env: { HOME: root, PATH: "" },
     memoraxCodeCommand: join(root, "memorax-code-v1.mjs"),
     windowsCliResolution: { resolvedCommand: "fixture-dsh.exe" },
     runDsh(invocation) {

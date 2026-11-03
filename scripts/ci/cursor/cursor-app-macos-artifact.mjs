@@ -54,7 +54,7 @@ function validateRelease(input, channel) {
 }
 
 export function selectCursorMacosRelease(manifest, channel) {
-  check(manifest?.schemaVersion === 1 && ["baseline", "latest"].includes(channel), "RELEASE");
+  check(manifest?.schemaVersion === 1 && ["baseline", "latest", "accepted"].includes(channel), "RELEASE");
   return validateRelease(manifest[channel]?.[platform], channel);
 }
 
@@ -176,7 +176,7 @@ export async function withCursorMacosApp({ release, root, signal, execute = exec
     await detach();
     checkAborted(signal);
     const evidence = Object.freeze({ platform, channel: selected.channel, version: selected.version, commitSha: selected.commitSha,
-      sha256: null, hashSource: "not-provided", ...artifact, architecture: "arm64", readOnlyMount: true,
+      sha256: selected.sha256, hashSource: selected.hashSource, ...artifact, architecture: "arm64", readOnlyMount: true,
       copiedBundleVerified: true, imageDetachedBeforeLaunch: true,
       signatureVerified: true, bundleIdentifier, teamIdentifier, gatekeeperAccepted: true, packageIdentityVerified: true });
     invokingCallback = true;

@@ -28,7 +28,7 @@ function validateRelease(input, channel) {
 }
 
 export function selectCursorWindowsRelease(manifest, channel) {
-  check(manifest?.schemaVersion === 1 && ["baseline", "latest"].includes(channel), "RELEASE");
+  check(manifest?.schemaVersion === 1 && ["baseline", "latest", "accepted"].includes(channel), "RELEASE");
   return validateRelease(manifest[channel]?.[platform], channel);
 }
 
@@ -195,7 +195,7 @@ export async function withVerifiedCursorWindowsInstaller({ release, root, signal
   }
   if (primaryError || cleanupError) throw primaryError ?? cleanupError;
   const verification = Object.freeze({ platform, channel: selected.channel, version: selected.version, commitSha: selected.commitSha,
-    sha256: null, hashSource: "not-provided", ...artifact, authenticodeVerified: true, publisherVerified: true,
+    sha256: selected.sha256, hashSource: selected.hashSource, ...artifact, authenticodeVerified: true, publisherVerified: true,
     signatureType: "Authenticode", publisher, ownedFilesRemoved: true });
   return Object.freeze({ verification, result });
 }

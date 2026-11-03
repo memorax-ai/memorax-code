@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
+import { projectTerminalDisposal } from "../codex/codex-setup-pty-evidence.mjs";
 import { cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
@@ -7,7 +8,7 @@ import { createServer as createTcpServer } from "node:net";
 import { tmpdir, userInfo } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { assertBackendReplacement, assertCredentialNotEchoed, assertProtectedConfiguration,
+import { verifyBackendReplacementState, assertCredentialNotEchoed, assertProtectedConfiguration,
   snapshotProtectedConfiguration } from "../codex/codex-lifecycle-assertions.mjs";
 import { classifyLifecycleRequest } from "../claude/claude-lifecycle-assertions.mjs";
 import { startLifecycleCommand } from "../claude/claude-lifecycle-process.mjs";
@@ -304,6 +305,8 @@ export async function runCursorLifecycleCheck(candidatePath, reportDirectory, pr
       try {
         const result = JSON.parse(error.stdout);
         if (/^[A-Z][A-Z0-9_]{1,79}$/.test(result.error)) report.terminalError = result.error;
+        const disposal = projectTerminalDisposal(result.terminalDisposal);
+        if (disposal) report.terminalDisposal = disposal;
         if (["ENOENT", "ENOEXEC", "EACCES", "EPERM", "PTY_SPAWN_FAILED"].includes(result.nativeErrorCode)) {
           report.terminalNativeError = result.nativeErrorCode;
         }
@@ -365,13 +368,13 @@ export async function runCursorLifecycleCheck(candidatePath, reportDirectory, pr
     }
   }
   async function replaced(before) {
-    const after = await json(pidPath());
-    check(after.url === `http://127.0.0.1:${port}`, "CURSOR_LIFECYCLE_BACKEND_ENDPOINT");
-    const response = await fetch(new URL("/health", after.url), { signal: AbortSignal.timeout(5000) });
-    check(response.ok && alive(after.pid), "CURSOR_LIFECYCLE_BACKEND_HEALTH");
-    assertBackendReplacement(before, after, await response.json(), alive(before.pid));
-    backendPids.delete(before.pid);
+    const after = await verifyBackendReplacementState(before, {
+      readAfter: () => json(pidPath()), expectedUrl: `http://127.0.0.1:${port}`,
+      observe(diagnostic) { report.backendReplacement = diagnostic; },
+    });
     check(!(await exists(transitionPath())), "CURSOR_LIFECYCLE_TRANSITION_REMAINS");
+    backendPids.delete(before.pid);
+    backendPids.add(after.pid);
   }
   async function savedAccountSearch() {
     const query = "Verify the retained synthetic Cursor lifecycle account.", before = searches.length;

@@ -130,11 +130,16 @@ If the bundle was unavailable or invalid, continue from live code and maintained
 documentation. Never repair or rebuild memory in the foreground read task.
 
 If the selected helper returns `job.delegation`, hand its exact prompt to the named
-`memorax-repo-memory` Cursor native background subagent through the Task tool as
-the next action. This is the helper's supervised execution path. Launch it once,
-then continue the foreground task without waiting. The child must claim the
-provided ticket before authoring and finalize through the helper; a Task launch
-or a model summary alone does not prove completion. If native background Task is
+`memorax-repo-memory` native background subagent as the next action:
+
+- In Cursor, use the Cursor native background subagent through the Task tool.
+- In Qoder, use the native Agent tool with `subagent_type: "memorax-repo-memory"`,
+  `run_in_background: true`, and the returned `prompt` unchanged.
+
+This is the helper's supervised execution path. Launch it once, then continue
+the foreground task without waiting. The child must claim the
+provided ticket before authoring and finalize through the helper; a native launch
+or a model summary alone does not prove completion. If native background delegation is
 unavailable, skip this handoff; do not substitute a CLI or foreground authoring.
 Never invent a delegation when the helper returned `active_job` or `up_to_date`.
 

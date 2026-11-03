@@ -8,7 +8,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-const otherClients = ["claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor"];
+const otherClients = ["claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor", "qoder"];
 export const fixtureKey = `sk_${"E".repeat(43)}`;
 export const fixtureUser = "native-fixture-user";
 export const searchResult = "NATIVE_MEMORY_SEARCH_RESULT";
@@ -263,7 +263,7 @@ function isolatedEnv({ root, home, stateHome, codexHome, codexCommand, packageRo
     OPENCODE_CONFIG_DIR: join(home, ".config", "opencode"), CODEBUDDY_HOME: join(home, ".codebuddy"),
     CODEBUDDY_CONFIG_DIR: join(home, ".codebuddy"), WORKBUDDY_HOME: join(home, ".workbuddy"),
     WORKBUDDY_CONFIG_DIR: join(home, ".workbuddy"), TRAE_HOME: join(home, ".trae-cn"), TRAE_CN_HOME: join(home, ".trae-cn"),
-    CURSOR_HOME: join(home, ".cursor"),
+    CURSOR_HOME: join(home, ".cursor"), QODER_CONFIG_DIR: join(home, ".qoder"),
   };
   if (process.platform === "win32") Object.assign(env, { SystemRoot: windowsRoot, WINDIR: windowsRoot,
     ComSpec: join(windowsRoot, "System32", "cmd.exe"), PATHEXT: ".COM;.EXE;.BAT;.CMD", USERNAME: "native-fixture",

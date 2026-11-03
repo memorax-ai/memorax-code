@@ -113,6 +113,13 @@ try {
   if (packedCursorSkill !== canonicalSkill) {
     throw new Error("npm pack Cursor skill must remain byte-identical to the canonical skill");
   }
+  const packedQoderSkill = await readFile(
+    join(extracted, "package", "lib/memorax-code-qoder-adapter/skills/memorax-code/SKILL.md"),
+    "utf8",
+  );
+  if (packedQoderSkill !== canonicalSkill) {
+    throw new Error("npm pack Qoder skill must remain byte-identical to the canonical skill");
+  }
   await assertLocalTraceOnly({
     repoRoot,
     artifactRoots: [extracted],

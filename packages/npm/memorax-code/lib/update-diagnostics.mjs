@@ -395,7 +395,7 @@ function lifecycleDiagnostics(command) {
   const children = backend ? [backend] : [];
   let report;
   try { report = JSON.parse(String(command?.stdout ?? "")); } catch { return children; }
-  const clients = new Set(["codex", "claude", "opencode", "codebuddy", "workbuddy", "trae", "cursor", "dsh"]);
+  const clients = new Set(["codex", "claude", "opencode", "codebuddy", "workbuddy", "trae", "cursor", "qoder", "dsh"]);
   for (const entry of Array.isArray(report?.clientFailures) ? report.clientFailures.slice(0, clients.size) : []) {
     const projected = projectDeploymentFailure(entry?.failure);
     const diagnostic = projectDiagnostic(entry?.diagnostic);

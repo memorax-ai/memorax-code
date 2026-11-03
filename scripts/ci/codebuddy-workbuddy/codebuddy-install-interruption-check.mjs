@@ -142,7 +142,7 @@ async function runCase(phase) {
     // Trailing whitespace makes a real setup-managed configuration publication
     // observable while the protected semantic choices remain unchanged.
     initialConfig = `[memorax]\nendpoint = ${JSON.stringify(harness.memoryUrl)}\nuser_id = ${JSON.stringify(user)}\napi_key = ${JSON.stringify(key)}\n
-[clients]\ncodex = false\ncodebuddy = ${client === "codebuddy"} \t\ndsh = false\nopencode = false\nclaude = false\nworkbuddy = ${client === "workbuddy"}\ntrae = false\ncursor = false\n
+[clients]\ncodex = false\ncodebuddy = ${client === "codebuddy"} \t\ndsh = false\nopencode = false\nclaude = false\nworkbuddy = ${client === "workbuddy"}\ntrae = false\ncursor = false\nqoder = false\n
 [memory.writeback]\nenabled = false\n[memory.cli]\nadd_enabled = false\n[memory.add]\noutput_language = "en"\n[jev]\nenabled = false\n`;
     await writeFile(join(harness.stateHome, "config.toml"), initialConfig, { mode: 0o600 });
     protectedConfig = snapshotProtectedConfiguration(parse(initialConfig));
@@ -295,6 +295,10 @@ async function runCase(phase) {
   } catch (error) {
     result.failureStage = stage;
     result.errors.push(safeCode(error));
+    if (error.commandDiagnostic) result.commandDiagnostic = error.commandDiagnostic;
+    result.receiverCounts = { model: harness.modelRequests.length, memory: harness.memoryRequests.length };
+    result.modelRequestRejections = harness.modelRequestRejections;
+    result.receiverErrors = harness.serverErrors.slice(0, 8);
   } finally {
     try {
       await cleanupSetup();

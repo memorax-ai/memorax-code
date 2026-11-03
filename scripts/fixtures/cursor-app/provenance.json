@@ -22,8 +22,8 @@
     "difference": "Add chroot to the existing clone, setns and unshare allowance for Chromium's unprivileged user-namespace sandbox. Runtime capabilities remain empty."
   },
   "baseImages": {
-    "22": "node:22-bookworm@sha256:363e1587494626837fa7f9a23bdb453d13b0ff3c67c705c2805cfc69c2d2fad7",
-    "24": "node:24-bookworm@sha256:64af3819f9275802414d7cdc38c27e9d82bd564dec4d4da87d008255d36c63b4"
+    "22": "node:22.23.4-bookworm@sha256:18a6d90fd60542269850c80ca03b29b1d9b14d6b221ac7ee8e35b0d33ef904bd",
+    "24": "node:24.22.1-bookworm@sha256:d862bb5d082c5ae0210ac07e8c0344cb8cf7bef6d78e9b8c50c179da923108ea"
   },
   "playwrightVersion": "1.58.2"
 }

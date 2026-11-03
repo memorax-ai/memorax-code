@@ -4,7 +4,8 @@ import { access, chmod, cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writ
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { baselineRelease, resolveDownload } from "./cursor-app-release.mjs";
+import { readAcceptance } from "../shared/client-acceptance.mjs";
+import { acceptedReleases, baselineRelease, resolveDownload } from "./cursor-app-release.mjs";
 import { projectCursorMacosDetachDiagnostics, selectCursorMacosRelease, withCursorMacosApp } from "./cursor-app-macos-artifact.mjs";
 
 const baseline = baselineRelease("darwin-arm64");
@@ -104,6 +105,13 @@ async function fixture(t, configuration = {}) {
 test("selects each frozen macOS release without fallback or invented hashes", () => {
   for (const channel of ["baseline", "latest"]) {
     assert.deepEqual(selectCursorMacosRelease(manifest, channel), manifest[channel]["darwin-arm64"]);
+  }
+  // A pull request's inventory pins both releases with the SHA-256 and size their acceptance recorded.
+  const pinned = JSON.parse(JSON.stringify(acceptedReleases(readAcceptance("cursor"))));
+  for (const channel of ["baseline", "accepted"]) {
+    assert.deepEqual(selectCursorMacosRelease(pinned, channel), pinned[channel]["darwin-arm64"]);
+    assert.throws(() => selectCursorMacosRelease({ ...pinned, [channel]: { "darwin-arm64": { ...pinned[channel]["darwin-arm64"],
+      sha256: null } } }, channel), error("RELEASE"));
   }
   for (const input of [null, {}, { ...manifest, schemaVersion: 2 }, { ...manifest, latest: {} }]) {
     assert.throws(() => selectCursorMacosRelease(input, "latest"), error("RELEASE"));

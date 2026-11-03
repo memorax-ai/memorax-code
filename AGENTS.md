@@ -90,6 +90,11 @@ contracts in the same change.
   All other real-client tests, live-provider, live MemoraX/Jev, and real system
   credential-store checks require explicit opt-in. Keep credentials and artifacts
   outside Git and redact shared results.
+- When a native CI cell fails, follow the
+  [native CI failure register](CONTRIBUTING.md#native-ci-failure-register)
+  rules: save evidence before classifying, register a new signature instead of
+  fixing it in that round, recheck a cell at most once per run with explicit
+  authorization, and never relax checks to get green.
 
 ## 6. Git and Handoff
 

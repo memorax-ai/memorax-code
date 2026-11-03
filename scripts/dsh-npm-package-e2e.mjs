@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
 import {
   mkdir,
   mkdtemp,
@@ -9,6 +8,7 @@ import {
   realpath,
   rm,
   stat,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
@@ -16,14 +16,17 @@ import { createServer as createNetServer } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { runNativeProcess } from "./ci/dsh/dsh-native-process.mjs";
 
 const OPT_IN_ENV = "MEMORAX_CODE_DSH_E2E";
 const TARBALL_ENV = "MEMORAX_CODE_DSH_E2E_MEMORAX_TARBALL";
-const DSH_VERSION = "0.1.0-rc.6";
+const VERSION_ENV = "MEMORAX_CODE_DSH_E2E_VERSION";
+const RUNTIME_PREFIX_ENV = "MEMORAX_CODE_DSH_E2E_RUNTIME_PREFIX";
+const DSH_VERSION = process.env[VERSION_ENV] || "0.2.0-rc.2";
 const DSH_PACKAGE = "@deepseek-ai/dsh";
 const DSH_MOCK_PACKAGE = "@deepseek-ai/dsh-llm-mock-server";
 const DSH_SPEC = DSH_PACKAGE + "@" + DSH_VERSION;
-const PNPM_SPEC = "pnpm@11.7.0";
+const PNPM_SPEC = "pnpm@10.33.2";
 const RECALL = "MEMORAX_DSH_E2E_RECALL_7D49";
 const USER_PROFILE = "MEMORAX_DSH_E2E_USER_PROFILE_C42A";
 const PROCEDURE_MEMORY = "MEMORAX_DSH_E2E_PROCEDURE_8F13";
@@ -34,11 +37,9 @@ const REPLY = "MEMORAX_DSH_E2E_VISIBLE_REPLY_5A62";
 const FIRST_PROMPT = "MEMORAX_DSH_E2E_FIRST_TURN";
 const CRASH_PROMPT = "MEMORAX_DSH_E2E_INTERRUPTED_PROMPT";
 const RESUME_PROMPT = "MEMORAX_DSH_E2E_RESUMED_PROMPT";
-const INTERRUPTED_SESSION_ID = "memorax-dsh-e2e-interrupted";
-const INTERRUPTED_MODE_ENV = "MEMORAX_CODE_DSH_E2E_INTERRUPTED_MODE";
 const RECOVERY_PROMPT = "MEMORAX_DSH_E2E_AFTER_BACKEND_CRASH";
 const STOPPED_PROMPT = "MEMORAX_DSH_E2E_AFTER_STOP";
-const MEMORAX_KEY = "memorax-dsh-e2e-key";
+const MEMORAX_KEY = "sk_" + "E".repeat(43);
 const DEEPSEEK_KEY = "deepseek-dsh-e2e-key";
 const REPO_MEMORY_DISPATCH_LOG_ENV = "MEMORAX_CODE_DSH_E2E_REPO_JOB_LOG";
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -48,6 +49,8 @@ const usage = [
   "",
   "Optional:",
   "  " + TARBALL_ENV + "=/absolute/path/to/memorax-code.tgz",
+  "  " + VERSION_ENV + "=0.2.0-rc.2 (exact release)",
+  "  " + RUNTIME_PREFIX_ENV + "=/absolute/path/to/test-runtime-prefix (optional reuse)",
   "",
   "Runs an isolated real-client E2E against " + DSH_SPEC + ".",
   "DSH, Cordis, npm lifecycle scripts, Profiles, and the Backend are real;",
@@ -62,6 +65,7 @@ let runtimeEnv;
 let backendPid;
 let llmServer;
 let memoraxServer;
+let processLogSequence = 0;
 
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
   process.stdout.write(usage);
@@ -82,6 +86,7 @@ main().catch((error) => {
 }).finally(cleanup);
 
 async function main() {
+  assert.match(DSH_VERSION, /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/, "DSH version must be an exact release");
   isolatedRoot = await mkdtemp(join(tmpdir(), "memorax-code-dsh-e2e-"));
   const paths = {
     home: join(isolatedRoot, "home"),
@@ -92,6 +97,7 @@ async function main() {
     opencodeHome: join(isolatedRoot, "opencode config"),
     prefix: join(isolatedRoot, "npm prefix"),
     cache: join(isolatedRoot, "npm cache"),
+    temp: join(isolatedRoot, "tmp"),
     workspace: join(isolatedRoot, "workspace"),
     tarballs: join(isolatedRoot, "tarballs"),
   };
@@ -102,22 +108,52 @@ async function main() {
   const repoMemoryDispatchLog = join(isolatedRoot, "repo-memory-dispatch.jsonl");
   const ambientMemoraxHome = join(isolatedRoot, "ambient memorax-code home");
 
+  const runtimePrefix = process.env[RUNTIME_PREFIX_ENV]
+    ? await realpath(resolve(process.env[RUNTIME_PREFIX_ENV])) : paths.prefix;
+  const toolPath = await isolatedToolPath(isolatedRoot);
+  const disabledClientCommand = process.platform === "win32"
+    ? join(paths.home, "disabled-native-client.cmd") : "/usr/bin/false";
+  if (process.platform === "win32") await writeFile(disabledClientCommand, "@exit /b 1\r\n");
   const env = {
     ...cleanEnvironment(),
     HOME: paths.home,
+    USERPROFILE: paths.home,
+    CFFIXED_USER_HOME: paths.home,
+    ZDOTDIR: paths.home,
     MEMORAX_CODE_HOME: paths.memoraxHome,
     DSH_HOME: paths.dshHome,
     CODEX_HOME: paths.codexHome,
     CLAUDE_CONFIG_DIR: paths.claudeHome,
     CLAUDE_HOME: paths.claudeHome,
     OPENCODE_CONFIG_DIR: paths.opencodeHome,
+    CODEBUDDY_HOME: join(paths.home, "codebuddy"),
+    WORKBUDDY_HOME: join(paths.home, "workbuddy"),
+    TRAE_HOME: join(paths.home, "trae"),
+    TRAE_CN_HOME: join(paths.home, "trae-cn"),
+    CURSOR_HOME: join(paths.home, "cursor"),
+    TMPDIR: paths.temp,
+    TMP: paths.temp,
+    TEMP: paths.temp,
+    XDG_CONFIG_HOME: join(paths.home, ".config"),
+    XDG_DATA_HOME: join(paths.home, ".local", "share"),
+    XDG_CACHE_HOME: join(paths.home, ".cache"),
+    XDG_STATE_HOME: join(paths.home, ".local", "state"),
+    NPM_CONFIG_USERCONFIG: join(paths.home, ".npmrc"),
+    NPM_CONFIG_GLOBALCONFIG: join(paths.home, "global-npmrc"),
     NPM_CONFIG_PREFIX: paths.prefix,
     NPM_CONFIG_CACHE: paths.cache,
     NPM_CONFIG_UPDATE_NOTIFIER: "false",
     NPM_CONFIG_FUND: "false",
     NPM_CONFIG_AUDIT: "false",
-    PATH: npmBin(paths.prefix) + delimiter + (process.env.PATH || ""),
+    PATH: [npmBin(paths.prefix), npmBin(runtimePrefix), ...toolPath].join(delimiter),
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: join(paths.home, ".gitconfig"),
   };
+  env.MEMORAX_CODE_SKIP_CODEX_PLUGIN_INSTALL = "1";
+  for (const client of ["CODEX", "CLAUDE", "OPENCODE", "CODEBUDDY", "WORKBUDDY", "TRAE", "CURSOR"]) {
+    env[`MEMORAX_CODE_${client}_COMMAND`] = disabledClientCommand;
+    if (client !== "CODEX") env[`MEMORAX_CODE_SKIP_${client}_ADAPTER_INSTALL`] = "1";
+  }
   await run("git", ["init", "--quiet"], paths.workspace, env);
   await run("git", ["-c", "user.name=DSH E2E", "-c", "user.email=e2e@example.invalid",
     "add", "README.md", ".gitignore"], paths.workspace, env);
@@ -127,13 +163,20 @@ async function main() {
   await run("git", ["symbolic-ref", "refs/remotes/origin/HEAD", "refs/remotes/origin/main"], paths.workspace, env);
   await writePersonalContextFixtures(paths.memoraxHome);
 
-  progress("installing the pinned DSH release and its test-only dependencies");
-  await run("npm", ["install", "-g", "--prefix", paths.prefix, DSH_SPEC,
-    DSH_MOCK_PACKAGE + "@" + DSH_VERSION, PNPM_SPEC, "--foreground-scripts",
-    "--loglevel", "warn"], paths.workspace, env, { timeout: 300_000 });
-  const dsh = binPath(paths.prefix, "dsh");
+  if (runtimePrefix === paths.prefix) {
+    progress("installing the pinned DSH release and its test-only dependencies");
+    await run("npm", ["install", "-g", "--prefix", paths.prefix, DSH_SPEC,
+      DSH_MOCK_PACKAGE + "@" + DSH_VERSION, PNPM_SPEC, "--omit=optional", "--foreground-scripts",
+      "--loglevel", "warn"], paths.workspace, env, { timeout: 600_000 });
+  } else {
+    progress("verifying the supplied test runtime; client and Backend homes remain isolated");
+    assert.equal((await readJson(join(await packageRoot(runtimePrefix, "pnpm"), "package.json"))).version,
+      PNPM_SPEC.slice("pnpm@".length));
+  }
+  const dsh = join(await packageRoot(runtimePrefix, DSH_PACKAGE), "lib", "bin.js");
   assert.equal((await run(dsh, ["--version"], paths.workspace, env)).stdout.trim(), DSH_VERSION);
-  const mockRoot = await packageRoot(paths.prefix, DSH_MOCK_PACKAGE);
+  const mockRoot = await packageRoot(runtimePrefix, DSH_MOCK_PACKAGE);
+  assert.equal((await readJson(join(mockRoot, "package.json"))).version, DSH_VERSION);
   const mockModule = await import(pathToFileURL(join(mockRoot, "lib", "index.js")).href);
   llmServer = await mockModule.startMockLlmServer({
     sequence: [
@@ -146,6 +189,7 @@ async function main() {
     apiKey: DEEPSEEK_KEY,
     successText: REPLY,
     reasoningText: REASONING,
+    chunkDelayMs: 500,
     toolName: "skill",
     toolArguments: JSON.stringify({ name: "memorax-code" }),
   });
@@ -155,6 +199,8 @@ async function main() {
   runtimeEnv = {
     ...env,
     MEMORAX_CODE_BACKEND_PORT: String(port),
+    MEMORAX_CODE_AUTO_UPDATE: "false",
+    MEMORAX_CODE_JEV_ENABLED: "false",
     MEMORAX_CODE_DSH_COMMAND: dsh,
     MEMORAX_CODE_SKIP_CODEX_PLUGIN_INSTALL: "1",
     MEMORAX_CODE_SKIP_CLAUDE_ADAPTER_INSTALL: "1",
@@ -187,14 +233,19 @@ async function main() {
   const installed = await run("npm", ["install", "-g", "--prefix", paths.prefix, tarball.path,
     "--foreground-scripts", "--loglevel", "warn"], paths.workspace, runtimeEnv,
   { timeout: 300_000 });
-  const installOutput = installed.stdout + "\n" + installed.stderr;
-  assert.match(installOutput, /Detected existing DeepSeek Harness profiles/);
-  assert.match(installOutput, /DeepSeek Harness profiles: found \(web\)/);
-  assert.match(installOutput, /Restart or refresh DeepSeek Harness/);
-  assert.doesNotMatch(installOutput, /client adapters were skipped for this install/);
+  assert.equal(installed.code, 0);
 
   const installedRoot = await packageRoot(paths.prefix, "@memorax/memorax-code");
   memoraxEntry = join(installedRoot, "bin", "memorax-code.mjs");
+  await mkdir(paths.memoraxHome, { recursive: true });
+  await writeFile(join(paths.memoraxHome, "config.toml"), [
+    "[clients]", ...["codex", "claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor"]
+      .map((client) => `${client} = ${client === "dsh"}`),
+    "[jev]", "enabled = false", "",
+  ].join("\n"));
+  await run(process.execPath, [memoraxEntry, "setup", "--existing-account", "--non-interactive",
+    "--home", paths.memoraxHome], paths.workspace, runtimeEnv,
+  { input: MEMORAX_KEY + "\n", timeout: 300_000 });
   const sourceRoot = join(installedRoot, "lib", "memorax-code-dsh-adapter");
   const statePath = join(paths.memoraxHome, "adapters", "dsh", "state.json");
   const generationsRoot = join(paths.memoraxHome, "adapters", "dsh", "runtime", "generations");
@@ -333,28 +384,28 @@ async function main() {
   }), true);
 
   progress("crashing and resuming one real DSH session to reconcile its interrupted Turn");
-  const interruptedRunnerPath = join(headless, "memorax-interrupted-e2e-runner.mjs");
+  const interruptedFixtureRoot = join(isolatedRoot, "interrupted-fixture");
+  await mkdir(interruptedFixtureRoot);
+  // Native request inventory requires an identity for every package-backed
+  // Loader entry. A Profile manifest has a name but intentionally no version.
+  await writeFile(join(interruptedFixtureRoot, "package.json"), JSON.stringify({
+    name: "@memorax-code/dsh-e2e-interrupted-fixture", version: "0.0.0", private: true, type: "module",
+  }) + "\n");
+  const interruptedPluginPath = join(interruptedFixtureRoot, "index.mjs");
   const interruptedPatchPath = join(isolatedRoot, "memorax-interrupted-e2e.patch.yml");
-  await writeFile(interruptedRunnerPath, interruptedRunnerSource(), "utf8");
+  await writeFile(interruptedPluginPath, interruptedCrashPluginSource(), "utf8");
   await writeFile(interruptedPatchPath, [
-    "- id: headless-runner",
-    "  disabled: true",
-    "",
     "- insert:",
-    "    - id: memorax-interrupted-e2e-runner",
-    `      name: ${JSON.stringify(pathToFileURL(interruptedRunnerPath).href)}`,
+    "    - id: memorax-interrupted-e2e-crash",
+    `      name: ${JSON.stringify(pathToFileURL(interruptedPluginPath).href)}`,
     "",
   ].join("\n"), "utf8");
   const addsBeforeInterrupted = requests("/v1/memories/add").length;
-  const runInterrupted = (mode, prompt) => run(dsh, [
-    "--profile", "headless", "--patch", interruptedPatchPath, prompt,
-  ], paths.workspace, { ...runtimeEnv, [INTERRUPTED_MODE_ENV]: mode }, {
-    expectedExit: mode === "crash" ? null : 0,
-  });
-  const crashed = await runInterrupted("crash", CRASH_PROMPT);
+  const crashed = await run(dsh, [
+    "--profile", "headless", "--patch", interruptedPatchPath, CRASH_PROMPT,
+  ], paths.workspace, nativeTurnEnvironment(runtimeEnv), { expectedExit: null });
   assert.equal(crashed.signal, "SIGKILL", `DSH did not crash as expected:\n${crashed.stderr}`);
   const crashSession = await sessionForPrompt(sessionsRoot, CRASH_PROMPT);
-  assert.equal(crashSession.id, INTERRUPTED_SESSION_ID);
   const crashEvents = await readDshSessionEvents(crashSession.path);
   const crashTurn = turnForPrompt(crashEvents, CRASH_PROMPT);
   assert.equal(
@@ -363,7 +414,8 @@ async function main() {
     "the killed DSH process persisted a graceful Turn end",
   );
 
-  await runInterrupted("resume", RESUME_PROMPT);
+  await run(dsh, ["--profile", "headless", "--session-id", crashSession.id, RESUME_PROMPT],
+    paths.workspace, nativeTurnEnvironment(runtimeEnv));
   await waitFor(
     () => requests("/v1/memories/add").length === addsBeforeInterrupted + 1,
     "resumed DSH Add",
@@ -385,7 +437,7 @@ async function main() {
   assert.doesNotMatch(JSON.stringify(interruptedAdds), new RegExp(CRASH_PROMPT));
 
   const interruptedTracePath = join(paths.memoraxHome, "debug", "traces", "dsh",
-    "sessions", INTERRUPTED_SESSION_ID, "events.jsonl");
+    "sessions", crashSession.id, "events.jsonl");
   await waitFor(async () => {
     const trace = await readFile(interruptedTracePath, "utf8").catch(() => "");
     return trace.includes('"native_outcome":"interrupted"')
@@ -473,6 +525,7 @@ async function main() {
     ok: true,
     dshVersion: DSH_VERSION,
     memoraxPackageSource: tarball.source,
+    reusedTestRuntime: runtimePrefix !== paths.prefix,
     searches: requests("/v1/memories/search").length,
     adds: requests("/v1/memories/add").length,
     firstTurnCanonicalSkillRoundTrip: true,
@@ -519,8 +572,13 @@ async function memoraxTarball(paths, env) {
 }
 
 async function runTurn(dsh, prompt, cwd, env) {
-  const result = await run(dsh, ["--profile", "headless", prompt], cwd, env);
+  const result = await run(dsh, ["--profile", "headless", prompt], cwd, nativeTurnEnvironment(env));
   assert.match(result.stdout, new RegExp(REPLY));
+}
+
+function nativeTurnEnvironment(env) {
+  return { ...env, NODE_OPTIONS: "--import " + pathToFileURL(join(repoRoot,
+    "scripts", "ci", "dsh", "fixtures", "local-network-only.mjs")).href };
 }
 
 function assertAdd(request, prompt) {
@@ -642,62 +700,30 @@ function emptyRepoMemoryResource(schema, source, trustState, rawSource) {
   ].join("\n");
 }
 
-function interruptedRunnerSource() {
+function interruptedCrashPluginSource() {
   return [
-    'import { installModelSelection } from "@deepseek-ai/dsh-agent";',
-    'import { createUserMessage } from "@deepseek-ai/dsh-llm";',
-    'import { SessionId } from "@deepseek-ai/dsh-session";',
-    "",
-    'export const name = "memorax-interrupted-e2e-runner";',
-    'export const inject = ["agentDefaultModel", "agents", "headlessStartup", "sessions"];',
+    'export const name = "memorax-interrupted-e2e-crash";',
+    'export const inject = ["sessions"];',
     "",
     "export function apply(ctx) {",
-    "  void run(ctx).catch((error) => {",
-    '    process.stderr.write(`memorax interrupted E2E runner: ${error instanceof Error ? error.message : String(error)}\\n`);',
-    '    ctx.get("appExit")?.(1);',
-    "  });",
-    "}",
-    "",
-    "async function run(ctx) {",
-    '  await ctx.get("loader")?.await();',
-    '  const agents = ctx.get("agents");',
-    '  const defaultModel = ctx.get("agentDefaultModel");',
-    '  const prompt = ctx.get("headlessStartup")?.task;',
     '  const sessions = ctx.get("sessions");',
-    "  if (!agents || !defaultModel || !sessions) return;",
-    `  const mode = process.env[${JSON.stringify(INTERRUPTED_MODE_ENV)}];`,
-    `  const sessionId = ${JSON.stringify(INTERRUPTED_SESSION_ID)};`,
-    '  if ((mode !== "crash" && mode !== "resume") || !prompt) {',
-    '    throw new Error("missing interrupted E2E mode or prompt");',
-    "  }",
+    '  process.stderr.write("memorax interrupted E2E crash listener ready\\n");',
     "  let crashStarted = false;",
-    '  ctx.on("session/event", (session, event) => {',
-    '    if (mode !== "crash" || crashStarted || session.id !== sessionId || event.type !== "assistant/chunk") return;',
+    '  ctx.on("agent/assistant-stream", ({ agent, frame }) => {',
+    '    if (crashStarted || frame.type !== "chunk" || frame.chunk.type !== "text-delta") return;',
+    '    const session = agent.session;',
+    '    if (!session.snapshotEvents().some((event) => event.type === "user/message"',
+    '      && event.data.source?.kind === "user"',
+    `      && event.data.content.some((block) => block.type === "text" && block.text === ${JSON.stringify(CRASH_PROMPT)}))) return;`,
     "    crashStarted = true;",
-    '    void sessions.flush(session).then(() => process.kill(process.pid, "SIGKILL"), (error) => {',
+    '    void sessions.flush(session).then(() => {',
+    '      process.stderr.write(`memorax interrupted E2E killing persisted session ${session.id}\\n`);',
+    '      process.kill(process.pid, "SIGKILL");',
+    '    }, (error) => {',
     '      process.stderr.write(`memorax interrupted E2E flush: ${error instanceof Error ? error.message : String(error)}\\n`);',
     "      process.exit(1);",
     "    });",
     "  });",
-    "  const selection = defaultModel.currentSelection();",
-    "  const setup = (agentCtx) => {",
-    "    installModelSelection(agentCtx, { current: selection, assembled: undefined });",
-    "  };",
-    "  const shared = {",
-    "    agentOptions: { provider: selection.provider, model: selection.model },",
-    "    setup,",
-    "  };",
-    '  const { agent } = mode === "resume"',
-    "    ? await agents.resume({ resumeSessionId: SessionId(sessionId), ...shared })",
-    "    : await agents.create({ sessionId: SessionId(sessionId), meta: { cwd: process.cwd() }, ...shared });",
-    "  await agent.whenIdle();",
-    "  agent.followup(createUserMessage({",
-    '    content: [{ type: "text", text: prompt }],',
-    '    source: { kind: "user" },',
-    "  }));",
-    "  await agent.whenIdle();",
-    "  await sessions.flush(agent.session);",
-    '  if (mode === "resume") ctx.get("appExit")?.(0);',
     "}",
     "",
   ].join("\n");
@@ -819,6 +845,30 @@ function npmBin(prefix) {
   return process.platform === "win32" ? prefix : join(prefix, "bin");
 }
 
+async function isolatedToolPath(root) {
+  const commands = new Map([["node", process.execPath]]);
+  for (const name of ["npm", "git"]) {
+    const extensions = process.platform === "win32" ? [".cmd", ".exe", ""] : [""];
+    for (const directory of [dirname(process.execPath), ...(process.env.PATH ?? "").split(delimiter)]) {
+      if (!directory) continue;
+      for (const extension of extensions) {
+        const candidate = resolve(directory, name + extension);
+        if (await exists(candidate)) { commands.set(name, candidate); break; }
+      }
+      if (commands.has(name)) break;
+    }
+    assert.ok(commands.has(name), `required fixture command is missing: ${name}`);
+  }
+  if (process.platform === "win32") {
+    const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
+    return [...new Set([...commands.values()].map(dirname)), join(systemRoot, "System32"), systemRoot];
+  }
+  const toolBin = join(root, "tool-bin");
+  await mkdir(toolBin);
+  for (const [name, command] of commands) await symlink(command, join(toolBin, name));
+  return [toolBin, "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
+}
+
 function binPath(prefix, name) {
   return join(npmBin(prefix), process.platform === "win32" ? name + ".cmd" : name);
 }
@@ -836,34 +886,19 @@ async function freePort() {
 }
 
 async function run(command, args, cwd, env, options = {}) {
-  const child = spawn(command, args, {
-    cwd,
-    env: { ...env, PWD: cwd },
-    stdio: ["ignore", "pipe", "pipe"],
+  const logs = join(isolatedRoot, "logs");
+  await mkdir(logs, { recursive: true });
+  const logPath = join(logs, `${String(++processLogSequence).padStart(3, "0")}-${basename(command)}.json`);
+  return runNativeProcess(command, args, {
+    cwd, env, ...options, logPath, redact: redactDiagnostic,
   });
-  let stdout = "";
-  let stderr = "";
-  child.stdout.on("data", (chunk) => { stdout += chunk; });
-  child.stderr.on("data", (chunk) => { stderr += chunk; });
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    child.kill("SIGKILL");
-  }, options.timeout || 120_000);
-  const result = await new Promise((resolveChild, rejectChild) => {
-    child.once("error", rejectChild);
-    child.once("close", (code, signal) => resolveChild({ code, signal }));
-  }).finally(() => clearTimeout(timer));
-  const expected = Object.hasOwn(options, "expectedExit") ? options.expectedExit : 0;
-  if (timedOut || (expected !== null && result.code !== expected)) {
-    throw new Error([
-      basename(command) + " exited " + (timedOut ? "after timeout" :
-        result.code ?? result.signal),
-      stdout.trim() && "stdout:\n" + stdout.slice(-8000),
-      stderr.trim() && "stderr:\n" + stderr.slice(-8000),
-    ].filter(Boolean).join("\n"));
-  }
-  return { ...result, stdout, stderr };
+}
+
+function redactDiagnostic(text) {
+  return text.replaceAll(MEMORAX_KEY, "[synthetic-key]").replaceAll(DEEPSEEK_KEY, "[synthetic-key]")
+    .replace(/([?&]token=)[^\s&"']+/g, "$1[redacted]")
+    .replace(/(Bearer\s+)[^\s"']+/gi, "$1[redacted]")
+    .replace(/("(?:token|authorization)"\s*:\s*")[^"]*/gi, "$1[redacted]");
 }
 
 async function waitFor(predicate, label) {
@@ -913,14 +948,11 @@ function isInside(path, parent) {
 }
 
 function cleanEnvironment() {
-  const env = { ...process.env };
-  for (const key of Object.keys(env)) {
-    if (key.startsWith("MEMORAX_CODE_") || key.startsWith("DSH_") ||
-      key.startsWith("DEEPSEEK_") || key.startsWith("NPM_CONFIG_") ||
-      ["CODEX_HOME", "CLAUDE_HOME", "CLAUDE_CONFIG_DIR",
-        "OPENCODE_CONFIG_DIR"].includes(key)) delete env[key];
-  }
-  return env;
+  // Native runs inherit only executable and operating-system launch settings.
+  // Credentials, client homes, command overrides and provider settings stay isolated.
+  const keys = ["PATH", "SystemRoot", "WINDIR", "COMSPEC", "PATHEXT", "LANG", "LC_ALL"];
+  return Object.fromEntries(keys.filter((key) => process.env[key] !== undefined)
+    .map((key) => [key, process.env[key]]));
 }
 
 async function exists(path) {
@@ -944,5 +976,8 @@ async function cleanup() {
   if (alive(backendPid)) process.kill(backendPid, "SIGKILL");
   await Promise.allSettled([llmServer?.close?.(), memoraxServer?.close?.()]);
   if (stageRoot) await rm(stageRoot, { recursive: true, force: true });
-  if (isolatedRoot) await rm(isolatedRoot, { recursive: true, force: true });
+  if (isolatedRoot) {
+    if (process.exitCode) progress("failure artifacts retained at " + isolatedRoot);
+    else await rm(isolatedRoot, { recursive: true, force: true });
+  }
 }

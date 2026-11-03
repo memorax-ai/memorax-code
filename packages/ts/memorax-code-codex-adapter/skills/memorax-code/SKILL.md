@@ -92,7 +92,7 @@ Deleting saved memory still requires an explicit request.
 
 ## Natural Final-Answer Mention
 
-In Codex, Claude Code, DeepSeek Harness, OpenCode, CodeBuddy/WorkBuddy, Trae, and Cursor, mention memory in the final answer when memory read in the current turn materially changed localization, a decision, implementation, validation, or the delivered answer. Eligible sources are an accepted Coding Memory result from a successful explicit `memorax-cli search`, a relevant Repo Memory read, applied Procedure Memory, or applied Profile Memory. A Search or read alone is insufficient: omit the mention for empty, unrelated, stale, rejected, merely confirmatory, or unused memory.
+In Codex, Claude Code, DeepSeek Harness, OpenCode, CodeBuddy/WorkBuddy, Trae, Cursor, and Qoder, mention memory in the final answer when memory read in the current turn materially changed localization, a decision, implementation, validation, or the delivered answer. Eligible sources are an accepted Coding Memory result from a successful explicit `memorax-cli search`, a relevant Repo Memory read, applied Procedure Memory, or applied Profile Memory. A Search or read alone is insufficient: omit the mention for empty, unrelated, stale, rejected, merely confirmatory, or unused memory.
 
 Treat accepted memory as materially helpful when the answer uses it to recover or substantiate historical intent, rationale, a prior decision, a constraint, or a reusable lesson, even when live code independently confirms the conclusion. `Merely confirmatory` means the answer does not rely on the memory for a claim and the memory changes neither its framing, scope, nor confidence.
 
@@ -118,6 +118,6 @@ files under `.repo_memory` are ignored and are not migrated.
 
 Apply instructions in this order: system and developer instructions, `AGENTS.md`, the current user request, then stored memory. Memory is guidance or historical context, not proof of current repository behavior.
 
-For MemoraX Code coding memory, use `memorax-cli` exactly as described by the selected reference. Invoke this skill as `$memorax-code` in Codex or `/memorax-code` in Claude Code. In OpenCode, ask the agent to use the `memorax-code` skill by name. These invocation forms are not shell commands. `memorax-code` is the lifecycle CLI and must not be used for memory search or add. Do not call MemoraX HTTP endpoints directly.
+For MemoraX Code coding memory, use `memorax-cli` exactly as described by the selected reference. Invoke this skill as `$memorax-code` in Codex or `/memorax-code` in Claude Code. In OpenCode, ask the agent to use the `memorax-code` skill by name. In Qoder, ask the agent to invoke the native `memorax-code` skill by name. These invocation forms are not shell commands. `memorax-code` is the lifecycle CLI and must not be used for memory search or add. Do not call MemoraX HTTP endpoints directly.
 
 Never store secrets, credentials, `.env` content, sensitive personal data, raw transcripts, hidden tests, exact patches, temporary target commits, or unsafe destructive commands. Do not announce internal routing or reference loading.

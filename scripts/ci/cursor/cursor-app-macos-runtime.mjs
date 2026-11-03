@@ -32,19 +32,44 @@ function pathPattern(value, directory) {
   return new RegExp(`(?:^|[\\s\"'=])${escaped}(?=$|[\\s\"'${directory ? "/" : ""}])`);
 }
 
-export function hasOwnedMacosProcesses(output, { appBundle, packageRoot, stateHome, marker, includeBackend = true,
-  selfPid = process.pid, observedPids = new Set() }) {
+const weekdays = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+function normalizeProcessStart(value, code = processCode) {
+  const parts = typeof value === "string" && value.match(/^(Sun|Mon|Tue|Wed|Thu|Fri|Sat)[ \t]+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[ \t]+([1-9]|[12]\d|3[01])[ \t]+([01]\d|2[0-3]):([0-5]\d):([0-5]\d)[ \t]+([1-9]\d{3})$/);
+  check(parts, code);
+  const [, weekday, month, day, hour, minute, second, year] = parts;
+  const date = new Date(Date.UTC(Number(year), months.indexOf(month), Number(day), Number(hour), Number(minute), Number(second)));
+  check(date.getUTCFullYear() === Number(year) && date.getUTCMonth() === months.indexOf(month)
+    && date.getUTCDate() === Number(day) && weekdays[date.getUTCDay()] === weekday, code);
+  return [weekday, month, day, hour + ":" + minute + ":" + second, year].join(" ");
+}
+function processRows(output, descendants = false) {
   check(typeof output === "string" && output.length <= 4 * 1024 * 1024 && output.trim(), processCode);
+  const rows = output.trim().split(/\r?\n/).map((line) => {
+    const row = descendants ? line.match(/^\s*(\d+)[ \t]+(\d+)[ \t]+(.+?)[ \t]*$/)
+      : line.match(/^\s*(\d+)[ \t]+((?:\S+[ \t]+){4}\S+)[ \t]+(.+)$/);
+    check(row && Number.isSafeInteger(Number(row[1]))
+      && (!descendants || Number.isSafeInteger(Number(row[2]))), processCode);
+    return { pid: Number(row[1]), startedAt: normalizeProcessStart(row[descendants ? 3 : 2]),
+      ...(descendants ? { ppid: Number(row[2]) } : { command: row[3] }) };
+  });
+  check(new Set(rows.map((row) => row.pid)).size === rows.length, processCode);
+  return rows;
+}
+
+export function hasOwnedMacosProcesses(output, { appBundle, packageRoot, stateHome, marker, includeBackend = true,
+  selfPid = process.pid, observedProcesses = new Map() }) {
   check(typeof includeBackend === "boolean" && Number.isSafeInteger(selfPid) && selfPid > 0);
-  check(observedPids instanceof Set && [...observedPids].every((pid) => Number.isSafeInteger(pid) && pid > 0));
+  check(observedProcesses instanceof Map && [...observedProcesses].every(([pid, startedAt]) => Number.isSafeInteger(pid) && pid > 0
+    && normalizeProcessStart(startedAt, argumentCode) === startedAt));
   const patterns = [pathPattern(appBundle, true), pathPattern(stateHome, true)];
   if (includeBackend) patterns.push(pathPattern(packageRoot, true));
   if (marker !== undefined) patterns.push(pathPattern(marker, false));
   let owned = false;
-  for (const line of output.trim().split(/\r?\n/)) {
-    const row = line.match(/^\s*(\d+)[ \t]+(.+)$/);
-    check(row && Number.isSafeInteger(Number(row[1])), processCode);
-    if (Number(row[1]) !== selfPid && (observedPids.has(Number(row[1])) || patterns.some((pattern) => pattern.test(row[2])))) owned = true;
+  for (const row of processRows(output)) {
+    // lstart has second precision; an indistinguishable reused PID remains a conservative failure.
+    if (row.pid !== selfPid && (observedProcesses.get(row.pid) === row.startedAt
+      || patterns.some((pattern) => pattern.test(row.command)))) owned = true;
   }
   return owned;
 }
@@ -60,24 +85,19 @@ async function processSnapshot(args, execute) {
 }
 
 export async function auditMacosProcesses(options, execute = exec) {
-  return hasOwnedMacosProcesses(await processSnapshot(["-axww", "-o", "pid=,command="], execute), options);
+  return hasOwnedMacosProcesses(await processSnapshot(["-axww", "-o", "pid=,lstart=,command="], execute), options);
 }
 
 export async function captureMacosDescendants(appPid, execute = exec) {
   check(Number.isSafeInteger(appPid) && appPid > 1 && appPid !== process.pid);
-  const output = await processSnapshot(["-ax", "-o", "pid=,ppid="], execute);
-  check(typeof output === "string" && output.length <= 4 * 1024 * 1024 && output.trim(), processCode);
-  const rows = output.trim().split(/\r?\n/).map((line) => {
-    const row = line.match(/^\s*(\d+)\s+(\d+)\s*$/);
-    check(row && [row[1], row[2]].every((value) => Number.isSafeInteger(Number(value))), processCode);
-    return { pid: Number(row[1]), ppid: Number(row[2]) };
-  });
-  check(new Set(rows.map((row) => row.pid)).size === rows.length && rows.some((row) => row.pid === appPid), processCode);
-  const owned = new Set([appPid]);
+  const rows = processRows(await processSnapshot(["-ax", "-o", "pid=,ppid=,lstart="], execute), true);
+  const app = rows.find((row) => row.pid === appPid);
+  check(app, processCode);
+  const owned = new Map([[appPid, app.startedAt]]);
   let previous = 0;
   while (previous !== owned.size) {
     previous = owned.size;
-    for (const row of rows) if (row.pid !== process.pid && owned.has(row.ppid)) owned.add(row.pid);
+    for (const row of rows) if (row.pid !== process.pid && owned.has(row.ppid)) owned.set(row.pid, row.startedAt);
   }
   return owned;
 }

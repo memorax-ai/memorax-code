@@ -13,6 +13,8 @@ export function resolveWorkBuddyWorkspaceKind(
 
 export function isOpenCodeDefaultWorkspace(cwd: string | undefined, options?: DefaultWorkspaceOptions): boolean;
 
+export function isQoderManagedTaskWorkspace(value: string | undefined, options?: DefaultWorkspaceOptions): boolean;
+
 export type CodexWorkspaceOptions = Readonly<{
   env?: NodeJS.ProcessEnv;
   path?: typeof import("node:path").posix;

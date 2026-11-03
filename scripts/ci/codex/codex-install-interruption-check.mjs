@@ -7,12 +7,18 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 import { createNativeHarness, fixtureModel, sendResponses, stopNativeProcessTree, waitFor } from "./codex-native-support.mjs";
 import { assertCredentialNotEchoed, assertProtectedConfiguration, snapshotProtectedConfiguration } from "./codex-lifecycle-assertions.mjs";
+import { createEvidenceRecorder } from "../shared/ci-evidence.mjs";
+import { code, projectError } from "../shared/ci-evidence-projections.mjs";
+import { collectSetupProductDiagnostics, createSetupTerminalObservation, interruptionFailureEvidence } from "./codex-install-interruption-evidence.mjs";
 
 const report = { status: "FAIL", suite: "native_setup_interruption", platform: process.platform,
   paidModelRequests: 0, evidence: "real installed setup in a PTY; native lifecycle lock and test-only Node child admission gates", cases: [] };
 const phases = ["after-config-write", "before-backend-start", "after-backend-start", "saved-account-key-cancel"];
 const key = `sk_${"I".repeat(43)}`;
 let packageRoot, codexCommand, pty;
+let progress = { stage: "prerequisites" };
+const evidence = createEvidenceRecorder({ suite: "codex-install-interruption-check", client: "codex" });
+evidence.track(() => progress);
 try {
   check(process.argv.length === 5, "EXPECTED_PACKAGE_CODEX_AND_PTY_PATHS");
   packageRoot = resolve(process.argv[2]);
@@ -33,6 +39,9 @@ try {
   report.status = report.cases.every((result) => result.status === "PASS") ? "PASS" : "FAIL";
 } catch (error) {
   report.error = safeCode(error);
+  report.failureStage = progress.cleanupStage ?? progress.stage;
+} finally {
+  report.evidenceStatus = evidence.finish({ testOutcome: report.status, failure: interruptionFailureEvidence(report) });
 }
 console.log(JSON.stringify(report, null, 2));
 if (report.status !== "PASS") process.exitCode = 1;
@@ -41,6 +50,39 @@ async function runCase(phase) {
   const result = { id: phase, status: "FAIL", errors: [] };
   let harness, gateServer, terminal, releaseLock, heldLock;
   let gateEnabled = true, reached, initialConfig, parse, protectedConfig;
+  let caseStage = "prepare", cleanupStage;
+  const cleanupErrors = new Set();
+  const setStage = (stage) => {
+    caseStage = stage;
+    progress = { case: phase, stage: phase + ":" + stage };
+    evidence.observe("progress", progress);
+  };
+  const setCleanupStage = (stage) => {
+    cleanupStage = phase + ":" + stage;
+    progress = { ...progress, cleanupStage };
+    evidence.observe("progress", progress);
+  };
+  const snapshot = () => terminal ? { ...terminal.observation.snapshot(), inputRequested: terminal.inputRequested } : undefined;
+  const stopTracking = evidence.track(() => ({ stage: caseStage, terminal: snapshot() ?? null }), { key: phase + ".terminal" });
+  const recordFailure = (error) => {
+    const failureCode = safeCode(error);
+    result.errors.push(failureCode);
+    if (caseStage === "retry" && !result.retry) {
+      result.retry = snapshot();
+      evidence.observe(phase + ".retry", result.retry ?? null);
+    }
+    result.firstFailure ??= { stage: phase + ":" + caseStage, code: failureCode, terminal: snapshot() };
+    evidence.observe(phase + ".firstFailure", result.firstFailure);
+  };
+  const recordCleanupFailure = (error) => {
+    if (cleanupErrors.has(error)) return;
+    cleanupErrors.add(error);
+    result.status = "FAIL";
+    (result.cleanupFailures ??= []).push({ stage: cleanupStage, code: safeCode(error), error: projectError(error) });
+    result.cleanup = result.cleanupFailures[0].code;
+    evidence.observe(phase + ".cleanupFailures", result.cleanupFailures);
+  };
+  setStage("prepare");
   const gateReached = new Promise((done) => { reached = done; });
   const blockedResponses = new Set(), dependencyPids = new Set(), backendPids = new Set();
   const rememberBackend = async () => {
@@ -50,7 +92,7 @@ async function runCase(phase) {
   };
   const config = () => readFile(join(harness.stateHome, "config.toml"), "utf8");
   const completed = () => exists(join(harness.stateHome, "runtime", "setup", "setup-completion.json"));
-  const observe = async (operation) => { try { await operation(); } catch (error) { result.errors.push(safeCode(error)); } };
+  const observe = async (operation) => { try { await operation(); } catch (error) { recordFailure(error); } };
   try {
     harness = await createNativeHarness({ packageRoot, codexCommand, label: `interruption-${phase}`, writeback: false });
     ({ parse } = createRequire(join(packageRoot, "package.json"))("smol-toml"));
@@ -60,7 +102,7 @@ async function runCase(phase) {
     // Trailing whitespace makes a real setup-managed configuration publication
     // observable while the protected semantic choices remain unchanged.
     initialConfig = `[memorax]\nendpoint = ${JSON.stringify(harness.memoryUrl)}\nuser_id = ${JSON.stringify(user)}\napi_key = ${JSON.stringify(key)}\n
-[clients]\ncodex = true \t\nclaude = false\ndsh = false\nopencode = false\ncodebuddy = false\nworkbuddy = false\ntrae = false\ncursor = false\n
+[clients]\ncodex = true \t\nclaude = false\ndsh = false\nopencode = false\ncodebuddy = false\nworkbuddy = false\ntrae = false\ncursor = false\nqoder = false\n
 [memory.writeback]\nenabled = false\n[memory.cli]\nadd_enabled = false\n[memory.add]\noutput_language = "en"\n[jev]\nenabled = false\n`;
     await writeFile(join(harness.stateHome, "config.toml"), initialConfig, { mode: 0o600 });
     protectedConfig = snapshotProtectedConfiguration(parse(initialConfig));
@@ -99,12 +141,14 @@ async function runCase(phase) {
       heldLock = withBackendLifecycleLock({ home: harness.stateHome }, () => { lockReady(); return release; });
       await deadline(Promise.race([ready, heldLock]), 10_000, "LIFECYCLE_GATE_LOCK_NOT_ACQUIRED");
     }
+    setStage("interruption-start");
     terminal = startTerminal(harness, phase === "saved-account-key-cancel" ? ["setup", "--existing-account"] : ["setup"], {
       cancelCase: phase === "saved-account-key-cancel", onStage: (event) => {
         if (phase === "before-backend-start" && event === "starting-backend") reached({ kind: "held-native-lifecycle-lock", backendHealthy: false });
         if (phase === "saved-account-key-cancel" && event === "key-prompt") reached({ kind: "native-masked-key-prompt", backendHealthy: false });
       },
     });
+    setStage("interruption-stage");
     result.stageEvidence = await deadline(Promise.race([gateReached, terminal.exited.then(() => { throw failure("SETUP_EXITED_BEFORE_INTERRUPTION_STAGE"); })]),
       110_000, "INTERRUPTION_STAGE_NOT_REACHED");
     result.stageReached = true;
@@ -112,6 +156,7 @@ async function runCase(phase) {
     await observe(async () => assertProtectedConfiguration(parse(await config()), protectedConfig));
     if (phase !== "after-backend-start") await observe(async () => check(!(await rememberBackend()), "BACKEND_STARTED_BEFORE_REQUESTED_GATE"));
     if (phase === "after-config-write") await observe(async () => check(await config() !== initialConfig, "CONFIG_PUBLICATION_NOT_OBSERVED"));
+    setStage("interruption-stop");
     result.interruption = phase === "saved-account-key-cancel" ? "Ctrl-C before entering a replacement key" : "terminate the real setup process tree at the dependency gate";
     if (phase === "saved-account-key-cancel") terminal.child.write("\x03");
     else await stopTerminal(terminal, harness.env);
@@ -134,14 +179,18 @@ async function runCase(phase) {
     const interruptedConfig = parse(await config());
     check(Object.entries(protectedConfig.account).every(([field, value]) => interruptedConfig.memorax?.[field] === value),
       "INTERRUPTED_SAVED_ACCOUNT_NOT_PRESERVED");
+    setStage("retry");
     terminal = startTerminal(harness, ["setup"], { cancelCase: false });
     const retried = await deadline(terminal.exited, 110_000, "SETUP_RETRY_TIMEOUT");
+    result.retry = snapshot();
+    evidence.observe(phase + ".retry", result.retry);
     check(!terminal.inputRequested, "SAVED_ACCOUNT_RETRY_REQUESTED_INPUT");
     check(retried.exitCode === 0 && !(retried.signal > 0), "SETUP_RETRY_FAILED");
     assertCredentialNotEchoed(terminal.output(), key);
     disposeTerminal(terminal);
     terminal = undefined;
     result.retryWithoutAccountInput = true;
+    setStage("retry-verification");
     await observe(async () => assertProtectedConfiguration(parse(await config()), protectedConfig));
     check(parse(await config()).memorax?.endpoint === protectedConfig.account.endpoint,
       "RECOVERY_ENDPOINT_CHANGED_BEFORE_REQUEST");
@@ -150,6 +199,7 @@ async function runCase(phase) {
     check(completion?.completedByVersion === manifest.version, "SETUP_RETRY_COMPLETION_MISSING");
     const status = JSON.parse((await harness.runProduct(["status", "--clients", "codex", "--json"])).stdout);
     check(status.ok === true && status.backend?.ok === true && status.codexAdapter?.ok === true, "SETUP_RETRY_NOT_READY");
+    setStage("native-verification");
     harness.setModelHandler((body, response) => {
       check(body.model === fixtureModel, "RECOVERY_MODEL_SUBSTITUTION");
       sendResponses(response, { output: [{ type: "message", role: "assistant", phase: "final_answer",
@@ -160,6 +210,7 @@ async function runCase(phase) {
     const session = events.find((event) => event.type === "thread.started")?.thread_id;
     check(session && events.some((event) => event.type === "turn.completed"), "RECOVERY_NATIVE_SESSION_FAILED");
     check(harness.memoryRequests.length === 0, "DISABLED_WRITEBACK_SENT_REQUEST");
+    setStage("saved-account-search");
     const query = "Interrupted setup saved account check";
     const searched = JSON.parse((await harness.runMemory(["search", "--query", query, "--session-id", session, "--json"])).stdout);
     check(searched.ok === true && searched.baseUserId === user && searched.effectiveUserId === `${user}@${basename(harness.workspace)}`,
@@ -173,12 +224,21 @@ async function runCase(phase) {
     check(harness.serverErrors.length === 0, "RECOVERY_RECEIVER_FAILED");
     result.status = result.errors.length === 0 ? "PASS" : "FAIL";
   } catch (error) {
-    result.errors.push(safeCode(error));
+    recordFailure(error);
   } finally {
+    // Keep the functional failure and its terminal observation before cleanup
+    // can dispose the PTY, add diagnostics, or remove the isolated state.
+    if (result.firstFailure) result.productDiagnostics = await collectSetupProductDiagnostics(evidence, phase, harness);
     try {
       try {
+        setCleanupStage("terminal-stop");
         if (terminal) await stopTerminal(terminal, harness.env);
+      } catch (error) {
+        recordCleanupFailure(error);
+        throw error;
       } finally {
+        if (terminal) evidence.observe(phase + ".terminalAfterStop", snapshot());
+        setCleanupStage("gate-release");
         gateEnabled = false;
         for (const response of blockedResponses) if (!response.destroyed) response.writeHead(503).end("cleanup");
         releaseLock?.();
@@ -187,20 +247,31 @@ async function runCase(phase) {
       if (harness) {
         delete harness.env.NODE_OPTIONS;
         await rememberBackend();
+        setCleanupStage("backend-stop");
         const stopped = JSON.parse((await harness.runProduct(["stop", "--clients", "codex", "--json"])).stdout);
         check(stopped.ok === true, "INTERRUPTION_CLEANUP_STOP_FAILED");
+        setCleanupStage("process-exit");
         await waitFor(() => [...backendPids, ...dependencyPids].every((pid) => !alive(pid)), "INTERRUPTION_CLEANUP_PROCESS_REMAINS");
+        setCleanupStage("pid-record");
         check(!(await rememberBackend()), "INTERRUPTION_CLEANUP_PID_RECORD_REMAINS");
       }
       result.cleanup = "PASS";
     } catch (error) {
-      result.status = "FAIL";
-      result.cleanup = safeCode(error);
+      recordCleanupFailure(error);
       for (const pid of backendPids) if (alive(pid)) await stopNativeProcessTree({ pid, kill: () => process.kill(pid, "SIGKILL") }, harness.env).catch(() => {});
     }
+    setCleanupStage("harness-close");
     try { await harness?.close(); }
-    catch (error) { result.status = "FAIL"; result.cleanup = safeCode(error); }
-    if (gateServer) { gateServer.closeAllConnections(); await new Promise((done) => gateServer.close(done)); }
+    catch (error) { recordCleanupFailure(error); }
+    setCleanupStage("gate-close");
+    try {
+      if (gateServer) {
+        gateServer.closeAllConnections();
+        await new Promise((done, reject) => gateServer.close((error) => error ? reject(error) : done()));
+      }
+    } catch (error) { recordCleanupFailure(error); }
+    finally { stopTracking(); }
+    evidence.observe(phase + ".result", { status: result.status, errors: result.errors, cleanup: result.cleanup });
   }
   return result;
 }
@@ -211,9 +282,11 @@ function startTerminal(harness, args, { cancelCase, onStage = () => {} }) {
   delete env.MEMORAX_CODE_SETUP_ASSUME_INTERACTIVE;
   const child = pty.spawn(process.execPath, [join(packageRoot, "bin", "memorax-code.mjs"), ...args],
     { name: "xterm-256color", cols: 120, rows: 40, cwd: harness.workspace, env });
-  const terminal = { child, inputRequested: false, output: () => output };
-  terminal.exited = new Promise((done) => child.onExit(done));
+  const observation = createSetupTerminalObservation();
+  const terminal = { child, observation, inputRequested: false, output: () => output };
+  terminal.exited = new Promise((done) => child.onExit((event) => { observation.exit(event); done(event); }));
   child.onData((chunk) => {
+    observation.output(chunk);
     output += chunk;
     if (output.length > 2 * 1024 * 1024) { terminal.inputRequested = true; disposeTerminal(terminal); return; }
     const queries = output.split("\x1b[6n").length - 1;
@@ -245,12 +318,13 @@ function disposeTerminal(terminal) {
   // An exited Windows shell still owns node-pty ConPTY workers and handles.
   // OS process-tree termination does not dispose those resources.
   try { terminal.child.kill(); }
-  catch { throw failure("PTY_RESOURCE_DISPOSE_FAILED"); }
+  catch { terminal.observation.dispose(false); throw failure("PTY_RESOURCE_DISPOSE_FAILED"); }
+  terminal.observation.dispose(true);
   terminal.disposed = true;
 }
 function failure(code) { return Object.assign(new Error(code), { testCode: code }); }
 function check(condition, code) { if (!condition) throw failure(code); }
-function safeCode(error) { return error.testCode ?? error.nativeCode ?? error.message?.match(/^PROTECTED_[A-Z_]+/)?.[0] ?? "INTERRUPTION_CHECK_FAILED_PRIVATE_OUTPUT_SUPPRESSED"; }
+function safeCode(error) { return code(error.testCode) ?? code(error.nativeCode) ?? error.message?.match(/^PROTECTED_[A-Z_]+/)?.[0] ?? "INTERRUPTION_CHECK_FAILED_PRIVATE_OUTPUT_SUPPRESSED"; }
 function alive(pid) { try { process.kill(pid, 0); return true; } catch (error) { if (error.code === "ESRCH") return false; throw error; } }
 async function exists(path) { return stat(path).then(() => true, (error) => { if (error.code === "ENOENT") return false; throw error; }); }
 async function readJsonIfPresent(path) { try { return JSON.parse(await readFile(path, "utf8")); } catch (error) { if (error.code === "ENOENT") return undefined; throw error; } }

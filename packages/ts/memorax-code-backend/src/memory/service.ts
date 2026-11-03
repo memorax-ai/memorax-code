@@ -27,6 +27,7 @@ import {
 import { createCodeBuddyMemoryHookRuntime, type CodeBuddyMemoryHookWritebackResult } from "../clients/codebuddy/memory-hook-runtime.js";
 import { createTraeMemoryHookRuntime, type TraeMemoryHookWritebackResult } from "../clients/trae/memory-hook-runtime.js";
 import { createCursorMemoryHookRuntime, type CursorMemoryHookPreCompactResult, type CursorMemoryHookWritebackResult } from "../clients/cursor/memory-hook-runtime.js";
+import { createQoderMemoryHookRuntime, type QoderMemoryHookWritebackResult } from "../clients/qoder/memory-hook-runtime.js";
 import { createMemoryTurnCoordinator } from "./turn-coordinator.js";
 import { createMemorySearchGuidanceRuntime, type MemorySearchGuidanceRuntime } from "./search-guidance.js";
 import {
@@ -52,7 +53,8 @@ type MemoryHookWritebackResult =
   | DshMemoryHookWritebackResult
   | CodeBuddyMemoryHookWritebackResult
   | TraeMemoryHookWritebackResult
-  | CursorMemoryHookWritebackResult;
+  | CursorMemoryHookWritebackResult
+  | QoderMemoryHookWritebackResult;
 
 export type MemoryService = {
   recordTurnStart(command: TurnStartCommand): Promise<MemoryHookTurnStartResult>;
@@ -176,6 +178,9 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
     repositoryMemorySession,
     turnCoordinator,
   });
+  const qoderHook = createQoderMemoryHookRuntime({
+    ...options, searchGuidance, pendingQuotaNotice, repositoryMemorySession, turnCoordinator,
+  });
   async function observeWriteback(command: WritebackCommand, pending: Promise<MemoryHookWritebackResult>): Promise<MemoryHookWritebackResult> {
     const result = await pending;
     if (!result.scheduled && !("deferred" in result && result.deferred)) {
@@ -246,6 +251,8 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
           return await traeHook.recordTurnStart(command);
         case "cursor":
           return await cursorHook.recordTurnStart(command);
+        case "qoder":
+          return await qoderHook.recordTurnStart(command);
       }
       return unsupportedMemoryHookCommand(command);
     },
@@ -268,6 +275,8 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
         case "cursor":
           // Cursor owns failure reporting, including retries after this request ends.
           return await cursorHook.writeback(command);
+        case "qoder":
+          return await observeWriteback(command, qoderHook.writeback(command));
       }
       return unsupportedMemoryHookCommand(command);
     },
@@ -286,6 +295,7 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
       workBuddyHook.close();
       traeHook.close();
       cursorHook.close();
+      qoderHook.close();
       turnCoordinator.close();
       repositoryMemorySession.close();
       searchGuidance.close();

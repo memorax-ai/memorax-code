@@ -8,9 +8,11 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import test from "node:test";
 import {
   cleanupDockerResources, cursorAppNodeImage, cursorAppRelease, makeContainerArgs, projectNativeReport,
-  readReleaseManifest, resolveLocalDockerEndpoint, stageCursorAppChecks, verifyCursorAppArtifact,
+  readReleaseManifest, resolveLocalDockerEndpoint, runCursorAppContainerNative, stageCursorAppChecks, verifyCursorAppArtifact,
 } from "./cursor-app-container-check.mjs";
-import { baselineRelease } from "./cursor-app-release.mjs";
+import { readAcceptance, readNodeVersions } from "../shared/client-acceptance.mjs";
+import { classifyCursorAppExecution } from "./cursor-app-report.mjs";
+import { acceptedReleases, baselineRelease } from "./cursor-app-release.mjs";
 
 const runId = "11111111-1111-4111-8111-111111111111";
 const containerId = "a".repeat(64), imageId = `sha256:${"b".repeat(64)}`;
@@ -107,6 +109,11 @@ test("release selection uses daemon architecture and the requested frozen channe
       assert.deepEqual(cursorAppRelease(architecture, { releaseManifest: manifest, channel }), { ...manifest[channel][platform], arch });
     }
   }
+  // A pull request's inventory pins the Linux baseline and accepted release.
+  const pinned = JSON.parse(JSON.stringify(acceptedReleases(readAcceptance("cursor"))));
+  for (const channel of ["baseline", "accepted"]) {
+    assert.deepEqual(cursorAppRelease("amd64", { releaseManifest: pinned, channel }), { ...pinned[channel]["linux-x64"], arch: "amd64" });
+  }
   assert.throws(() => cursorAppRelease("amd64", { channel: "latest" }), /CURSOR_CONTAINER_RELEASE/);
   assert.throws(() => cursorAppRelease("amd64", { releaseManifest: manifest, channel: "preview" }), /CURSOR_CONTAINER_RELEASE/);
 });
@@ -179,10 +186,23 @@ test("downloaded artifacts require the frozen SHA-256 and optional exact byte si
 });
 
 test("Node selection uses pinned real container images, not the host runtime", () => {
-  assert.equal(cursorAppNodeImage("22"), "node:22-bookworm@sha256:363e1587494626837fa7f9a23bdb453d13b0ff3c67c705c2805cfc69c2d2fad7");
-  assert.equal(cursorAppNodeImage("24"), "node:24-bookworm@sha256:64af3819f9275802414d7cdc38c27e9d82bd564dec4d4da87d008255d36c63b4");
+  const nodes = readNodeVersions();
+  for (const major of ["22", "24"]) {
+    assert.match(cursorAppNodeImage(major), new RegExp(`^node:${nodes[major].replaceAll(".", "\\.")}-bookworm@sha256:[a-f0-9]{64}$`), major);
+  }
   for (const value of [undefined, null, 22, "20", "23", "22.23.3", "24;echo synthetic"]) {
     assert.throws(() => cursorAppNodeImage(value), { code: "CURSOR_CONTAINER_NODE" });
+  }
+  // The manifest pin decides the release: a major tag, another release or a malformed digest is rejected.
+  const digest = "c".repeat(64), pinned = `node:${nodes["24"]}-bookworm@sha256:${digest}`;
+  assert.equal(cursorAppNodeImage("24", { 24: pinned }), pinned);
+  for (const image of [`node:24-bookworm@sha256:${digest}`, `node:24.21.0-bookworm@sha256:${digest}`,
+    `node:${nodes["22"]}-bookworm@sha256:${digest}`, `node:${nodes["24"]}-slim@sha256:${digest}`, `node:${nodes["24"]}-bookworm`,
+    `${pinned}0`, `${pinned.slice(0, -1)}C`, ` ${pinned}`, undefined]) {
+    assert.throws(() => cursorAppNodeImage("24", { 24: image }), { code: "CURSOR_CONTAINER_NODE" }, String(image));
+  }
+  for (const images of [null, {}, { 22: pinned }]) {
+    assert.throws(() => cursorAppNodeImage("24", images), { code: "CURSOR_CONTAINER_NODE" });
   }
 });
 
@@ -250,7 +270,9 @@ test("container staging preserves Cursor and Codex relative imports without copy
   await stageCursorAppChecks(root);
   assert.deepEqual((await readdir(root)).sort(), ["codex", "cursor"]);
   assert.deepEqual(await readdir(join(root, "codex")), ["codex-native-content-check.mjs"]);
-  assert.equal((await readdir(join(root, "cursor"))).length, 9);
+  assert.equal((await readdir(join(root, "cursor"))).length, 11);
+  const report = await import(pathToFileURL(join(root, "cursor", "cursor-app-report.mjs")));
+  assert.equal(typeof report.writeCursorAppProgress, "function");
   const staged = await import(pathToFileURL(join(root, "cursor", "cursor-app-memory-check.mjs")));
   assert.equal(typeof staged.assertCursorAppSkillReference, "function");
   assert.equal(typeof staged.assertCursorAppMemoryOperation, "function");
@@ -285,6 +307,10 @@ test("Docker build checks the actual package and Node runtime against selected i
   assert.match(dockerfile, /p\.version!==process\.env\.CURSOR_APP_VERSION/);
   assert.match(dockerfile, /String\(major\)!==process\.env\.NODE_MAJOR/);
   assert.match(dockerfile, /major===22&&minor<13/);
+  assert.match(dockerfile, /^ARG NODE_MAJOR\nARG NODE_RELEASE$/m);
+  assert.match(dockerfile, /process\.versions\.node!==process\.env\.NODE_RELEASE/);
+  // The node base image sets NODE_VERSION itself, so the pinned release travels under another name.
+  assert.doesNotMatch(dockerfile, /NODE_VERSION/);
   assert.doesNotMatch(dockerfile, /p\.version!=="3\.21\.18"/);
 });
 
@@ -507,4 +533,84 @@ test("cleanup refuses ambiguous ownership and preserves failure even when later 
     return docker.run(args);
   }), /CURSOR_CONTAINER_CLEANUP/);
   assert.equal(removals, 1);
+});
+
+
+test("native submission failure reports allow only bounded input diagnostics and never alter PASS requirements", () => {
+  for (const platform of ["linux", "darwin", "win32"]) {
+    const nativeSubmit = { phase: "fill", failureKind: "ambiguous", readStatus: "present", composerCount: 1,
+      inputCount: 2, primaryInputCount: 1, editingInputCount: 1, composerStatus: "cancelled", editable: null,
+      selectedSessionMatches: true };
+    const input = { ...nativeReport(), platform, status: "FAIL", stage: "native-submit", nativeSubmit: { ...nativeSubmit,
+      error: "private-canary", sessionId: "private-canary", path: "private-canary", dom: "private-canary" } };
+    assert.deepEqual(projectNativeReport(input, { platform }).nativeSubmit, nativeSubmit);
+    input.nativeSubmit = { phase: "private-canary", failureKind: "private-canary", readStatus: "private-canary", composerCount: 65,
+      inputCount: -1, primaryInputCount: "1", editingInputCount: Infinity, composerStatus: "private-canary", editable: "true",
+      selectedSessionMatches: "private-canary", error: "private-canary" };
+    const value = projectNativeReport(input, { platform }).nativeSubmit;
+    assert.deepEqual(value, { phase: "other", failureKind: "other", readStatus: "other", composerCount: null,
+      inputCount: null, primaryInputCount: null, editingInputCount: null, composerStatus: "other", editable: null,
+      selectedSessionMatches: null });
+    assert.equal(JSON.stringify(value).includes("private-canary"), false);
+    input.status = "PASS";
+    input.stage = "complete";
+    assert.equal(projectNativeReport(input, { platform }).nativeSubmit, undefined);
+    input.evidence.sameSessionRecovered = false;
+    assert.throws(() => projectNativeReport(input, { platform }), /CURSOR_CONTAINER_REPORT/);
+  }
+});
+
+
+test("Linux exports final or atomic progress before cleanup and never promotes timeout evidence to PASS", async () => {
+  for (const mode of ["success", "timeout-final-pass", "timeout-progress", "timeout-export-failed", "aborted-progress", "exit-failed", "inspect-failed"]) {
+    const calls = [], abort = new AbortController();
+    if (mode === "aborted-progress") abort.abort();
+    const first = { ...nativeReport(), status: "FAIL", stage: "native-submit", errorCode: "CURSOR_APP_SKILL_HOOK_CONTEXT",
+      evidence: { sameSessionFollowup: true }, raw: "private-canary" };
+    const final = ["success", "timeout-final-pass"].includes(mode) ? nativeReport() : first;
+    const run = async (args, options) => {
+      calls.push(args[0] === "container" ? args.slice(0, 2).join(" ") : args[0]);
+      if (args[0] === "start") {
+        assert.equal(options.timeout, 10 * 60_000);
+        assert.equal(options.signal, abort.signal);
+        if (mode.startsWith("timeout") || mode.startsWith("aborted")) {
+          const execution = classifyCursorAppExecution({ code: mode.startsWith("aborted") ? "ABORT_ERR" : "ETIMEDOUT" });
+          throw Object.assign(new Error("private-canary"), { code: "CURSOR_CONTAINER_COMMAND_TIMEOUT", execution });
+        }
+        return { code: mode === "exit-failed" ? 1 : 0, stdout: "" };
+      }
+      if (args[0] === "container" && args[1] === "inspect") {
+        if (mode === "inspect-failed") throw Object.assign(new Error("private-canary"), { code: "CURSOR_CONTAINER_STATE" });
+        return { code: 0, stdout: JSON.stringify({ Running: false, ExitCode: mode === "exit-failed" ? 1 : 0 }) };
+      }
+      if (args[0] === "cp") {
+        assert.equal(options, undefined);
+        assert.equal(calls.includes("container ls"), false);
+        const missingFinal = args[1].endsWith("/report.json") && ["timeout-progress", "aborted-progress"].includes(mode);
+        return { code: missingFinal || mode === "timeout-export-failed" ? 1 : 0, stdout: "", stderr: "private-canary" };
+      }
+      return { code: 0, stdout: "" };
+    };
+    const report = await runCursorAppContainerNative(containerId, "/owned/export", { expectedVersion: "3.21.18", nodeMajor: "24" }, {
+      signal: abort.signal, run, statReport: async () => ({ size: 100 }),
+      readReportFile: async (path) => JSON.stringify(path.endsWith("progress.json") ? first : final),
+    });
+    await cleanupDockerResources(runId, run);
+    assert.ok(calls.indexOf("cp") >= 0 && calls.indexOf("cp") < calls.indexOf("container ls"));
+    assert.equal(report.status, mode === "success" ? "PASS" : "FAIL");
+    assert.equal(JSON.stringify(report).includes("private-canary"), false);
+    if (mode === "timeout-final-pass") assert.equal(report.errorCode, "CURSOR_APP_NATIVE_TIMEOUT");
+    if (mode === "timeout-export-failed") {
+      assert.equal(report.errorCode, "CURSOR_APP_NATIVE_TIMEOUT");
+      assert.equal(report.nativeExecution.finalReport, "unavailable");
+      assert.equal(report.nativeExecution.progressReport, "unavailable");
+    }
+    if (["timeout-progress", "aborted-progress", "exit-failed", "inspect-failed"].includes(mode)) {
+      assert.equal(report.errorCode, "CURSOR_APP_SKILL_HOOK_CONTEXT");
+      assert.equal(report.stage, "native-submit");
+    }
+    if (mode.endsWith("progress")) assert.equal(report.nativeExecution.reportSource, "progress");
+    if (mode.startsWith("timeout")) assert.equal(report.nativeExecution.status, "timeout");
+    if (mode.startsWith("aborted")) assert.equal(report.nativeExecution.status, "aborted");
+  }
 });

@@ -19,6 +19,7 @@ import {
 
 const MEMORY_REMINDER_CONTEXT = memorySkillReminderContext("/memorax-code");
 const PERSONAL_MEMORY_REMINDER_CONTEXT = personalMemoryReminderContext("/memorax-code");
+const snapshotSessionEvents = new WeakMap();
 
 test("records once and writes the exact durable top-level DSH Turn", async () => {
   const deferred = [];
@@ -356,13 +357,14 @@ test("reads native persistence handles and closes them before writeback or cance
   }
 });
 
-test("recovers only the owned interrupted Turn from a resumed v3 fork snapshot", async () => {
-  for (const fixture of [
+test("recovers each owned interrupted Turn once across v3 and v4 lifecycle events", async () => {
+  const cases = [
     { name: "owned interruption", ownTurn: true, inherited: 2, recover: true },
     { name: "inherited interruption only", ownTurn: false, inherited: 2 },
     { name: "missing inherited boundary", ownTurn: true },
     { name: "inherited boundary outside snapshot", ownTurn: true, inherited: 7 },
-  ]) {
+  ];
+  for (const fixture of [3, 4].flatMap((version) => cases.map((value) => ({ ...value, version })))) {
     const calls = [];
     const writebacks = [];
     const snapshot = Object.freeze([
@@ -378,7 +380,7 @@ test("recovers only the owned interrupted Turn from a resumed v3 fork snapshot",
     const session = {
       id: "resumed-fork",
       header: {
-        version: 3,
+        version: fixture.version,
         id: "resumed-fork",
         createdAt: 1,
         cwd: "/workspace/project",
@@ -416,8 +418,11 @@ test("recovers only the owned interrupted Turn from a resumed v3 fork snapshot",
       },
     }));
     const resumed = { agent: { session }, source: "resume" };
-    ctx.emit("agent/session-start", resumed);
-    ctx.emit("agent/session-start", resumed);
+    const nativeEvent = fixture.version === 4 ? "agent/created" : "agent/session-start";
+    const alternateEvent = fixture.version === 4 ? "agent/session-start" : "agent/created";
+    ctx.emit(nativeEvent, resumed);
+    ctx.emit(alternateEvent, resumed);
+    ctx.emit(nativeEvent, resumed);
     await ctx.dispose();
     assert.deepEqual(calls, fixture.recover ? ["flush", "read:3", "backend"] : [], fixture.name);
     assert.deepEqual(writebacks, fixture.recover ? [{
@@ -431,6 +436,85 @@ test("recovers only the owned interrupted Turn from a resumed v3 fork snapshot",
       sessionHeader: session.header,
       events: snapshot.slice(3, 5),
     }] : [], fixture.name);
+  }
+});
+
+for (const version of [3, 4]) {
+  test(`format ${version} preserves request-series boundaries and restores profile context after compaction`, async () => {
+    const personalContextCalls = [];
+    const reminders = [];
+    const session = snapshotSession({ version });
+    const runtime = {
+      acceptMessages: false,
+      flush: async () => true,
+      readFrom: async () => undefined,
+    };
+    const ctx = mockContext(runtime);
+    registerMemoraxCodePlugin(ctx, pluginDependencies({
+      backendClient: reminderBackend(reminders),
+      createUserMessage: createDshUserMessage,
+      loadPersonalContext: async (input) => {
+        personalContextCalls.push(input);
+        return {
+          ...(input.includeProfile ? { profileContext: `User Profile ${personalContextCalls.length}` } : {}),
+          ...(input.includeProcedure ? { procedureContext: "Procedure Memory" } : {}),
+        };
+      },
+    }));
+    ctx.emit("session/event", session, event("turn/start", 0, { turn: 1 }));
+    const downstream = { ...await enterDecision()(), startsRequestSeries: true };
+    const decision = await ctx.waterfall("agent/pre-step", preStep(session, 1, 1), async () => downstream);
+    assert.equal(decision.startsRequestSeries, true);
+    const context = decision.messages.at(-1);
+    assert.equal(Object.isFrozen(context), true);
+    assert.deepEqual(context.source, {
+      ...(version === 4 ? { kind: "plugin:memorax-code-dsh" } : { kind: "plugin", plugin: "memorax-code-dsh" }),
+      form: "notice",
+      summary: "MemoraX Code",
+    });
+    const wrongSource = version === 4
+      ? { kind: "plugin", plugin: "memorax-code-dsh", form: "notice" }
+      : { kind: "plugin:memorax-code-dsh", form: "notice" };
+    ctx.emit("session/event", session, event("user/message", 1, { ...context, source: wrongSource }));
+    assert.deepEqual(reminders, [], "another format's attribution cannot accept pending context");
+    ctx.emit("session/event", session, event("user/message", 2, context));
+    assert.equal(reminders.length, 1);
+    ctx.emit("session/event", session, event("compaction/end", 3, { compactionId: "compact-1", turn: 1 }));
+    runtime.acceptMessages = true;
+    const restored = await ctx.waterfall("agent/pre-step", preStep(session, 1, 2), enterDecision());
+    assertContext(restored, PERSONAL_MEMORY_REMINDER_CONTEXT, MEMORY_IMPACT_REMINDER_CONTEXT, "User Profile 2");
+    assert.deepEqual(personalContextCalls.map(({ includeProfile, includeProcedure }) => [includeProfile, includeProcedure]), [
+      [true, true],
+      [true, false],
+    ]);
+    assert.deepEqual(reminders.map((reminder) => reminder.triggers), [["cadence"], ["post_compaction"]]);
+  });
+}
+
+test("does not register, remind, or recover unsupported Session formats", async () => {
+  for (const version of [undefined, null, 1, 2, 5, "4"]) {
+    const calls = [];
+    const session = topLevelSession({ version });
+    assert.equal(isMemoryEligibleSession(session), false);
+    const ctx = mockContext({
+      flush: async () => { calls.push("flush"); },
+      readFrom: async () => { calls.push("read"); },
+    });
+    registerMemoraxCodePlugin(ctx, pluginDependencies({
+      backendClient: {
+        async recordTurnStart() { calls.push("turn-start"); return { ok: true }; },
+        async writebackTurn() { calls.push("writeback"); },
+      },
+      loadPersonalContext: async () => { calls.push("personal-context"); return {}; },
+    }));
+    const resumed = { agent: { session }, source: "resume" };
+    ctx.emit("agent/created", resumed);
+    ctx.emit("agent/session-start", resumed);
+    const decision = await runTurnStartStep(ctx, session, 1, 0);
+    ctx.emit("session/event", session, event("turn/end", 1, { turn: 1, reason: { kind: "completed" } }));
+    await ctx.dispose();
+    assert.equal(decision.messages.length, 1);
+    assert.deepEqual(calls, []);
   }
 });
 
@@ -564,6 +648,32 @@ test("restores a pending post-compaction reminder from the native session log", 
   const restored = await runTurnStartStep(ctx, session, 2, 4);
   assertContext(restored, PERSONAL_MEMORY_REMINDER_CONTEXT,
     MEMORY_IMPACT_REMINDER_CONTEXT, "Restored User Profile");
+  assert.deepEqual(reminders.map((reminder) => reminder.triggers), [["post_compaction"]]);
+});
+
+test("restores reminder cadence from v4 history with migrated external-plugin attribution", async () => {
+  const reminders = [];
+  const session = snapshotSession({
+    version: 4,
+    events: [
+      event("turn/start", 0, { turn: 1 }),
+      event("user/message", 1, {
+        id: "migrated-reminder",
+        role: "user",
+        content: [{ type: "text", text: [MEMORY_REMINDER_CONTEXT, PERSONAL_MEMORY_REMINDER_CONTEXT].join("\n\n") }],
+        source: { kind: "plugin:memorax-code-dsh", form: "notice", summary: "MemoraX Code" },
+      }),
+      event("compaction/end", 2, { compactionId: "compact-1", turn: 1 }),
+      event("session/end-seed", 3, {}),
+    ],
+  });
+  const ctx = mockContext({ flush: async () => true, readFrom: async () => undefined });
+  registerMemoraxCodePlugin(ctx, pluginDependencies({
+    backendClient: reminderBackend(reminders),
+    loadPersonalContext: async () => ({ profileContext: "Restored User Profile" }),
+  }));
+  const restored = await runTurnStartStep(ctx, session, 2, 4);
+  assertContext(restored, PERSONAL_MEMORY_REMINDER_CONTEXT, MEMORY_IMPACT_REMINDER_CONTEXT, "Restored User Profile");
   assert.deepEqual(reminders.map((reminder) => reminder.triggers), [["post_compaction"]]);
 });
 
@@ -1034,6 +1144,172 @@ test("aborts in-flight Turn registration during Cordis disposal", async () => {
   assert.equal((await recordingStart).messages.length, 1);
 });
 
+test("format 4 directory changes stop automatic memory across prior Turns, idle changes, and resume", async () => {
+  for (const mode of ["prior-turn", "idle", "resume"]) {
+    const change = event("working-directory/change", 1, { cwd: "/workspace/other" });
+    const history = mode === "idle" ? [] : [
+      event("turn/start", 0, { turn: 1 }),
+      change,
+      event("turn/end", 2, { turn: 1, reason: { kind: "interrupted" } }),
+      event("session/end-seed", 3, {}),
+    ];
+    const session = snapshotSession({ version: 4, events: history });
+    const calls = [];
+    const ctx = mockContext({
+      flush: async () => { calls.push("flush"); return true; },
+      readFrom: async () => { calls.push("read"); },
+    });
+    registerMemoraxCodePlugin(ctx, pluginDependencies({
+      backendClient: {
+        async recordTurnStart() { calls.push("turn-start"); return { ok: true }; },
+        async writebackTurn() { calls.push("writeback"); },
+      },
+      loadPersonalContext: async () => { calls.push("context"); return { profileContext: "Private profile" }; },
+    }));
+    if (mode === "idle") {
+      assert.equal(isMemoryEligibleSession(session), true);
+      ctx.emit("session/event", session, { ...change, seq: 0 });
+    }
+    if (mode === "resume") {
+      session.firstLiveSeq = 3;
+      ctx.emit("agent/created", { agent: { session }, source: "resume" });
+    }
+    const seq = mutableSessionEvents(session).length;
+    ctx.emit("session/event", session, event("turn/start", seq, { turn: 2 }));
+    const nativeDecision = await enterDecision()();
+    assert.equal(await ctx.waterfall("agent/pre-step", preStep(session, 2, 1), async () => nativeDecision), nativeDecision);
+    ctx.emit("session/event", session, event("turn/end", seq + 1, { turn: 2, reason: { kind: "completed" } }));
+    await ctx.dispose();
+    assert.equal(isMemoryEligibleSession(session), false, mode);
+    assert.equal(session.header.cwd, "/workspace/project", "the original scope must not rebind");
+    assert.deepEqual(calls, [], mode);
+    mutableSessionEvents(session).length = 0;
+    assert.equal(isMemoryEligibleSession(session), false, "a detected directory change remains ineligible");
+  }
+  assert.equal(isMemoryEligibleSession(snapshotSession({ version: 4, id: "new-session" })), true);
+  for (const version of [0, 3]) {
+    const change = event("working-directory/change", 0, { cwd: "/workspace/other" });
+    const session = version === 0 ? topLevelSession({ events: [change] }) : snapshotSession({ version, events: [change] });
+    assert.equal(isMemoryEligibleSession(session), true, `legacy format ${version} eligibility is unchanged`);
+  }
+});
+
+test("format 4 directory changes stop registration waiting for resume reconciliation", async () => {
+  const reading = Promise.withResolvers();
+  const persisted = Promise.withResolvers();
+  const history = [
+    event("turn/start", 0, { turn: 1 }),
+    event("turn/end", 1, { turn: 1, reason: { kind: "interrupted" } }),
+    event("session/end-seed", 2, {}),
+  ];
+  const session = snapshotSession({ version: 4, events: history });
+  session.firstLiveSeq = 2;
+  const calls = [];
+  const ctx = mockContext({
+    flush: async () => true,
+    readFrom: async () => { reading.resolve(); return persisted.promise; },
+  });
+  registerMemoraxCodePlugin(ctx, pluginDependencies({
+    backendClient: {
+      async recordTurnStart() { calls.push("turn-start"); return { ok: true }; },
+      async writebackTurn() { calls.push("writeback"); },
+    },
+    loadPersonalContext: async () => { calls.push("context"); return {}; },
+  }));
+  ctx.emit("agent/created", { agent: { session }, source: "resume" });
+  await reading.promise;
+  const deciding = runTurnStartStep(ctx, session, 2, 3);
+  await Promise.resolve();
+  ctx.emit("session/event", session, event("working-directory/change", 4, { cwd: "/workspace/other" }));
+  persisted.resolve({ meta: session.header, events: history.slice(0, 2) });
+  assert.equal((await deciding).messages.length, 1);
+  await ctx.dispose();
+  assert.deepEqual(calls, []);
+});
+
+test("format 4 directory changes stop context work after pending Turn registration", async () => {
+  const started = Promise.withResolvers();
+  const registration = Promise.withResolvers();
+  const session = snapshotSession({ version: 4 });
+  const calls = [];
+  const ctx = mockContext({ flush: async () => true, readFrom: async () => undefined });
+  registerMemoraxCodePlugin(ctx, pluginDependencies({
+    backendClient: {
+      async recordTurnStart() { started.resolve(); return registration.promise; },
+      async writebackTurn() { calls.push("writeback"); },
+      async evaluateSearchGuidance() { calls.push("guidance"); return { ok: true, decision: "search" }; },
+    },
+    scheduleRepoMemoryBuild: () => { calls.push("repo-memory"); },
+    searchGuidanceContext: "Search Memory guidance",
+    loadPersonalContext: async () => { calls.push("context"); return {}; },
+  }));
+  const deciding = runTurnStartStep(ctx, session, 1, 0);
+  await started.promise;
+  ctx.emit("session/event", session, event("working-directory/change", 1, { cwd: "/workspace/other" }));
+  registration.resolve({ ok: true, repoMemoryWorktree: "/workspace/project" });
+  assert.equal((await deciding).messages.length, 1);
+  await ctx.dispose();
+  assert.deepEqual(calls, []);
+});
+
+test("format 4 directory changes discard context loaded before the scope changed", async () => {
+  const started = Promise.withResolvers();
+  const context = Promise.withResolvers();
+  const session = snapshotSession({ version: 4 });
+  const calls = [];
+  const warnings = [];
+  const ctx = mockContext({ flush: async () => true, readFrom: async () => undefined });
+  ctx.logger.warn = (message) => warnings.push(message);
+  registerMemoraxCodePlugin(ctx, pluginDependencies({
+    debug: true,
+    backendClient: {
+      async recordTurnStart() { calls.push("turn-start"); return { ok: true }; },
+      async writebackTurn() { calls.push("writeback"); },
+    },
+    loadPersonalContext: async () => { started.resolve(); return context.promise; },
+  }));
+  const deciding = runTurnStartStep(ctx, session, 1, 0);
+  await started.promise;
+  ctx.emit("session/event", session, event("working-directory/change", 1, { cwd: "/workspace/other" }));
+  context.resolve({ profileContext: "Private profile" });
+  const decision = await deciding;
+  assert.equal(decision.messages.length, 1);
+  assert.equal(decision.messages[0].source.kind, "user");
+  ctx.emit("session/event", session, event("turn/end", 2, { turn: 1, reason: { kind: "completed" } }));
+  assert.equal((await runTurnStartStep(ctx, session, 2, 3)).messages.length, 1);
+  ctx.emit("agent/created", { agent: { session }, source: "resume" });
+  await ctx.dispose();
+  assert.deepEqual(calls, ["turn-start"]);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /session_working_directory_changed/);
+  assert.match(warnings[0], /local pending Turn and context state discarded/);
+  assert.match(warnings[0], /Backend Turn metadata retained without writeback/);
+});
+
+test("format 4 directory changes discard a pending persisted interval before writeback", async () => {
+  const reading = Promise.withResolvers();
+  const persisted = Promise.withResolvers();
+  const session = snapshotSession({ version: 4 });
+  const writes = [];
+  const ctx = mockContext({
+    flush: async () => true,
+    readFrom: async () => { reading.resolve(); return persisted.promise; },
+  });
+  registerMemoraxCodePlugin(ctx, pluginDependencies({
+    backendClient: {
+      async recordTurnStart() { return { ok: true }; },
+      async writebackTurn(command) { writes.push(command); },
+    },
+  }));
+  ctx.emit("session/event", session, event("turn/start", 0, { turn: 1 }));
+  ctx.emit("session/event", session, event("turn/end", 1, { turn: 1, reason: { kind: "completed" } }));
+  await reading.promise;
+  ctx.emit("session/event", session, event("working-directory/change", 2, { cwd: "/workspace/other" }));
+  persisted.resolve({ meta: session.header, events: session.snapshotEvents().slice(0, 2) });
+  await ctx.dispose();
+  assert.deepEqual(writes, []);
+});
+
 function pluginDependencies(overrides = {}) {
   return {
     assertEnabled: () => undefined,
@@ -1113,6 +1389,30 @@ function topLevelSession(overrides = {}) {
   };
 }
 
+function snapshotSession({ version, events = [], ...headerOverrides }) {
+  const session = {
+    id: headerOverrides.id ?? "session-1",
+    header: {
+      version,
+      id: headerOverrides.id ?? "session-1",
+      createdAt: 1,
+      cwd: "/workspace/project",
+      isSeeded: false,
+      delegationDepth: 0,
+      ...headerOverrides,
+    },
+    inheritedEventCount: 0,
+    firstLiveSeq: events.length,
+    snapshotEvents() { return Object.freeze([...snapshotSessionEvents.get(session)]); },
+  };
+  snapshotSessionEvents.set(session, [...events]);
+  return session;
+}
+
+function mutableSessionEvents(session) {
+  return Array.isArray(session?.events) ? session.events : snapshotSessionEvents.get(session);
+}
+
 function event(type, seq, data) {
   return { type, seq, time: seq + 1, data };
 }
@@ -1137,8 +1437,9 @@ function mockContext(runtime) {
     emit(name, ...args) {
       if (name === "session/event") {
         const [session, sessionEvent] = args;
-        if (Array.isArray(session?.events) && !session.events.includes(sessionEvent)) {
-          session.events.push(sessionEvent);
+        const events = mutableSessionEvents(session);
+        if (events && !events.includes(sessionEvent)) {
+          events.push(sessionEvent);
         }
       }
       for (const callback of handlers.get(name) ?? []) callback(...args);
@@ -1149,9 +1450,10 @@ function mockContext(runtime) {
       const decision = await callback(payload, next);
       if (runtime.acceptMessages !== false && decision?.kind === "enter") {
         for (const message of decision.messages ?? []) {
-          if (message?.source?.kind !== "plugin" || message.source.plugin !== "memorax-code-dsh") continue;
+          const legacyContext = message?.source?.kind === "plugin" && message.source.plugin === "memorax-code-dsh";
+          if (!legacyContext && message?.source?.kind !== "plugin:memorax-code-dsh") continue;
           const session = payload.agent?.session;
-          const seq = Array.isArray(session?.events) ? session.events.length : 0;
+          const seq = mutableSessionEvents(session)?.length ?? 0;
           context.emit("session/event", session, event("user/message", seq, message));
         }
       }

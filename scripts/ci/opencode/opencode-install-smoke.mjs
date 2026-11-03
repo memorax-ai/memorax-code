@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
+import { projectTerminalDisposal } from "../codex/codex-setup-pty-evidence.mjs";
 import { execFile } from "node:child_process";
 import { cp, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -9,13 +10,13 @@ import { tmpdir, userInfo } from "node:os";
 import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
-import { assertBackendReplacement, assertCredentialNotEchoed, assertSetupInputRejection,
+import { verifyBackendReplacementState, assertCredentialNotEchoed, assertSetupInputRejection,
   snapshotProtectedConfiguration, assertProtectedConfiguration } from "../codex/codex-lifecycle-assertions.mjs";
 import { stopNativeProcessTree } from "./opencode-native-support.mjs";
 
 const execFileAsync = promisify(execFile);
 const pluginName = "memorax-code-opencode-adapter";
-const otherClients = ["codex", "claude", "dsh", "codebuddy", "workbuddy", "trae", "cursor"];
+const otherClients = ["codex", "claude", "dsh", "codebuddy", "workbuddy", "trae", "cursor", "qoder"];
 const fixtureKey = `sk_${"E".repeat(43)}`;
 const fixtureUser = "lifecycle-saved-account";
 const searchFixture = "LIFECYCLE_SAVED_ACCOUNT_SEARCH_RESULT";
@@ -440,6 +441,7 @@ try {
   if (error.terminalError) report.terminalError = error.terminalError;
   if (error.terminalDiagnostics) report.terminalDiagnostics = error.terminalDiagnostics;
   if (error.terminalNativeError) report.terminalNativeError = error.terminalNativeError;
+  if (error.terminalDisposal) report.terminalDisposal = error.terminalDisposal;
 } finally {
   await cleanup();
   if (!receivedSignal) for (const [signal, handler] of signalHandlers) process.off(signal, handler);
@@ -595,18 +597,15 @@ async function rememberPid() {
 }
 async function verifyBackendReplacement(before, label) {
   stage = `${label} Backend replacement`;
-  const after = await readJson(pidPath());
-  let oldProcessAlive = true;
-  try { process.kill(before.pid, 0); }
-  catch (error) { if (error.code === "ESRCH") oldProcessAlive = false; else throw error; }
-  try { process.kill(after.pid, 0); }
-  catch { check(false, "Updated Backend PID does not identify a live process"); }
-  check(after.url === `http://127.0.0.1:${backendPort}`, "Updated Backend has an unexpected endpoint");
-  const response = await fetch(new URL("/health", after.url), { signal: AbortSignal.timeout(5_000) });
-  check(response.ok, "Updated Backend did not answer its health endpoint successfully");
-  assertBackendReplacement(before, after, await response.json(), oldProcessAlive);
+  const after = await verifyBackendReplacementState(before, {
+    readAfter: () => readJson(pidPath()), expectedUrl: `http://127.0.0.1:${backendPort}`,
+    observe(diagnostic) {
+      report.backendReplacement = diagnostic;
+    },
+  });
   backendPids.delete(before.pid);
-  report.checks.push(`${label}: old Backend exited; new PID, instance and live health identity agree`);
+  backendPids.add(after.pid);
+  report.checks.push(`${label}: Backend instance changed; current process and health identity agree`);
 }
 async function stopAndVerify() {
   cleanupStage = "pid_record_read";
@@ -668,6 +667,7 @@ async function terminalSetup(mode) {
         "usernamePromptSeen", "keyPromptSeen", "languagePromptSeen", "accountInputSent", "outputBytes", "cursorPositionReplies", "exitCode", "signal",
       ].filter((key) => typeof safe[key] === "boolean" || Number.isFinite(safe[key])).map((key) => [key, safe[key]]));
       if (/^[A-Z][A-Z0-9_]{1,79}$/.test(safe.nativeErrorCode)) error.terminalNativeError = safe.nativeErrorCode;
+      error.terminalDisposal = projectTerminalDisposal(safe.terminalDisposal);
     } catch {}
     throw error;
   } finally {
@@ -865,6 +865,7 @@ function isolatedEnv(userHome, openCodeCommand) {
     CODEBUDDY_HOME: join(userHome, ".codebuddy"), CODEBUDDY_CONFIG_DIR: join(userHome, ".codebuddy"),
     WORKBUDDY_HOME: join(userHome, ".workbuddy"), WORKBUDDY_CONFIG_DIR: join(userHome, ".workbuddy"),
     TRAE_CN_HOME: join(userHome, ".trae-cn"), TRAE_HOME: join(userHome, ".trae-cn"), CURSOR_HOME: join(userHome, ".cursor"),
+    QODER_CONFIG_DIR: join(userHome, ".qoder"),
     MEMORAX_CODE_OPENCODE_TRACE_ENABLED: "false",
   };
   if (process.platform === "win32") Object.assign(isolated, {

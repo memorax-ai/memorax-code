@@ -48,7 +48,7 @@ import type { MemoraxQuotaSnapshot } from "../provider/memorax/quota.js";
 import { parseNativeMessageTimestamp } from "../shared/message-time.js";
 import { helpfulSettings, type HelpfulTurn, type HelpfulEvaluation } from "./helpful.js";
 
-export type AutomaticMemoryWritebackClient = "codex" | "claude-code" | "opencode" | "dsh" | "codebuddy" | "workbuddy" | "trae" | "cursor";
+export type AutomaticMemoryWritebackClient = "codex" | "claude-code" | "opencode" | "dsh" | "codebuddy" | "workbuddy" | "trae" | "cursor" | "qoder";
 
 export type AutomaticMemoryWritebackTiming = {
   userTimestamp?: number;

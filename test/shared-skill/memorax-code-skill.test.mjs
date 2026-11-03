@@ -33,6 +33,7 @@ test("memorax-code is the single progressive router for all memory authorities",
   assert.match(skill, /`\$memorax-code` in Codex/);
   assert.match(skill, /`\/memorax-code` in Claude Code/);
   assert.match(skill, /In OpenCode, ask the agent to use the `memorax-code` skill by name/);
+  assert.match(skill, /In Qoder, ask the agent to invoke the native `memorax-code` skill by name/);
   assert.match(skill, /`memorax-code` is the lifecycle CLI and must not be used for memory search or add/);
 
   for (const reference of [

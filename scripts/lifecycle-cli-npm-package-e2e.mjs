@@ -505,6 +505,7 @@ function isolatedEnv(stateHome) {
     CODEBUDDY_HOME: join(userHome, ".codebuddy"), CODEBUDDY_CONFIG_DIR: join(userHome, ".codebuddy"),
     WORKBUDDY_HOME: join(userHome, ".workbuddy"), WORKBUDDY_CONFIG_DIR: join(userHome, ".workbuddy"),
     TRAE_CN_HOME: join(userHome, ".trae-cn"), TRAE_HOME: join(userHome, ".trae-cn"),
+    QODER_CONFIG_DIR: join(userHome, ".qoder"),
   };
   for (const client of ["CODEX", "CLAUDE", "CODEBUDDY", "WORKBUDDY", "DSH", "OPENCODE", "TRAE"]) {
     env[`MEMORAX_CODE_${client}_COMMAND`] = join(root, "unused-synthetic-client");

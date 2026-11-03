@@ -139,7 +139,7 @@ test("native harness replaces inherited credentials, providers and client homes 
     "ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "ANTHROPIC_MODEL", "CLAUDE_CODE_OAUTH_TOKEN",
     "OPENAI_API_KEY", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "CLAUDE_CONFIG_DIR", "CLAUDE_HOME",
     "CODEX_HOME", "DSH_HOME", "OPENCODE_CONFIG_DIR", "CODEBUDDY_HOME", "CODEBUDDY_CONFIG_DIR",
-    "WORKBUDDY_HOME", "WORKBUDDY_CONFIG_DIR", "TRAE_HOME", "TRAE_CN_HOME", "CURSOR_HOME",
+    "WORKBUDDY_HOME", "WORKBUDDY_CONFIG_DIR", "TRAE_HOME", "TRAE_CN_HOME", "CURSOR_HOME", "QODER_CONFIG_DIR",
     "MEMORAX_CODE_HOME", "MEMORAX_CODE_BACKEND_URL", "MEMORAX_CODE_BACKEND_TOKEN", "MEMORAX_CODE_CLAUDE_COMMAND",
     "MEMORAX_CODE_MEMORAX_ENDPOINT", "MEMORAX_CODE_MEMORAX_API_KEY", "MEMORAX_CODE_MEMORAX_USER_ID",
     "MEMORAX_CODE_CODEX_COMMAND", "NODE_OPTIONS", "NODE_EXTRA_CA_CERTS", "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
@@ -162,7 +162,7 @@ test("native harness replaces inherited credentials, providers and client homes 
   }
   for (const name of ["HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "CLAUDE_CONFIG_DIR", "CLAUDE_HOME",
     "CODEX_HOME", "DSH_HOME", "OPENCODE_CONFIG_DIR", "CODEBUDDY_HOME", "CODEBUDDY_CONFIG_DIR", "WORKBUDDY_HOME",
-    "WORKBUDDY_CONFIG_DIR", "TRAE_HOME", "TRAE_CN_HOME", "CURSOR_HOME", "MEMORAX_CODE_HOME", "TMP", "TEMP", "TMPDIR"]) {
+    "WORKBUDDY_CONFIG_DIR", "TRAE_HOME", "TRAE_CN_HOME", "CURSOR_HOME", "QODER_CONFIG_DIR", "MEMORAX_CODE_HOME", "TMP", "TEMP", "TMPDIR"]) {
     assert.equal(harness.env[name].startsWith(`${harness.root}/`) || harness.env[name].startsWith(`${harness.root}\\`), true, name);
   }
   assert.equal(harness.env.ANTHROPIC_BASE_URL, harness.modelUrl);
@@ -182,7 +182,7 @@ test("native harness replaces inherited credentials, providers and client homes 
   assert.deepEqual(settings.permissions.deny, ["WebSearch", "WebFetch"]);
   const config = await readFile(join(harness.stateHome, "config.toml"), "utf8");
   assert.match(config, /\[clients\]\nclaude = true\n/);
-  for (const client of ["codex", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor"]) {
+  for (const client of ["codex", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor", "qoder"]) {
     assert.equal(config.includes(`${client} = false\n`), true);
     assert.equal(harness.env[`MEMORAX_CODE_${client.toUpperCase()}_COMMAND`], join(harness.root, "unused-client"));
   }

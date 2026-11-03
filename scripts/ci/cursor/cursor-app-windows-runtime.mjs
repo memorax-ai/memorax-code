@@ -60,56 +60,137 @@ const processFailures = {
 };
 const bounded = (value, max, fallback = 0) => Number.isSafeInteger(value) && value >= 0 && value <= max ? value : fallback;
 const elapsed = (start, now) => Math.min(600000, Math.max(0, Math.ceil(now() - start)));
-const outputBytes = (value) => typeof value === "string" ? Buffer.byteLength(value) : Buffer.isBuffer(value) ? value.length : 0;
+const outputBytes = (value) => typeof value === "string" ? Buffer.byteLength(value) : Buffer.isBuffer(value) ? value.length : null;
 const processError = (code, diagnostics) => Object.assign(new Error(code), { code,
   ...(diagnostics ? { windowsProcessAudit: projectWindowsProcessAuditDiagnostics(diagnostics) } : {}) });
+const queryPhaseMarkers = {
+  start: "MEMORAX_CURSOR_PROCESS_QUERY_START",
+  cimStart: "MEMORAX_CURSOR_PROCESS_QUERY_CIM_START",
+  cimComplete: "MEMORAX_CURSOR_PROCESS_QUERY_CIM_COMPLETE",
+  jsonComplete: "MEMORAX_CURSOR_PROCESS_QUERY_JSON_COMPLETE",
+};
+const processQueryScript = ["$ErrorActionPreference='Stop'",
+  "[Console]::Error.WriteLine('" + queryPhaseMarkers.start + "')",
+  "[Console]::Error.WriteLine('" + queryPhaseMarkers.cimStart + "')",
+  "$rows=@(Get-CimInstance Win32_Process -Property ProcessId,ExecutablePath,CommandLine | Select-Object ProcessId,ExecutablePath,CommandLine)",
+  "[Console]::Error.WriteLine('" + queryPhaseMarkers.cimComplete + "')",
+  "ConvertTo-Json -InputObject @($rows) -Compress",
+  "[Console]::Error.WriteLine('" + queryPhaseMarkers.jsonComplete + "')"].join('; ');
+
+function processQueryPhases(start, now) {
+  const markers = Object.entries(queryPhaseMarkers), phases = Object.fromEntries(markers.map(([name]) => [name, false]));
+  const phaseElapsedMs = Object.fromEntries(markers.map(([name]) => [name, null]));
+  let candidates = (1 << markers.length) - 1, position = 0;
+  return { phases, phaseElapsedMs, accept(chunk) {
+    // Retain only candidate bits and an offset, never arbitrary stderr or partial lines.
+    const bytes = typeof chunk === "string" ? Buffer.from(chunk) : Buffer.isBuffer(chunk) ? chunk : [];
+    for (const byte of bytes) {
+      if (byte === 10) {
+        for (let index = 0; index < markers.length; index++) {
+          if ((candidates & (1 << index)) && [markers[index][1].length, markers[index][1].length + 1].includes(position)) {
+            const name = markers[index][0];
+            if (!phases[name]) phaseElapsedMs[name] = elapsed(start, now);
+            phases[name] = true;
+          }
+        }
+        candidates = (1 << markers.length) - 1; position = 0;
+      } else if (candidates) {
+        for (let index = 0; index < markers.length; index++) {
+          const marker = markers[index][1];
+          if ((position < marker.length ? marker.charCodeAt(position) : position === marker.length ? 13 : -1) !== byte) {
+            candidates &= ~(1 << index);
+          }
+        }
+        position++;
+      }
+    }
+  } };
+}
+
+function projectProcessQuery(query) {
+  return {
+    elapsedMs: bounded(query?.elapsedMs, 600000), timedOut: query?.timedOut === true,
+    exitCode: bounded(query?.exitCode, 0xffffffff, null),
+    signal: query?.signal == null ? "none" : ["none", "SIGTERM", "SIGKILL", "other"].includes(query.signal) ? query.signal : "other",
+    stdoutBytes: bounded(query?.stdoutBytes, processQueryMaxBytes, null), stderrBytes: bounded(query?.stderrBytes, processQueryMaxBytes, null),
+    spawnObserved: query?.spawnObserved === true, exitObserved: query?.exitObserved === true,
+    closeObserved: query?.closeObserved === true, promiseSettled: query?.promiseSettled === true,
+    budgetExpired: query?.budgetExpired === true, killRequested: query?.killRequested === true,
+    killReturned: typeof query?.killReturned === "boolean" ? query.killReturned : null, killThrew: query?.killThrew === true,
+    phases: Object.fromEntries(Object.keys(queryPhaseMarkers).map((name) => [name, query?.phases?.[name] === true])),
+    phaseElapsedMs: Object.fromEntries(Object.keys(queryPhaseMarkers).map((name) => [name,
+      query?.phases?.[name] === true ? bounded(query?.phaseElapsedMs?.[name], 600000, null) : null])),
+  };
+}
 
 export function projectWindowsProcessAuditDiagnostics(value) {
-  const query = value?.lastQuery;
   return {
     attempts: bounded(value?.attempts, processAuditMaxAttempts), elapsedMs: bounded(value?.elapsedMs, 600000),
     timeoutCount: bounded(value?.timeoutCount, 2),
     firstFailure: value?.firstFailure === "none" || (typeof value?.firstFailure === "string" && Object.hasOwn(processFailures, value.firstFailure))
       ? value.firstFailure : "query-failed",
     finalStatus: ["clear", "owned-remains", "timeout", "failed", "budget"].includes(value?.finalStatus) ? value.finalStatus : "failed",
-    lastQuery: {
-      elapsedMs: bounded(query?.elapsedMs, 600000), timedOut: query?.timedOut === true,
-      exitCode: bounded(query?.exitCode, 0xffffffff, null),
-      signal: query?.signal == null ? "none" : ["none", "SIGTERM", "SIGKILL", "other"].includes(query.signal) ? query.signal : "other",
-      stdoutBytes: bounded(query?.stdoutBytes, processQueryMaxBytes), stderrBytes: bounded(query?.stderrBytes, processQueryMaxBytes),
-    },
+    firstFailedQuery: value?.firstFailedQuery && typeof value.firstFailedQuery === "object" && !Array.isArray(value.firstFailedQuery)
+      ? projectProcessQuery(value.firstFailedQuery) : null,
+    lastQuery: projectProcessQuery(value?.lastQuery),
   };
 }
 
 async function queryWindowsProcesses(options, execute, timeout, now, budget = timeout) {
-  const start = now();
+  const start = now(), phaseObserver = processQueryPhases(start, now), listeners = [];
+  const observed = { stdoutBytes: null, stderrBytes: null, spawnObserved: false, exitObserved: false,
+    closeObserved: false, promiseSettled: false, killRequested: false, killReturned: null, killThrew: false };
   let child, timer, budgetTimer, stdout, stderr, error, timedOut = false, budgetExpired = false, terminationFailed = false;
-  let succeeded = false;
+  let succeeded = false, exitCode, exitSignal, stderrStream = false;
+  const listen = (emitter, event, handler) => {
+    if (typeof emitter?.on !== "function") return false;
+    emitter.on(event, handler); listeners.push(() => emitter.removeListener(event, handler)); return true;
+  };
+  const countOutput = (name, value) => {
+    const bytes = outputBytes(value);
+    if (bytes !== null) observed[name] = Math.min(processQueryMaxBytes, (observed[name] ?? 0) + bytes);
+  };
+  const captureOutput = (result) => {
+    ({ stdout, stderr } = result ?? {});
+    for (const [name, value] of [["stdoutBytes", stdout], ["stderrBytes", stderr]]) {
+      const bytes = outputBytes(value);
+      if (bytes !== null) observed[name] = Math.min(processQueryMaxBytes, Math.max(observed[name] ?? 0, bytes));
+    }
+    if (!stderrStream) phaseObserver.accept(stderr);
+  };
   try {
     // Own the deadline: child.killed also describes manual termination and buffer overflow.
     const pending = execute(path.join(options.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"),
-      ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
-        "$ErrorActionPreference='Stop'; ConvertTo-Json -InputObject @(Get-CimInstance Win32_Process -Property ProcessId,ExecutablePath,CommandLine | Select-Object ProcessId,ExecutablePath,CommandLine) -Compress"],
+      ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", processQueryScript],
       { env: options.env, encoding: "utf8", timeout: 0, maxBuffer: processQueryMaxBytes, windowsHide: true });
     child = pending?.child;
-    const closed = child ? new Promise((resolve) => child.once("close", resolve)) : Promise.resolve();
+    listen(child, "spawn", () => { observed.spawnObserved = true; });
+    listen(child, "exit", (code, signal) => { observed.exitObserved = true; exitCode = code; exitSignal = signal; });
+    const closed = child ? new Promise((resolve) => listen(child, "close", () => { observed.closeObserved = true; resolve(); })) : Promise.resolve();
+    if (listen(child?.stdout, "data", (chunk) => countOutput("stdoutBytes", chunk))) observed.stdoutBytes = 0;
+    stderrStream = listen(child?.stderr, "data", (chunk) => { countOutput("stderrBytes", chunk); phaseObserver.accept(chunk); });
+    if (stderrStream) observed.stderrBytes = 0;
     timer = setTimeout(() => {
       timedOut = true;
-      try { child?.kill("SIGKILL"); } catch { terminationFailed = true; }
+      observed.killRequested = typeof child?.kill === "function";
+      try {
+        const killed = child?.kill("SIGKILL");
+        if (typeof killed === "boolean") observed.killReturned = killed;
+      } catch { terminationFailed = true; observed.killThrew = true; }
     }, Math.max(1, timeout - (now() - start)));
-    const settled = Promise.resolve(pending).then((result) => { ({ stdout, stderr } = result); succeeded = true; },
-      (caught) => { error = caught; stdout = caught?.stdout; stderr = caught?.stderr; }).finally(() => clearTimeout(timer));
+    const settled = Promise.resolve(pending).then((result) => { observed.promiseSettled = true; captureOutput(result); succeeded = true; },
+      (caught) => { observed.promiseSettled = true; error = caught; captureOutput(caught); }).finally(() => clearTimeout(timer));
     // An execFile error can settle before close. A missing close exhausts the same budget, never authorizing a retry.
     await Promise.race([Promise.all([settled, closed]), new Promise((resolve) => {
       budgetTimer = setTimeout(() => { budgetExpired = true; resolve(); }, Math.max(1, budget - (now() - start)));
     })]);
-  } catch (caught) { error = caught; stdout = caught?.stdout; stderr = caught?.stderr; }
-  finally { clearTimeout(timer); clearTimeout(budgetTimer); }
+  } catch (caught) { error = caught; captureOutput(caught); }
+  finally { clearTimeout(timer); clearTimeout(budgetTimer); for (const remove of listeners) remove(); }
   const diagnostics = {
-    elapsedMs: elapsed(start, now), timedOut,
-    exitCode: child?.exitCode ?? (Number.isInteger(error?.code) ? error.code : succeeded ? 0 : null),
-    signal: child?.signalCode ?? error?.signal ?? "none",
-    stdoutBytes: Math.min(processQueryMaxBytes, outputBytes(stdout)), stderrBytes: Math.min(processQueryMaxBytes, outputBytes(stderr)),
+    elapsedMs: elapsed(start, now), timedOut, ...observed, budgetExpired: budgetExpired || now() - start >= budget,
+    exitCode: child?.exitCode ?? exitCode ?? (Number.isInteger(error?.code) ? error.code : succeeded ? 0 : null),
+    signal: child?.signalCode ?? exitSignal ?? error?.signal ?? "none", phases: { ...phaseObserver.phases },
+    phaseElapsedMs: { ...phaseObserver.phaseElapsedMs },
   };
   let failure;
   if (error?.code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER" || outputBytes(stdout) > processQueryMaxBytes || outputBytes(stderr) > processQueryMaxBytes) failure = "overflow";
@@ -156,7 +237,9 @@ export async function waitForWindowsProcessesExit(options, {
     const result = await queryWindowsProcesses(options, execute, Math.min(processQueryTimeoutMs, remaining), now, remaining);
     diagnostics.lastQuery = result.diagnostics;
     if (result.failure) {
-      if (diagnostics.firstFailure === "none") diagnostics.firstFailure = result.failure;
+      if (diagnostics.firstFailure === "none") {
+        diagnostics.firstFailure = result.failure; diagnostics.firstFailedQuery = result.diagnostics;
+      }
       if (result.failure === "timeout") diagnostics.timeoutCount++;
       if (result.failure !== "timeout" || diagnostics.timeoutCount > 1
         || diagnostics.attempts === processAuditMaxAttempts || result.budgetExpired || now() >= deadline) {
@@ -165,7 +248,9 @@ export async function waitForWindowsProcessesExit(options, {
       }
     } else {
       if (now() >= deadline) {
-        if (diagnostics.firstFailure === "none") diagnostics.firstFailure = "budget";
+        if (diagnostics.firstFailure === "none") {
+          diagnostics.firstFailure = "budget"; diagnostics.firstFailedQuery = result.diagnostics;
+        }
         return finish("budget", "CURSOR_APP_WINDOWS_PROCESS_AUDIT_TIMEOUT");
       }
       if (!result.owned) return finish("clear");

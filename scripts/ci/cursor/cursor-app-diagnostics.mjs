@@ -46,6 +46,127 @@ const launchMarkers = {
   permissionDenied: /Operation not permitted|Permission denied|\bEACCES\b|\bEPERM\b/,
 };
 
+export function projectCursorAppSubmissionDiagnostics(value) {
+  const boundedCount = (number) => Number.isSafeInteger(number) && number >= 0 && number <= 64 ? number : null;
+  const optionalBoolean = (boolean) => typeof boolean === "boolean" ? boolean : null;
+  return {
+    phase: enumValue(value?.phase, ["fill", "type-skill", "select-skill", "verify-skill", "move-to-end", "insert-text", "enter", "other"], "other"),
+    failureKind: enumValue(value?.failureKind, ["timeout", "ambiguous", "detached", "not-editable", "other"], "other"),
+    readStatus: enumValue(value?.readStatus, ["present", "unavailable", "other"], "unavailable"),
+    composerCount: boundedCount(value?.composerCount), inputCount: boundedCount(value?.inputCount),
+    primaryInputCount: boundedCount(value?.primaryInputCount), editingInputCount: boundedCount(value?.editingInputCount),
+    composerStatus: value?.composerStatus == null ? "absent"
+      : enumValue(value.composerStatus, ["completed", "cancelled", "absent", "other"]),
+    editable: optionalBoolean(value?.editable), selectedSessionMatches: optionalBoolean(value?.selectedSessionMatches),
+  };
+}
+
+export function collectCursorAppSubmissionDiagnostics(value) {
+  const message = typeof value?.error?.message === "string" ? value.error.message.slice(0, 8192) : "";
+  const failureKind = /strict mode violation/i.test(message) ? "ambiguous"
+    : /element (?:was |is )?detached|not attached to the DOM/i.test(message) ? "detached"
+    : /element is not editable|not an <input>, <textarea> or \[contenteditable\] element/i.test(message) ? "not-editable"
+    : value?.error?.name === "TimeoutError" || /\bTimeout \d+ms exceeded\b/.test(message)
+      || ["CURSOR_APP_SKILL_MENU", "CURSOR_APP_SKILL_MENTION"].includes(value?.error?.code) ? "timeout" : "other";
+  return projectCursorAppSubmissionDiagnostics({ ...value, failureKind });
+}
+
+export function projectCursorAppDriverDiagnostics(value) {
+  const number = (input, maximum) => Number.isSafeInteger(input) && input >= 0 && input <= maximum ? input : null;
+  const time = (input) => number(input, 600000);
+  const probe = (input) => !record(input) ? null : {
+    elapsedMs: time(input.elapsedMs), completedElapsedMs: time(input.completedElapsedMs),
+    contextCount: number(input.contextCount, 10000), pageCount: number(input.pageCount, 10000),
+    workbenchCount: number(input.workbenchCount, 10000),
+    driverState: enumValue(input.driverState, ["unobserved", "absent", "ready"], "unobserved"),
+    evaluation: enumValue(input.evaluation, ["not-started", "pending", "resolved", "rejected"], "not-started"),
+    evaluationFailure: enumValue(input.evaluationFailure, ["none", "page-closed", "context-destroyed", "timeout", "other"], "none"),
+    slowAtElapsedMs: time(input.slowAtElapsedMs),
+  };
+  return {
+    cdpConnected: typeof value?.cdpConnected === "boolean" ? value.cdpConnected : null,
+    cdpConnectedElapsedMs: time(value?.cdpConnectedElapsedMs), elapsedMs: time(value?.elapsedMs),
+    waitElapsedMs: time(value?.waitElapsedMs), probeCount: number(value?.probeCount, 10000),
+    slowProbeCount: number(value?.slowProbeCount, 10000),
+    outcome: enumValue(value?.outcome, ["pending", "ready", "failed"], "unavailable"),
+    timeoutKind: enumValue(value?.timeoutKind, ["none", "predicate", "overall"], "unavailable"),
+    firstProbe: probe(value?.firstProbe), lastProbe: probe(value?.lastProbe),
+  };
+}
+
+export function createCursorAppDriverDiagnostics({ now = Date.now, onUpdate } = {}) {
+  const startedAt = now();
+  let finished = false, finishedAt = null, waitStartedAt = null, closesAt = null;
+  const value = { cdpConnected: false, cdpConnectedElapsedMs: null, probeCount: 0, slowProbeCount: 0,
+    outcome: "pending", timeoutKind: "none", firstProbe: null, lastProbe: null };
+  // Probe results observed at or after the readiness deadline are ignored, even before finish().
+  const open = () => !finished && (closesAt === null || now() < closesAt);
+  const elapsed = () => {
+    const duration = now() - startedAt;
+    return Number.isFinite(duration) ? Math.min(600000, Math.max(0, Math.round(duration))) : null;
+  };
+  // slowAtElapsedMs is when a probe was first observed to be slow: the 5s mark while pending, or its completion when
+  // that comes first. Each probe counts once.
+  const markSlow = (probe, at = elapsed()) => {
+    if (probe.slowAtElapsedMs !== null) return;
+    probe.slowAtElapsedMs = at; value.slowProbeCount = Math.min(10000, value.slowProbeCount + 1);
+  };
+  const complete = (probe) => {
+    const at = elapsed();
+    probe.completedElapsedMs = at;
+    if (at - probe.elapsedMs >= 5000) markSlow(probe, at);
+  };
+  const snapshot = () => {
+    const at = finished ? finishedAt : elapsed();
+    return projectCursorAppDriverDiagnostics({ ...value, elapsedMs: at,
+      waitElapsedMs: waitStartedAt === null || at === null ? null : Math.max(0, at - waitStartedAt) });
+  };
+  const publish = () => { try { onUpdate?.(snapshot()); } catch { /* Observation must preserve the native result. */ } };
+  publish();
+  return {
+    snapshot,
+    connected() {
+      if (finished) return;
+      value.cdpConnected = true; value.cdpConnectedElapsedMs ??= elapsed(); publish();
+    },
+    beginWait() { if (!finished) { waitStartedAt = elapsed(); publish(); } },
+    beginProbe({ contextCount, pageCount, workbenchCount, pageSelected }) {
+      if (finished) return null;
+      const probe = { elapsedMs: elapsed(), completedElapsedMs: pageSelected ? null : elapsed(),
+        contextCount, pageCount, workbenchCount, driverState: "unobserved",
+        evaluation: pageSelected ? "pending" : "not-started", evaluationFailure: "none", slowAtElapsedMs: null };
+      value.probeCount = Math.min(10000, value.probeCount + 1);
+      value.firstProbe ??= probe; value.lastProbe = probe; publish();
+      return probe;
+    },
+    resolved(probe, ready) {
+      if (!open() || !probe) return;
+      probe.driverState = ready ? "ready" : "absent";
+      probe.evaluation = "resolved"; complete(probe); publish();
+    },
+    rejected(probe, error) {
+      if (!open() || !probe) return;
+      const message = typeof error?.message === "string" ? error.message.slice(0, 8192) : "";
+      probe.evaluation = "rejected"; complete(probe);
+      probe.evaluationFailure = /(?:Target page, context or browser|Page) has been closed/i.test(message) ? "page-closed"
+        : /Execution context was destroyed/i.test(message) ? "context-destroyed"
+          : error?.name === "TimeoutError" || /\bTimeout \d+ms exceeded\b/.test(message) ? "timeout" : "other";
+      publish();
+    },
+    closeAt(deadline) { if (!finished && Number.isFinite(deadline)) closesAt = deadline; },
+    slow() {
+      const probe = value.lastProbe;
+      if (!open() || probe?.evaluation !== "pending" || probe.slowAtElapsedMs !== null) return;
+      markSlow(probe); publish();
+    },
+    timeout(kind) { if (!finished && value.timeoutKind === "none") { value.timeoutKind = kind; publish(); } },
+    finish(outcome) {
+      if (!finished) { finishedAt = elapsed(); finished = true; value.outcome = outcome; publish(); }
+      return snapshot();
+    },
+  };
+}
+
 export function projectCursorAppLaunchDiagnostics(value) {
   return {
     spawned: value?.spawned === true, debugEndpointSeen: value?.debugEndpointSeen === true,

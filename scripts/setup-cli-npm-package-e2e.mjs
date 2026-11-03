@@ -18,7 +18,7 @@ const workspace = join(root, "private-setup-workspace-canary");
 const apiKey = `sk_${"E".repeat(43)}`;
 const configCanary = "private-config-secret-canary";
 const malformedPid = "{private-setup-pid-canary\n";
-const clients = ["codex", "claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae"];
+const clients = ["codex", "claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "qoder"];
 const disabledClients = `[clients]\n${clients.map((client) => `${client} = false`).join("\n")}\n`;
 const healthyHome = join(root, "healthy-state");
 let healthyPort;
@@ -158,6 +158,7 @@ function isolatedEnv(stateHome, port) {
     CODEBUDDY_HOME: join(userHome, ".codebuddy"), CODEBUDDY_CONFIG_DIR: join(userHome, ".codebuddy"),
     WORKBUDDY_HOME: join(userHome, ".workbuddy"), WORKBUDDY_CONFIG_DIR: join(userHome, ".workbuddy"),
     TRAE_CN_HOME: join(userHome, ".trae-cn"), TRAE_HOME: join(userHome, ".trae-cn"),
+    QODER_CONFIG_DIR: join(userHome, ".qoder"),
   };
   for (const client of clients) {
     env[`MEMORAX_CODE_${client.toUpperCase()}_COMMAND`] = join(root, "unused-synthetic-client");

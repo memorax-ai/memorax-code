@@ -7,6 +7,9 @@ if [[ $# -lt 2 || $# -gt 3 || ! "$(uname -s)" =~ ^(Darwin|Linux)$ ]]; then
 fi
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+# Capture the evidence location before every command below runs with a cleared environment.
+evidence_dir="${MEMORAX_CI_EVIDENCE_DIR:-}"
+evidence_tool="$repo_root/scripts/ci/shared/ci-evidence.mjs"
 tarball_dir="$(cd "$1" && pwd)"
 opencode_version="$2"
 previous_version="${3:-0.1.18}"
@@ -52,6 +55,39 @@ isolated() {
   return "$status"
 }
 
+# Evidence lives outside the isolated runtime; an unusable location disables it without affecting the suites.
+if [[ -n "$evidence_dir" ]] && ! evidence_dir="$(node "$evidence_tool" prepare "$evidence_dir" "$test_root")"; then
+  echo 'CI evidence disabled: the evidence directory is unusable.' >&2
+  evidence_dir=''
+fi
+ledger() {
+  [[ -z "$evidence_dir" ]] || node "$evidence_tool" ledger "$evidence_dir" "$@" \
+    || echo 'CI evidence ledger could not be updated.' >&2
+}
+# Only the test runners receive the evidence location; npm and product commands do not.
+isolated_suite() {
+  isolated env MEMORAX_CI_EVIDENCE_DIR="$evidence_dir" "$@"
+}
+run_suite() {
+  local suite="$1" status=0
+  shift
+  ledger start "$suite"
+  "$@" || status=$?
+  ledger end "$suite" "$status"
+  return "$status"
+}
+planned_suites=opencode-install-smoke,opencode-native-check,opencode-permissions-check,opencode-server-check,opencode-install-interruption-check
+finish() {
+  local status=$?
+  ledger finalize "$planned_suites"
+  if [[ "$status" -ne 0 ]]; then
+    echo "The OpenCode functional wrapper stopped with exit $status; its runtime stays on this runner and is not exported. Evidence: ${evidence_dir:-not configured}." >&2
+  fi
+}
+trap finish EXIT
+ledger plan "$planned_suites"
+ledger phase setup
+
 isolated npm install --global --prefix "$test_root/npm" --no-audit --no-fund \
   "opencode-ai@$opencode_version" "$tarball"
 isolated npm install --prefix "$test_root/terminal" --no-audit --no-fund node-pty@1.1.0 @vscode/ripgrep@1.18.0
@@ -68,14 +104,16 @@ printf 'OpenCode requested: %s; installed: %s\n' "$opencode_version" "$actual_ve
 
 package_root="$test_root/npm/lib/node_modules/@memorax/memorax-code"
 opencode="$test_root/npm/bin/opencode"
-isolated node "$repo_root/scripts/ci/opencode/opencode-install-smoke.mjs" \
+ledger phase suites
+run_suite opencode-install-smoke isolated_suite node "$repo_root/scripts/ci/opencode/opencode-install-smoke.mjs" \
   "$package_root" "$opencode" "$tarball" "$npm_command" "$previous_version" \
   "$test_root/terminal/node_modules/node-pty" "$repo_root/scripts/ci/opencode/opencode-setup-pty.mjs" "$opencode_version"
-isolated node "$repo_root/scripts/ci/opencode/opencode-native-check.mjs" "$package_root" "$opencode"
-isolated node "$repo_root/scripts/ci/opencode/opencode-permissions-check.mjs" "$package_root" "$opencode"
-isolated node "$repo_root/scripts/ci/opencode/opencode-server-check.mjs" "$package_root" "$opencode"
-isolated node "$repo_root/scripts/ci/opencode/opencode-install-interruption-check.mjs" \
+run_suite opencode-native-check isolated_suite node "$repo_root/scripts/ci/opencode/opencode-native-check.mjs" "$package_root" "$opencode"
+run_suite opencode-permissions-check isolated_suite node "$repo_root/scripts/ci/opencode/opencode-permissions-check.mjs" "$package_root" "$opencode"
+run_suite opencode-server-check isolated_suite node "$repo_root/scripts/ci/opencode/opencode-server-check.mjs" "$package_root" "$opencode"
+run_suite opencode-install-interruption-check isolated_suite node "$repo_root/scripts/ci/opencode/opencode-install-interruption-check.mjs" \
   "$package_root" "$opencode" "$test_root/terminal/node_modules/node-pty"
 
 # Each suite verifies its owned processes have stopped before this runtime is removed.
+ledger phase cleanup
 rm -rf "$test_root"

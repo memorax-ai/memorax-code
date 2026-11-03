@@ -3,54 +3,109 @@ name: Native client functional checks
 on:
   workflow_dispatch:
     inputs:
-      check_deepseek:
-        description: Run only the native Codex provider check using the test environment
-        type: boolean
-        default: false
-      diagnose_opencode_initialization:
-        description: Run only the isolated Windows OpenCode initialization diagnostic
-        type: boolean
-        default: false
+      mode:
+        description: release-acceptance runs the complete acceptance for the dispatched commit and records its release eligibility; the other modes are isolated diagnostics
+        type: choice
+        default: release-acceptance
+        options:
+          - release-acceptance
+          - provider-only
+          - opencode-initialization-diagnostic
+          - workbuddy-download-diagnostic
+      expected_sha:
+        description: Optional full commit SHA the release candidate must equal
+        type: string
+        default: ''
   pull_request:
+    branches: [main]
   push:
     branches: [main]
+  schedule:
+    # Compatibility monitor: the complete native matrix against every client's baseline and latest versions on main.
+    - cron: '17 3 * * *'
 
 permissions:
   contents: read
 
 concurrency:
-  group: codex-install-${{ github.ref }}-${{ inputs.diagnose_opencode_initialization && 'diagnostic' || 'acceptance' }}
-  cancel-in-progress: true
+  # A newer run cancels only an older run of the same purpose: one pull request, main pushes, compatibility monitors, or
+  # one diagnostic mode on one ref.
+  # Each release acceptance has its own group and is never cancelled by another run.
+  group: codex-install-${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'release-acceptance' && format('release-{0}', github.run_id) || format('{0}-{1}', github.event_name == 'workflow_dispatch' && format('manual-{0}', inputs.mode) || github.event_name, github.ref) }}
+  cancel-in-progress: ${{ !(github.event_name == 'workflow_dispatch' && inputs.mode == 'release-acceptance') }}
 
 jobs:
+  scope:
+    # A pull request runs the native matrix of each client its changes can affect; see scripts/ci/shared/native-scope.mjs.
+    name: Native client scope
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      codex: ${{ steps.scope.outputs.codex }}
+      opencode: ${{ steps.scope.outputs.opencode }}
+      claude: ${{ steps.scope.outputs.claude }}
+      codebuddy: ${{ steps.scope.outputs.codebuddy }}
+      cursor: ${{ steps.scope.outputs.cursor }}
+      workbuddy: ${{ steps.scope.outputs.workbuddy }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The pull request merge commit with both parents: the base and the pull request head.
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Select the native clients this pull request can affect
+        id: scope
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/ci/shared/native-scope.mjs select --expected-head "$PR_HEAD_SHA" --github-output "$GITHUB_OUTPUT" --github-summary "$GITHUB_STEP_SUMMARY"
+
   package:
-    if: (github.event_name != 'workflow_dispatch' || !inputs.check_deepseek || inputs.diagnose_opencode_initialization)
+    needs: scope
+    if: always() && !cancelled() && (github.event_name != 'workflow_dispatch' || inputs.mode != 'provider-only')
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    env:
-      INITIALIZATION_DIAGNOSTIC: ${{ inputs.diagnose_opencode_initialization }}
     outputs:
-      codex-matrix: ${{ steps.codex-versions.outputs.matrix }}
-      opencode-matrix: ${{ steps.opencode-versions.outputs.matrix }}
-      claude-matrix: ${{ steps.claude-versions.outputs.matrix }}
-      codebuddy-matrix: ${{ steps.codebuddy-versions.outputs.matrix }}
-      cursor-matrix: ${{ steps.cursor-versions.outputs.matrix }}
+      codex-matrix: ${{ steps.codex-accepted.outputs.matrix || steps.codex-versions.outputs.matrix }}
+      opencode-matrix: ${{ steps.opencode-accepted.outputs.matrix || steps.opencode-versions.outputs.matrix }}
+      claude-matrix: ${{ steps.claude-accepted.outputs.matrix || steps.claude-versions.outputs.matrix }}
+      codebuddy-matrix: ${{ steps.codebuddy-accepted.outputs.matrix || steps.codebuddy-versions.outputs.matrix }}
+      cursor-matrix: ${{ steps.cursor-accepted.outputs.matrix || steps.cursor-versions.outputs.matrix }}
       artifact-ready: ${{ steps.package-check.outputs.artifact-ready }}
+      # Attempt-qualified names keep an earlier attempt's inputs when a later attempt re-runs this job.
+      package-artifact-name: memorax-code-package-attempt${{ github.run_attempt }}
+      package-artifact-id: ${{ steps.upload-package.outputs.artifact-id }}
+      package-artifact-digest: ${{ steps.upload-package.outputs.artifact-digest }}
+      package-sha256: ${{ steps.package-provenance.outputs.sha256 }}
+      cursor-releases-artifact-name: cursor-app-releases-attempt${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version-file: .node-version
           package-manager-cache: false
+      # Client versions are read only for runs whose client matrices consume them. A pull request installs the pinned
+      # baseline and accepted versions of the clients it selects from the client acceptance manifest and never queries
+      # latest; the compatibility monitor and release acceptance resolve the official latest release of every client.
+      - name: Verify the pinned Codex acceptance versions for this pull request
+        if: github.event_name == 'pull_request' && needs.scope.outputs.codex == 'true'
+        id: codex-accepted
+        run: node scripts/ci/shared/client-acceptance.mjs npm-matrix codex
       - name: Resolve the latest Codex version once for this run
+        if: github.event_name == 'schedule' || inputs.mode == 'release-acceptance'
         id: codex-versions
         shell: bash
         run: |
           npm view @openai/codex dist-tags.latest --json > "$RUNNER_TEMP/codex-latest.json"
           node --input-type=module <<'NODE'
           import { appendFileSync, readFileSync } from 'node:fs';
+          import { pinNodeVersions } from './scripts/ci/shared/client-acceptance.mjs';
           const baseline = '0.147.0';
           const latest = JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/codex-latest.json`, 'utf8'));
           if (typeof latest !== 'string' || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(latest)) {
@@ -61,20 +116,24 @@ jobs:
             channel: latest === baseline ? 'baseline+latest' : 'baseline' }));
           include.push({ os: 'ubuntu-24.04', node: '20', codex: baseline, channel: 'baseline' });
           if (latest !== baseline) include.push(...platforms.map((os) => ({ os, node: '24', codex: latest, channel: 'latest' })));
-          appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`);
+          appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include: pinNodeVersions(include) })}\n`);
           appendFileSync(process.env.GITHUB_STEP_SUMMARY,
             `Codex baseline: **${baseline}**; npm latest resolved for this run: **${latest}**.\n\n` +
-            (process.env.INITIALIZATION_DIAGNOSTIC === 'true'
-              ? 'Initialization diagnostic only; this matrix will not run.\n'
-              : `${include.length} required installation, native-flow and permission jobs; no version fallback.\n`));
+            `${include.length} required installation, native-flow and permission jobs; no version fallback.\n`);
           NODE
+      - name: Verify the pinned OpenCode acceptance versions for this pull request
+        if: github.event_name == 'pull_request' && needs.scope.outputs.opencode == 'true'
+        id: opencode-accepted
+        run: node scripts/ci/shared/client-acceptance.mjs npm-matrix opencode
       - name: Resolve the latest OpenCode version once for this run
+        if: github.event_name == 'schedule' || inputs.mode == 'release-acceptance'
         id: opencode-versions
         shell: bash
         run: |
           npm view opencode-ai dist-tags.latest --json > "$RUNNER_TEMP/opencode-latest.json"
           node --input-type=module <<'NODE'
           import { appendFileSync, readFileSync } from 'node:fs';
+          import { pinNodeVersions } from './scripts/ci/shared/client-acceptance.mjs';
           const baseline = '1.18.18';
           const latest = JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/opencode-latest.json`, 'utf8'));
           if (typeof latest !== 'string' || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(latest)) {
@@ -85,21 +144,24 @@ jobs:
             channel: latest === baseline ? 'baseline+latest' : 'baseline' }));
           include.push({ os: 'ubuntu-24.04', node: '20', opencode: baseline, channel: 'baseline' });
           if (latest !== baseline) include.push(...platforms.map((os) => ({ os, node: '24', opencode: latest, channel: 'latest' })));
-          appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`);
+          appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include: pinNodeVersions(include) })}\n`);
           appendFileSync(process.env.GITHUB_STEP_SUMMARY,
             `OpenCode baseline: **${baseline}**; npm latest resolved for this run: **${latest}**.\n\n` +
-            (process.env.INITIALIZATION_DIAGNOSTIC === 'true'
-              ? 'Initialization diagnostic only; this matrix will not run.\n'
-              : `${include.length} required installation, native-flow and permission jobs; no version fallback.\n`));
+            `${include.length} required installation, native-flow and permission jobs; no version fallback.\n`);
           NODE
+      - name: Verify the pinned Claude Code acceptance versions for this pull request
+        if: github.event_name == 'pull_request' && needs.scope.outputs.claude == 'true'
+        id: claude-accepted
+        run: node scripts/ci/shared/client-acceptance.mjs npm-matrix claude
       - name: Resolve the latest Claude Code version once for this run
-        if: ${{ !inputs.diagnose_opencode_initialization }}
+        if: github.event_name == 'schedule' || inputs.mode == 'release-acceptance'
         id: claude-versions
         shell: bash
         run: |
           npm view @anthropic-ai/claude-code dist-tags.latest --json > "$RUNNER_TEMP/claude-latest.json"
           node --input-type=module <<'NODE'
           import { appendFileSync, readFileSync } from 'node:fs';
+          import { pinNodeVersions } from './scripts/ci/shared/client-acceptance.mjs';
           const baseline = '2.1.277';
           const latest = JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/claude-latest.json`, 'utf8'));
           if (typeof latest !== 'string' || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(latest)) {
@@ -110,19 +172,24 @@ jobs:
             channel: latest === baseline ? 'baseline+latest' : 'baseline' }));
           include.push({ os: 'ubuntu-24.04', node: '22', claude: baseline, channel: 'baseline' });
           if (latest !== baseline) include.push(...platforms.map((os) => ({ os, node: '24', claude: latest, channel: 'latest' })));
-          appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`);
+          appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include: pinNodeVersions(include) })}\n`);
           appendFileSync(process.env.GITHUB_STEP_SUMMARY,
             `Claude Code baseline: **${baseline}**; npm latest resolved for this run: **${latest}**.\n\n` +
             `${include.length} required lifecycle, interruption, native memory, Skill, permission and Repo Memory configuration jobs; no version fallback. Client-specific coverage remains bounded.\n`);
           NODE
+      - name: Verify the pinned CodeBuddy Code acceptance versions for this pull request
+        if: github.event_name == 'pull_request' && needs.scope.outputs.codebuddy == 'true'
+        id: codebuddy-accepted
+        run: node scripts/ci/shared/client-acceptance.mjs npm-matrix codebuddy
       - name: Resolve the latest CodeBuddy Code version once for this run
-        if: ${{ !inputs.diagnose_opencode_initialization }}
+        if: github.event_name == 'schedule' || inputs.mode == 'release-acceptance'
         id: codebuddy-versions
         shell: bash
         run: |
           npm view @tencent-ai/codebuddy-code dist-tags.latest --json --registry=https://registry.npmjs.org/ > "$RUNNER_TEMP/codebuddy-latest.json"
           node --input-type=module <<'NODE'
           import { appendFileSync, readFileSync } from 'node:fs';
+          import { pinNodeVersions } from './scripts/ci/shared/client-acceptance.mjs';
           const baseline = '2.159.0';
           const latest = JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/codebuddy-latest.json`, 'utf8'));
           if (typeof latest !== 'string' || !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(latest)) {
@@ -133,19 +200,24 @@ jobs:
             channel: latest === baseline ? 'baseline+latest' : 'baseline' }));
           include.push({ os: 'ubuntu-24.04', node: '20', codebuddy: baseline, channel: 'baseline' });
           if (latest !== baseline) include.push(...platforms.map((os) => ({ os, node: '24', codebuddy: latest, channel: 'latest' })));
-          appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`);
+          appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include: pinNodeVersions(include) })}\n`);
           appendFileSync(process.env.GITHUB_STEP_SUMMARY,
             `CodeBuddy Code baseline: **${baseline}**; npm latest resolved for this run: **${latest}**.\n\n` +
             `${include.length} required lifecycle, interruption, native memory, Skill, permission and Repo Memory configuration jobs; no version fallback. WorkBuddy is outside this scope; client-specific coverage remains bounded.\n`);
           NODE
+      - name: Freeze the pinned Cursor App acceptance releases for this pull request
+        if: github.event_name == 'pull_request' && needs.scope.outputs.cursor == 'true'
+        id: cursor-accepted
+        run: node scripts/ci/cursor/cursor-app-release.mjs accepted "$RUNNER_TEMP/cursor-app-releases.json"
       - name: Resolve and freeze Cursor App releases once for this run
-        if: github.event_name != 'workflow_dispatch' || !(inputs.check_deepseek || inputs.diagnose_opencode_initialization)
+        if: github.event_name == 'schedule' || inputs.mode == 'release-acceptance'
         id: cursor-versions
         shell: bash
         run: |
           node scripts/ci/cursor/cursor-app-release.mjs resolve-linux "$RUNNER_TEMP/cursor-app-releases.json"
           node --input-type=module <<'NODE'
           import { appendFileSync, readFileSync } from 'node:fs';
+          import { pinNodeVersions } from './scripts/ci/shared/client-acceptance.mjs';
           import { validateLinuxRelease } from './scripts/ci/cursor/cursor-app-release.mjs';
           import { selectCursorMacosRelease } from './scripts/ci/cursor/cursor-app-macos-artifact.mjs';
           import { selectCursorWindowsRelease } from './scripts/ci/cursor/cursor-app-windows-artifact.mjs';
@@ -169,20 +241,20 @@ jobs:
           const sameWindows = ['version', 'commitSha', 'url'].every((key) => windowsBaseline[key] === windowsLatest[key]);
           include.push({ os: 'windows-2025', node: '24', cursor: windowsBaseline.version, release: 'baseline', channel: sameWindows ? 'baseline+latest' : 'baseline' });
           if (!sameWindows) include.push({ os: 'windows-2025', node: '24', cursor: windowsLatest.version, release: 'latest', channel: 'latest' });
-          appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include })}\n`);
+          appendFileSync(process.env.GITHUB_OUTPUT, `matrix=${JSON.stringify({ include: pinNodeVersions(include) })}\n`);
           appendFileSync(process.env.GITHUB_STEP_SUMMARY,
             `Cursor App baseline: **${baseline.version}**; desktop latest frozen for this run: **${latest.version}**.\n\n` +
             `${include.length} required Linux, macOS and Windows App jobs, including Linux baseline on Node 22. No version fallback.\n`);
           NODE
-      - uses: actions/upload-artifact@v4
-        if: github.event_name != 'workflow_dispatch' || !(inputs.check_deepseek || inputs.diagnose_opencode_initialization)
+      - uses: actions/upload-artifact@v7
+        if: needs.scope.outputs.cursor == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance'
         with:
-          name: cursor-app-releases
+          name: cursor-app-releases-attempt${{ github.run_attempt }}
           path: ${{ runner.temp }}/cursor-app-releases.json
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 30
       - name: Verify test assertions reject malformed content and unexpected failures
-        run: node --test scripts/ci/shared/native-process-cleanup.test.mjs scripts/ci/codex/codex-native-content-check.test.mjs scripts/ci/codex/codex-lifecycle-assertions.test.mjs scripts/ci/codex/codex-writeback-diagnostics.test.mjs scripts/ci/opencode/opencode-native-support.test.mjs scripts/ci/opencode/opencode-initialization-diagnostic.test.mjs scripts/ci/opencode/opencode-initialization-layouts.test.mjs scripts/ci/claude/claude-native-content-check.test.mjs scripts/ci/claude/claude-native-support.test.mjs scripts/ci/claude/claude-permissions-support.test.mjs scripts/ci/claude/claude-lifecycle-assertions.test.mjs scripts/ci/claude/claude-lifecycle-process.test.mjs scripts/ci/claude/claude-background-assertions.test.mjs scripts/ci/claude/claude-install-interruption-driver.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-native-content-check.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-native-support.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-install-cleanup.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-lifecycle-assertions.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-install-interruption-driver.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-permissions-support.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-background-assertions.test.mjs
+        run: node --test scripts/ci/shared/ci-evidence.test.mjs scripts/ci/shared/native-evidence-workflow.test.mjs scripts/ci/shared/native-evidence-wrappers.test.mjs scripts/ci/shared/native-process-cleanup.test.mjs scripts/ci/shared/release-acceptance.test.mjs scripts/ci/codex/codex-native-content-check.test.mjs scripts/ci/codex/codex-lifecycle-assertions.test.mjs scripts/ci/codex/codex-install-interruption-evidence.test.mjs scripts/ci/codex/codex-install-interruption-check.test.mjs scripts/ci/codex/codex-setup-pty.test.mjs scripts/ci/codex/codex-setup-pty-consumers.test.mjs scripts/ci/codex/codex-install-smoke.test.mjs scripts/ci/claude/claude-install-evidence.test.mjs scripts/ci/claude/claude-install-smoke.test.mjs scripts/ci/codex/codex-writeback-diagnostics.test.mjs scripts/ci/opencode/opencode-native-support.test.mjs scripts/ci/opencode/opencode-initialization-diagnostic.test.mjs scripts/ci/opencode/opencode-initialization-layouts.test.mjs scripts/ci/claude/claude-native-content-check.test.mjs scripts/ci/claude/claude-native-support.test.mjs scripts/ci/claude/claude-permissions-support.test.mjs scripts/ci/claude/claude-lifecycle-assertions.test.mjs scripts/ci/claude/claude-lifecycle-process.test.mjs scripts/ci/claude/claude-background-assertions.test.mjs scripts/ci/claude/claude-install-interruption-driver.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-native-content-check.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-native-support.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-install-cleanup.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-lifecycle-assertions.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-install-interruption-driver.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-permissions-support.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-background-assertions.test.mjs
       - name: Verify shared CodeBuddy and WorkBuddy native and install contracts
         run: node --test scripts/ci/codebuddy-workbuddy/codebuddy-native-memory-support.test.mjs scripts/ci/codebuddy-workbuddy/codebuddy-install-interruption-check.test.mjs scripts/ci/codebuddy-workbuddy/workbuddy-install-entry.test.mjs
       - name: Verify Cursor App canary contracts
@@ -209,21 +281,63 @@ jobs:
           fi
           exit "$package_status"
       - name: Record artifact checksum
+        id: package-provenance
         if: always() && steps.package-check.outputs.artifact-ready == 'true'
         shell: bash
-        run: sha256sum dist/npm/tarballs/*.tgz
-      - uses: actions/upload-artifact@v4
+        run: |
+          sha256sum dist/npm/tarballs/*.tgz
+          # Publish the checksum only when one candidate is unambiguous; this step adds no new gate.
+          set -- dist/npm/tarballs/memorax-memorax-code-*.tgz
+          if [[ "$#" -eq 1 && -f "$1" && ! -L "$1" ]]; then
+            printf 'sha256=%s\n' "$(sha256sum "$1" | cut -d ' ' -f 1)" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/upload-artifact@v7
+        id: upload-package
         if: always() && steps.package-check.outputs.artifact-ready == 'true'
         with:
-          name: memorax-code-package
+          name: memorax-code-package-attempt${{ github.run_attempt }}
           path: dist/npm/tarballs/*.tgz
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 30
+      - name: Record the candidate package and frozen client versions
+        if: always() && steps.package-check.outputs.artifact-ready == 'true'
+        continue-on-error: true
+        shell: bash
+        env:
+          CODEX_MATRIX: ${{ steps.codex-accepted.outputs.matrix || steps.codex-versions.outputs.matrix }}
+          OPENCODE_MATRIX: ${{ steps.opencode-accepted.outputs.matrix || steps.opencode-versions.outputs.matrix }}
+          CLAUDE_MATRIX: ${{ steps.claude-accepted.outputs.matrix || steps.claude-versions.outputs.matrix }}
+          CODEBUDDY_MATRIX: ${{ steps.codebuddy-accepted.outputs.matrix || steps.codebuddy-versions.outputs.matrix }}
+          PACKAGE_ARTIFACT_ID: ${{ steps.upload-package.outputs.artifact-id }}
+          PACKAGE_ARTIFACT_DIGEST: ${{ steps.upload-package.outputs.artifact-digest }}
+        run: |
+          cursor_releases=()
+          if [[ -f "$RUNNER_TEMP/cursor-app-releases.json" ]]; then
+            cursor_releases=(--cursor-releases "$RUNNER_TEMP/cursor-app-releases.json" --cursor-releases-artifact-name "cursor-app-releases-attempt$GITHUB_RUN_ATTEMPT")
+          fi
+          # A main push runs only this package health check, so its record marks the native client checks not applicable.
+          client_checks=()
+          if [[ "$GITHUB_EVENT_NAME" == push ]]; then
+            client_checks=(--client-checks NOT_APPLICABLE)
+          fi
+          node scripts/ci/shared/ci-evidence.mjs manifest "$RUNNER_TEMP/native-client-inputs.json" \
+            --package-dir dist/npm/tarballs --package-artifact-name "memorax-code-package-attempt$GITHUB_RUN_ATTEMPT" \
+            --package-artifact-id "$PACKAGE_ARTIFACT_ID" --package-artifact-digest "$PACKAGE_ARTIFACT_DIGEST" \
+            --matrix "codex=$CODEX_MATRIX" --matrix "opencode=$OPENCODE_MATRIX" \
+            --matrix "claude=$CLAUDE_MATRIX" --matrix "codebuddy=$CODEBUDDY_MATRIX" "${cursor_releases[@]}" "${client_checks[@]}"
+      - uses: actions/upload-artifact@v7
+        if: always() && steps.package-check.outputs.artifact-ready == 'true'
+        continue-on-error: true
+        with:
+          name: native-client-inputs-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/native-client-inputs.json
+          if-no-files-found: warn
+          retention-days: 30
 
   install:
     name: Codex ${{ matrix.channel }} ${{ matrix.codex }} (${{ matrix.os }}, Node ${{ matrix.node }})
-    needs: package
-    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && !inputs.diagnose_opencode_initialization
+    needs: [scope, package]
+    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && (needs.scope.outputs.codex == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance')
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.package.outputs.codex-matrix) }}
@@ -235,33 +349,103 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: ${{ matrix.node }}
+          node-version: ${{ matrix.nodeVersion }}
           package-manager-cache: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
-          name: memorax-code-package
+          name: ${{ needs.package.outputs.package-artifact-name }}
           path: dist/npm/tarballs
+      - name: Record native test inputs
+        id: record-inputs
+        continue-on-error: true
+        shell: bash
+        env:
+          CLIENT_CHANNEL: ${{ matrix.channel }}
+          CLIENT_VERSION: ${{ matrix.codex }}
+          MATRIX_OS: ${{ matrix.os }}
+          MATRIX_NODE: ${{ matrix.node }}
+          MATRIX_NODE_VERSION: ${{ matrix.nodeVersion }}
+          PACKAGE_ARTIFACT_NAME: ${{ needs.package.outputs.package-artifact-name }}
+          PACKAGE_ARTIFACT_ID: ${{ needs.package.outputs.package-artifact-id }}
+          PACKAGE_ARTIFACT_DIGEST: ${{ needs.package.outputs.package-artifact-digest }}
+          PACKAGE_SHA256: ${{ needs.package.outputs.package-sha256 }}
+        run: |
+          node scripts/ci/shared/ci-evidence.mjs inputs "$RUNNER_TEMP/native-evidence/inputs.json" \
+            --client codex --channel "$CLIENT_CHANNEL" --client-version "$CLIENT_VERSION" \
+            --matrix-os "$MATRIX_OS" --matrix-node "$MATRIX_NODE" --expected-node-version "$MATRIX_NODE_VERSION" \
+            --npm-version "$(npm -v)" --package-dir dist/npm/tarballs --package-artifact-name "$PACKAGE_ARTIFACT_NAME" \
+            --package-artifact-id "$PACKAGE_ARTIFACT_ID" --package-artifact-digest "$PACKAGE_ARTIFACT_DIGEST" \
+            --expected-package-sha256 "$PACKAGE_SHA256"
       - name: Verify lifecycle, native writeback, permissions and shared configuration (macOS/Linux)
+        id: native-posix
         if: runner.os != 'Windows'
+        timeout-minutes: 20
         shell: bash
         env:
           CODEX_VERSION: ${{ matrix.codex }}
+          MEMORAX_CI_EVIDENCE_DIR: ${{ runner.temp }}/native-evidence/suites
         run: scripts/ci/codex/codex-install-check.sh dist/npm/tarballs "$CODEX_VERSION"
       - name: Verify Windows user PATH cleanup on success, failure and interruption
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/ci/shared/codex-install-user-path.test.ps1
       - name: Verify lifecycle, native writeback, permissions and shared configuration (Windows)
+        id: native-windows
         if: runner.os == 'Windows'
+        timeout-minutes: 20
         shell: pwsh
         env:
           CODEX_VERSION: ${{ matrix.codex }}
+          MEMORAX_CI_EVIDENCE_DIR: ${{ runner.temp }}/native-evidence/suites
         run: ./scripts/ci/codex/codex-install-check.ps1 -TarballDirectory dist/npm/tarballs -CodexVersion $env:CODEX_VERSION
+      - name: Summarize first-failure evidence
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          TEST_OUTCOME: ${{ runner.os == 'Windows' && steps.native-windows.outcome || steps.native-posix.outcome }}
+          INPUTS_OUTCOME: ${{ steps.record-inputs.outcome }}
+          CLIENT_CHANNEL: ${{ matrix.channel }}
+          CLIENT_VERSION: ${{ matrix.codex }}
+          MATRIX_OS: ${{ matrix.os }}
+          MATRIX_NODE: ${{ matrix.node }}
+        run: |
+          node scripts/ci/shared/ci-evidence.mjs summarize "$RUNNER_TEMP/native-evidence" --client codex --os "$MATRIX_OS" \
+            --channel "$CLIENT_CHANNEL" --client-version "$CLIENT_VERSION" --node "$MATRIX_NODE" \
+            --test-step-outcome "$TEST_OUTCOME" --inputs-step-outcome "$INPUTS_OUTCOME" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --github-summary "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        id: upload-evidence
+        if: always()
+        continue-on-error: true
+        with:
+          name: native-evidence-codex-${{ matrix.os }}-${{ matrix.channel }}-node-${{ matrix.node }}-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/native-evidence
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Report evidence export
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          UPLOAD_OUTCOME: ${{ steps.upload-evidence.outcome }}
+          ARTIFACT_ID: ${{ steps.upload-evidence.outputs.artifact-id }}
+        run: node scripts/ci/shared/ci-evidence.mjs export-status --outcome "$UPLOAD_OUTCOME" --artifact-id "$ARTIFACT_ID" --github-summary "$GITHUB_STEP_SUMMARY"
+      # A CI tool self-test, reported on its own summary line: it runs after the native suites and the
+      # evidence export, so it can neither skip them nor delay their evidence. A skipped test fails it.
+      - name: Verify evidence helpers keep the wrapper result (Windows)
+        if: always() && !cancelled() && runner.os == 'Windows'
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          $tap = Join-Path $env:RUNNER_TEMP 'evidence-wrapper-self-test.tap'
+          node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=tap "--test-reporter-destination=$tap" scripts/ci/shared/native-evidence-wrappers.test.mjs
+          node scripts/ci/shared/ci-evidence.mjs self-test-status --tap $tap --exit-code $LASTEXITCODE --github-summary $env:GITHUB_STEP_SUMMARY
 
   opencode:
     name: OpenCode ${{ matrix.channel }} ${{ matrix.opencode }} (${{ matrix.os }}, Node ${{ matrix.node }})
-    needs: package
-    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && !inputs.diagnose_opencode_initialization
+    needs: [scope, package]
+    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && (needs.scope.outputs.opencode == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance')
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.package.outputs.opencode-matrix) }}
@@ -273,35 +457,105 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: ${{ matrix.node }}
+          node-version: ${{ matrix.nodeVersion }}
           package-manager-cache: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
-          name: memorax-code-package
+          name: ${{ needs.package.outputs.package-artifact-name }}
           path: dist/npm/tarballs
+      - name: Record native test inputs
+        id: record-inputs
+        continue-on-error: true
+        shell: bash
+        env:
+          CLIENT_CHANNEL: ${{ matrix.channel }}
+          CLIENT_VERSION: ${{ matrix.opencode }}
+          MATRIX_OS: ${{ matrix.os }}
+          MATRIX_NODE: ${{ matrix.node }}
+          MATRIX_NODE_VERSION: ${{ matrix.nodeVersion }}
+          PACKAGE_ARTIFACT_NAME: ${{ needs.package.outputs.package-artifact-name }}
+          PACKAGE_ARTIFACT_ID: ${{ needs.package.outputs.package-artifact-id }}
+          PACKAGE_ARTIFACT_DIGEST: ${{ needs.package.outputs.package-artifact-digest }}
+          PACKAGE_SHA256: ${{ needs.package.outputs.package-sha256 }}
+        run: |
+          node scripts/ci/shared/ci-evidence.mjs inputs "$RUNNER_TEMP/native-evidence/inputs.json" \
+            --client opencode --channel "$CLIENT_CHANNEL" --client-version "$CLIENT_VERSION" \
+            --matrix-os "$MATRIX_OS" --matrix-node "$MATRIX_NODE" --expected-node-version "$MATRIX_NODE_VERSION" \
+            --npm-version "$(npm -v)" --package-dir dist/npm/tarballs --package-artifact-name "$PACKAGE_ARTIFACT_NAME" \
+            --package-artifact-id "$PACKAGE_ARTIFACT_ID" --package-artifact-digest "$PACKAGE_ARTIFACT_DIGEST" \
+            --expected-package-sha256 "$PACKAGE_SHA256"
       - name: Verify lifecycle, native memory, permissions and recovery (macOS/Linux)
+        id: native-posix
         if: runner.os != 'Windows'
+        timeout-minutes: 20
         shell: bash
         env:
           OPENCODE_VERSION: ${{ matrix.opencode }}
+          MEMORAX_CI_EVIDENCE_DIR: ${{ runner.temp }}/native-evidence/suites
         run: bash scripts/ci/opencode/opencode-install-check.sh dist/npm/tarballs "$OPENCODE_VERSION"
       - name: Verify shared Windows user PATH cleanup
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/ci/shared/codex-install-user-path.test.ps1
       - name: Verify lifecycle, native memory, permissions and recovery (Windows)
+        id: native-windows
         if: runner.os == 'Windows'
+        timeout-minutes: 20
         shell: pwsh
         env:
           OPENCODE_VERSION: ${{ matrix.opencode }}
           TEMP: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
+          MEMORAX_CI_EVIDENCE_DIR: ${{ runner.temp }}/native-evidence/suites
         run: ./scripts/ci/opencode/opencode-install-check.ps1 -TarballDirectory dist/npm/tarballs -OpenCodeVersion $env:OPENCODE_VERSION
+      - name: Summarize first-failure evidence
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          TEST_OUTCOME: ${{ runner.os == 'Windows' && steps.native-windows.outcome || steps.native-posix.outcome }}
+          INPUTS_OUTCOME: ${{ steps.record-inputs.outcome }}
+          CLIENT_CHANNEL: ${{ matrix.channel }}
+          CLIENT_VERSION: ${{ matrix.opencode }}
+          MATRIX_OS: ${{ matrix.os }}
+          MATRIX_NODE: ${{ matrix.node }}
+        run: |
+          node scripts/ci/shared/ci-evidence.mjs summarize "$RUNNER_TEMP/native-evidence" --client opencode --os "$MATRIX_OS" \
+            --channel "$CLIENT_CHANNEL" --client-version "$CLIENT_VERSION" --node "$MATRIX_NODE" \
+            --test-step-outcome "$TEST_OUTCOME" --inputs-step-outcome "$INPUTS_OUTCOME" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --github-summary "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        id: upload-evidence
+        if: always()
+        continue-on-error: true
+        with:
+          name: native-evidence-opencode-${{ matrix.os }}-${{ matrix.channel }}-node-${{ matrix.node }}-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/native-evidence
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Report evidence export
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          UPLOAD_OUTCOME: ${{ steps.upload-evidence.outcome }}
+          ARTIFACT_ID: ${{ steps.upload-evidence.outputs.artifact-id }}
+        run: node scripts/ci/shared/ci-evidence.mjs export-status --outcome "$UPLOAD_OUTCOME" --artifact-id "$ARTIFACT_ID" --github-summary "$GITHUB_STEP_SUMMARY"
+      # A CI tool self-test, reported on its own summary line: it runs after the native suites and the
+      # evidence export, so it can neither skip them nor delay their evidence. A skipped test fails it.
+      - name: Verify evidence helpers keep the wrapper result (Windows)
+        if: always() && !cancelled() && runner.os == 'Windows'
+        timeout-minutes: 10
+        shell: pwsh
+        run: |
+          $tap = Join-Path $env:RUNNER_TEMP 'evidence-wrapper-self-test.tap'
+          node --test --test-reporter=spec --test-reporter-destination=stdout --test-reporter=tap "--test-reporter-destination=$tap" scripts/ci/shared/native-evidence-wrappers.test.mjs
+          node scripts/ci/shared/ci-evidence.mjs self-test-status --tap $tap --exit-code $LASTEXITCODE --github-summary $env:GITHUB_STEP_SUMMARY
 
   claude:
     name: Claude smoke ${{ matrix.channel }} ${{ matrix.claude }} (${{ matrix.os }}, Node ${{ matrix.node }})
-    needs: package
-    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && !inputs.diagnose_opencode_initialization
+    needs: [scope, package]
+    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && (needs.scope.outputs.claude == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance')
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.package.outputs.claude-matrix) }}
@@ -313,35 +567,93 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: ${{ matrix.node }}
+          node-version: ${{ matrix.nodeVersion }}
           package-manager-cache: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
-          name: memorax-code-package
+          name: ${{ needs.package.outputs.package-artifact-name }}
           path: dist/npm/tarballs
+      - name: Record native test inputs
+        id: record-inputs
+        continue-on-error: true
+        shell: bash
+        env:
+          CLIENT_CHANNEL: ${{ matrix.channel }}
+          CLIENT_VERSION: ${{ matrix.claude }}
+          MATRIX_OS: ${{ matrix.os }}
+          MATRIX_NODE: ${{ matrix.node }}
+          MATRIX_NODE_VERSION: ${{ matrix.nodeVersion }}
+          PACKAGE_ARTIFACT_NAME: ${{ needs.package.outputs.package-artifact-name }}
+          PACKAGE_ARTIFACT_ID: ${{ needs.package.outputs.package-artifact-id }}
+          PACKAGE_ARTIFACT_DIGEST: ${{ needs.package.outputs.package-artifact-digest }}
+          PACKAGE_SHA256: ${{ needs.package.outputs.package-sha256 }}
+        run: |
+          node scripts/ci/shared/ci-evidence.mjs inputs "$RUNNER_TEMP/native-evidence/inputs.json" \
+            --client claude --channel "$CLIENT_CHANNEL" --client-version "$CLIENT_VERSION" \
+            --matrix-os "$MATRIX_OS" --matrix-node "$MATRIX_NODE" --expected-node-version "$MATRIX_NODE_VERSION" \
+            --npm-version "$(npm -v)" --package-dir dist/npm/tarballs --package-artifact-name "$PACKAGE_ARTIFACT_NAME" \
+            --package-artifact-id "$PACKAGE_ARTIFACT_ID" --package-artifact-digest "$PACKAGE_ARTIFACT_DIGEST" \
+            --expected-package-sha256 "$PACKAGE_SHA256"
       - name: Verify Claude lifecycle, interruption, native flows and Repo Memory configuration (macOS/Linux)
+        id: native-posix
         if: runner.os != 'Windows'
         shell: bash
         env:
           CLAUDE_VERSION: ${{ matrix.claude }}
+          MEMORAX_CI_EVIDENCE_DIR: ${{ runner.temp }}/native-evidence/suites
         run: bash scripts/ci/claude/claude-install-check.sh dist/npm/tarballs "$CLAUDE_VERSION"
       - name: Verify shared Windows user PATH cleanup
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/ci/shared/codex-install-user-path.test.ps1
       - name: Verify Claude lifecycle, interruption, native flows and Repo Memory configuration (Windows)
+        id: native-windows
         if: runner.os == 'Windows'
         shell: pwsh
         env:
           CLAUDE_VERSION: ${{ matrix.claude }}
+          MEMORAX_CI_EVIDENCE_DIR: ${{ runner.temp }}/native-evidence/suites
           TEMP: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
         run: ./scripts/ci/claude/claude-install-check.ps1 -TarballDirectory dist/npm/tarballs -ClaudeVersion $env:CLAUDE_VERSION
+      - name: Summarize first-failure evidence
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          TEST_OUTCOME: ${{ runner.os == 'Windows' && steps.native-windows.outcome || steps.native-posix.outcome }}
+          INPUTS_OUTCOME: ${{ steps.record-inputs.outcome }}
+          CLIENT_CHANNEL: ${{ matrix.channel }}
+          CLIENT_VERSION: ${{ matrix.claude }}
+          MATRIX_OS: ${{ matrix.os }}
+          MATRIX_NODE: ${{ matrix.node }}
+        run: |
+          node scripts/ci/shared/ci-evidence.mjs summarize "$RUNNER_TEMP/native-evidence" --client claude --os "$MATRIX_OS" \
+            --channel "$CLIENT_CHANNEL" --client-version "$CLIENT_VERSION" --node "$MATRIX_NODE" \
+            --test-step-outcome "$TEST_OUTCOME" --inputs-step-outcome "$INPUTS_OUTCOME" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --github-summary "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        id: upload-evidence
+        if: always()
+        continue-on-error: true
+        with:
+          name: native-evidence-claude-${{ matrix.os }}-${{ matrix.channel }}-node-${{ matrix.node }}-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/native-evidence
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Report evidence export
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          UPLOAD_OUTCOME: ${{ steps.upload-evidence.outcome }}
+          ARTIFACT_ID: ${{ steps.upload-evidence.outputs.artifact-id }}
+        run: node scripts/ci/shared/ci-evidence.mjs export-status --outcome "$UPLOAD_OUTCOME" --artifact-id "$ARTIFACT_ID" --github-summary "$GITHUB_STEP_SUMMARY"
 
   codebuddy:
     name: CodeBuddy functional ${{ matrix.channel }} ${{ matrix.codebuddy }} (${{ matrix.os }}, Node ${{ matrix.node }})
-    needs: package
-    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && !inputs.diagnose_opencode_initialization
+    needs: [scope, package]
+    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && (needs.scope.outputs.codebuddy == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance')
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.package.outputs.codebuddy-matrix) }}
@@ -353,35 +665,93 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: ${{ matrix.node }}
+          node-version: ${{ matrix.nodeVersion }}
           package-manager-cache: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
-          name: memorax-code-package
+          name: ${{ needs.package.outputs.package-artifact-name }}
           path: dist/npm/tarballs
+      - name: Record native test inputs
+        id: record-inputs
+        continue-on-error: true
+        shell: bash
+        env:
+          CLIENT_CHANNEL: ${{ matrix.channel }}
+          CLIENT_VERSION: ${{ matrix.codebuddy }}
+          MATRIX_OS: ${{ matrix.os }}
+          MATRIX_NODE: ${{ matrix.node }}
+          MATRIX_NODE_VERSION: ${{ matrix.nodeVersion }}
+          PACKAGE_ARTIFACT_NAME: ${{ needs.package.outputs.package-artifact-name }}
+          PACKAGE_ARTIFACT_ID: ${{ needs.package.outputs.package-artifact-id }}
+          PACKAGE_ARTIFACT_DIGEST: ${{ needs.package.outputs.package-artifact-digest }}
+          PACKAGE_SHA256: ${{ needs.package.outputs.package-sha256 }}
+        run: |
+          node scripts/ci/shared/ci-evidence.mjs inputs "$RUNNER_TEMP/native-evidence/inputs.json" \
+            --client codebuddy --channel "$CLIENT_CHANNEL" --client-version "$CLIENT_VERSION" \
+            --matrix-os "$MATRIX_OS" --matrix-node "$MATRIX_NODE" --expected-node-version "$MATRIX_NODE_VERSION" \
+            --npm-version "$(npm -v)" --package-dir dist/npm/tarballs --package-artifact-name "$PACKAGE_ARTIFACT_NAME" \
+            --package-artifact-id "$PACKAGE_ARTIFACT_ID" --package-artifact-digest "$PACKAGE_ARTIFACT_DIGEST" \
+            --expected-package-sha256 "$PACKAGE_SHA256"
       - name: Verify CodeBuddy lifecycle, interruption, native flows and Repo Memory configuration (macOS/Linux)
+        id: native-posix
         if: runner.os != 'Windows'
         shell: bash
         env:
           CODEBUDDY_VERSION: ${{ matrix.codebuddy }}
+          MEMORAX_CI_EVIDENCE_DIR: ${{ runner.temp }}/native-evidence/suites
         run: bash scripts/ci/codebuddy-workbuddy/codebuddy-install-check.sh dist/npm/tarballs "$CODEBUDDY_VERSION"
       - name: Verify shared Windows user PATH cleanup
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./scripts/ci/shared/codex-install-user-path.test.ps1
       - name: Verify CodeBuddy lifecycle, interruption, native flows and Repo Memory configuration (Windows)
+        id: native-windows
         if: runner.os == 'Windows'
         shell: pwsh
         env:
           CODEBUDDY_VERSION: ${{ matrix.codebuddy }}
+          MEMORAX_CI_EVIDENCE_DIR: ${{ runner.temp }}/native-evidence/suites
           TEMP: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
         run: ./scripts/ci/codebuddy-workbuddy/codebuddy-install-check.ps1 -TarballDirectory dist/npm/tarballs -CodeBuddyVersion $env:CODEBUDDY_VERSION
+      - name: Summarize first-failure evidence
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          TEST_OUTCOME: ${{ runner.os == 'Windows' && steps.native-windows.outcome || steps.native-posix.outcome }}
+          INPUTS_OUTCOME: ${{ steps.record-inputs.outcome }}
+          CLIENT_CHANNEL: ${{ matrix.channel }}
+          CLIENT_VERSION: ${{ matrix.codebuddy }}
+          MATRIX_OS: ${{ matrix.os }}
+          MATRIX_NODE: ${{ matrix.node }}
+        run: |
+          node scripts/ci/shared/ci-evidence.mjs summarize "$RUNNER_TEMP/native-evidence" --client codebuddy --os "$MATRIX_OS" \
+            --channel "$CLIENT_CHANNEL" --client-version "$CLIENT_VERSION" --node "$MATRIX_NODE" \
+            --test-step-outcome "$TEST_OUTCOME" --inputs-step-outcome "$INPUTS_OUTCOME" --run-attempt "$GITHUB_RUN_ATTEMPT" \
+            --github-summary "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        id: upload-evidence
+        if: always()
+        continue-on-error: true
+        with:
+          name: native-evidence-codebuddy-${{ matrix.os }}-${{ matrix.channel }}-node-${{ matrix.node }}-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/native-evidence
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Report evidence export
+        if: always()
+        continue-on-error: true
+        shell: bash
+        env:
+          UPLOAD_OUTCOME: ${{ steps.upload-evidence.outcome }}
+          ARTIFACT_ID: ${{ steps.upload-evidence.outputs.artifact-id }}
+        run: node scripts/ci/shared/ci-evidence.mjs export-status --outcome "$UPLOAD_OUTCOME" --artifact-id "$ARTIFACT_ID" --github-summary "$GITHUB_STEP_SUMMARY"
 
   cursor-app:
     name: Cursor App ${{ matrix.channel }} ${{ matrix.cursor }} (${{ matrix.os }}, Node ${{ matrix.node }})
-    needs: package
-    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && !(github.event_name == 'workflow_dispatch' && (inputs.check_deepseek || inputs.diagnose_opencode_initialization))
+    needs: [scope, package]
+    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && (needs.scope.outputs.cursor == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance')
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.package.outputs.cursor-matrix) }}
@@ -393,16 +763,21 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: ${{ matrix.node }}
+          node-version: ${{ matrix.nodeVersion }}
           package-manager-cache: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
-          name: memorax-code-package
+          name: ${{ needs.package.outputs.package-artifact-name }}
           path: dist/npm/tarballs
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
-          name: cursor-app-releases
+          name: ${{ needs.package.outputs.cursor-releases-artifact-name }}
           path: ${{ runner.temp }}/cursor-app-releases
+      - name: Verify Windows installer wait and diagnostic contracts
+        if: runner.os == 'Windows'
+        timeout-minutes: 5
+        shell: pwsh
+        run: node --test scripts/ci/cursor/cursor-app-windows-check.test.mjs scripts/ci/cursor/cursor-app-windows-installer-diagnostics.test.mjs
       - name: Verify Cursor package lifecycle and saved account
         shell: bash
         run: |
@@ -425,25 +800,292 @@ jobs:
           esac
           node "$entrypoint" "$1" "$RUNNER_TEMP/cursor-app-report" \
             "$RUNNER_TEMP/cursor-app-releases/cursor-app-releases.json" "$CURSOR_RELEASE" "$CURSOR_NODE"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: cursor-lifecycle-${{ matrix.os }}-${{ matrix.channel }}-node-${{ matrix.node }}-report
+          name: cursor-lifecycle-${{ matrix.os }}-${{ matrix.channel }}-node-${{ matrix.node }}-report-attempt${{ github.run_attempt }}
           path: ${{ runner.temp }}/cursor-lifecycle-report/report.json
           if-no-files-found: error
-          retention-days: 7
-      - uses: actions/upload-artifact@v4
+          retention-days: 30
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: cursor-app-${{ matrix.os }}-${{ matrix.channel }}-node-${{ matrix.node }}-report
+          name: cursor-app-${{ matrix.os }}-${{ matrix.channel }}-node-${{ matrix.node }}-report-attempt${{ github.run_attempt }}
           path: ${{ runner.temp }}/cursor-app-report/report.json
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 30
+
+  workbuddy-releases:
+    name: WorkBuddy releases
+    needs: scope
+    if: always() && !cancelled() && (github.event_name == 'pull_request' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance' || inputs.mode == 'workbuddy-download-diagnostic')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      matrix: ${{ steps.accepted.outputs.matrix || steps.releases.outputs.matrix }}
+      coverage: ${{ steps.accepted.outputs.coverage || steps.releases.outputs.coverage }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Prepare the isolated release metadata parser
+        shell: bash
+        run: |
+          deps="$RUNNER_TEMP/workbuddy-release-tools"
+          mkdir -p "$deps/user" "$deps/tmp"
+          env -i PATH="$PATH" HOME="$deps/user" TMPDIR="$deps/tmp" \
+            npm_config_cache="$deps/npm-cache" npm install --prefix "$deps" \
+            --no-save --package-lock=false --ignore-scripts --no-audit --no-fund yaml@2.9.1
+          entry="$(node -p "require.resolve('yaml', { paths: [process.argv[1]] })" "$deps")"
+          printf 'WORKBUDDY_YAML_MODULE=%s\n' "$entry" >> "$GITHUB_ENV"
+      - name: Verify WorkBuddy and shared native test contracts
+        run: node --test scripts/ci/codebuddy-workbuddy/codebuddy-*.test.mjs scripts/ci/codebuddy-workbuddy/workbuddy-*.test.mjs
+      # Every run verifies the contracts above. A pull request that selects WorkBuddy runs the pinned baseline and accepted
+      # releases from the client acceptance manifest and never queries the official feeds; other runs resolve latest.
+      - name: Read the pinned WorkBuddy acceptance releases for this pull request
+        if: github.event_name == 'pull_request' && needs.scope.outputs.workbuddy == 'true'
+        id: accepted
+        run: node scripts/ci/codebuddy-workbuddy/workbuddy-release-matrix.mjs accepted
+      - name: Resolve each platform's latest release once
+        if: github.event_name != 'pull_request'
+        id: releases
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: node scripts/ci/codebuddy-workbuddy/workbuddy-release-matrix.mjs resolve
+
+  workbuddy-native:
+    name: WorkBuddy native (${{ matrix.os }}, Node ${{ matrix.node }}, ${{ matrix.release.channel }}, ${{ matrix.release.desktopVersion }})
+    needs: [scope, package, workbuddy-releases]
+    if: always() && !cancelled() && needs.package.outputs.artifact-ready == 'true' && needs.workbuddy-releases.result == 'success' && (needs.scope.outputs.workbuddy == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance' || inputs.mode == 'workbuddy-download-diagnostic')
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.workbuddy-releases.outputs.matrix) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    # Only on the compatibility monitor may a cell marked deferred fail without failing the run; its result job still
+    # classifies the cell, and release acceptance still requires every cell to succeed.
+    continue-on-error: ${{ github.event_name == 'schedule' && matrix.release.deferred == true }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.nodeVersion }}
+          package-manager-cache: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: ${{ needs.package.outputs.package-artifact-name }}
+          path: dist/npm/tarballs
+      - name: Verify platform-specific WorkBuddy test contracts
+        shell: bash
+        env:
+          TMPDIR: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: node --test scripts/ci/codebuddy-workbuddy/workbuddy-*.test.mjs
+      - name: Validate the frozen release for this runner
+        shell: bash
+        env:
+          RELEASE_JSON: ${{ toJSON(matrix.release) }}
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { writeFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          import { validateRelease } from './scripts/ci/codebuddy-workbuddy/workbuddy-release-matrix.mjs';
+          const platforms = { linux: 'linux-x64-deb', darwin: 'darwin-arm64', win32: 'win32-x64-user' };
+          assert.equal(process.arch, process.platform === 'darwin' ? 'arm64' : 'x64');
+          const release = validateRelease(JSON.parse(process.env.RELEASE_JSON), platforms[process.platform]);
+          writeFileSync(join(process.env.RUNNER_TEMP, 'workbuddy-release.json'), JSON.stringify(release));
+          NODE
+      - name: Acquire the selected official WorkBuddy image
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          mkdir "$RUNNER_TEMP/workbuddy-bundle"
+          bash scripts/ci/codebuddy-workbuddy/workbuddy-macos-bundle-check.sh "$RUNNER_TEMP/workbuddy-bundle" arm64 \
+            "$RUNNER_TEMP/workbuddy-release.json" > "$RUNNER_TEMP/workbuddy-bundle.json"
+      - name: Open the verified archive and validate the official application
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          archive_name="$(node -e 'const f = require(process.argv[1]).file; if (!["WorkBuddy.dmg", "WorkBuddy.zip"].includes(f)) process.exit(1); process.stdout.write(f);' "$RUNNER_TEMP/workbuddy-bundle.json")"
+          image="$RUNNER_TEMP/workbuddy-bundle/$archive_name"
+          mountpoint="$RUNNER_TEMP/workbuddy-bundle/mounted"
+          if [[ "$archive_name" == WorkBuddy.dmg ]]; then
+            spctl --assess --type open --context context:primary-signature "$image" \
+              > "$RUNNER_TEMP/workbuddy-bundle/image-assessment.log" 2>&1
+            hdiutil attach -readonly -nobrowse -noautoopen -mountpoint "$mountpoint" "$image" \
+              > "$RUNNER_TEMP/workbuddy-bundle/mount.log" 2>&1
+            echo 'WORKBUDDY_IMAGE_ATTACHED=true' >> "$GITHUB_ENV"
+          else
+            mkdir "$mountpoint"
+            ditto -x -k "$image" "$mountpoint" > "$RUNNER_TEMP/workbuddy-bundle/extract.log" 2>&1
+          fi
+          app="$mountpoint/WorkBuddy.app"
+          [[ -d "$app" && ! -L "$app" ]]
+          codesign --verify --deep --strict --all-architectures \
+            --test-requirement '=identifier "com.tencent.workbuddy.mac" and anchor apple generic and certificate leaf[subject.OU] = "FN2V63AD2J"' \
+            "$app" > "$RUNNER_TEMP/workbuddy-bundle/signature.log" 2>&1
+          spctl --assess --type execute "$app" \
+            > "$RUNNER_TEMP/workbuddy-bundle/application-assessment.log" 2>&1
+          product_version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")"
+          node --input-type=module - "$app" "$product_version" <<'NODE'
+          import assert from 'node:assert/strict';
+          import { readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          const release = JSON.parse(readFileSync(join(process.env.RUNNER_TEMP, 'workbuddy-release.json'), 'utf8'));
+          assert.equal(process.argv[3], release.productVersion);
+          const cli = join(process.argv[2], 'Contents/Resources/app.asar.unpacked/cli');
+          for (const name of ['package.json', 'bin/codebuddy']) {
+            const path = join(cli, name);
+            assert.equal(realpathSync(path), path);
+            assert.ok(statSync(path).isFile());
+          }
+          const metadata = JSON.parse(readFileSync(join(cli, 'package.json'), 'utf8'));
+          assert.equal(metadata.publishConfig?.customPackage?.name, '@tencent-ai/codebuddy-code');
+          assert.equal(metadata.bin?.codebuddy, './bin/codebuddy');
+          const runtime = metadata.publishConfig?.customPackage?.version;
+          assert.match(runtime, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/);
+          assert.ok(!/[\r\n]/.test(runtime));
+          if (release.runtimeVersion !== null) assert.equal(runtime, release.runtimeVersion);
+          const reportPath = join(process.env.RUNNER_TEMP, 'workbuddy-bundle.json');
+          const report = JSON.parse(readFileSync(reportPath, 'utf8'));
+          report.runtimeVersion = runtime;
+          report.command = 'mounted/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy';
+          writeFileSync(reportPath, JSON.stringify(report));
+          NODE
+      - name: Acquire and extract the selected official Linux package
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          WORKBUDDY_DOWNLOAD_DIAGNOSTIC_DIR: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'workbuddy-download-diagnostic' && format('{0}/workbuddy-download-diagnostic', runner.temp) || '' }}
+        run: |
+          mkdir "$RUNNER_TEMP/workbuddy-bundle"
+          bash scripts/ci/codebuddy-workbuddy/workbuddy-linux-bundle-check.sh "$RUNNER_TEMP/workbuddy-bundle" x64 \
+            "$RUNNER_TEMP/workbuddy-release.json" > "$RUNNER_TEMP/workbuddy-bundle.json"
+      - name: Retain Linux download evidence for manual diagnosis
+        if: always() && runner.os == 'Linux' && github.event_name == 'workflow_dispatch' && inputs.mode == 'workbuddy-download-diagnostic'
+        uses: actions/upload-artifact@v7
+        with:
+          name: workbuddy-linux-download-node-${{ matrix.node }}-${{ matrix.release.channel }}-attempt${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/workbuddy-download-diagnostic/WorkBuddy.deb
+            ${{ runner.temp }}/workbuddy-download-diagnostic/download.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
+      - name: Acquire and extract the signed official Windows package
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $destination = Join-Path $env:RUNNER_TEMP 'workbuddy-bundle'
+          New-Item -ItemType Directory -Path $destination | Out-Null
+          $report = & ./scripts/ci/codebuddy-workbuddy/workbuddy-windows-bundle-check.ps1 -Destination $destination -ReleaseFile (Join-Path $env:RUNNER_TEMP 'workbuddy-release.json')
+          if ($LASTEXITCODE -ne 0) { throw 'WorkBuddy package acquisition failed.' }
+          $report | Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'workbuddy-bundle.json') -Encoding utf8
+      - name: Record the verified bundled runtime
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import { appendFileSync, readFileSync, realpathSync } from 'node:fs';
+          import { isAbsolute, join, relative, resolve } from 'node:path';
+          const root = realpathSync(join(process.env.RUNNER_TEMP, 'workbuddy-bundle'));
+          const report = JSON.parse(readFileSync(join(process.env.RUNNER_TEMP, 'workbuddy-bundle.json'), 'utf8'));
+          assert.match(report.runtimeVersion, /^\d+\.\d+\.\d+$/);
+          assert.match(report.desktopVersion, /^\d+\.\d+\.\d+\.\d+$/);
+          assert.equal(typeof report.command, 'string');
+          assert.ok(!isAbsolute(report.command));
+          const command = realpathSync(resolve(root, report.command));
+          const local = relative(root, command);
+          assert.ok(local && !isAbsolute(local) && local !== '..' && !local.startsWith('../') && !local.startsWith('..\\'));
+          assert.ok(!/[\r\n]/.test(command));
+          appendFileSync(process.env.GITHUB_ENV, `WORKBUDDY_BUNDLED_COMMAND=${command}\nWORKBUDDY_RUNTIME_VERSION=${report.runtimeVersion}\n`);
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY,
+            `Official desktop **${report.desktopVersion}** / bundled CLI **${report.runtimeVersion}** (${report.arch}).\n\n`);
+          NODE
+      - name: Record the verified WorkBuddy versions for the release record
+        shell: bash
+        env:
+          WORKBUDDY_OS: ${{ matrix.os }}
+          WORKBUDDY_NODE: ${{ matrix.node }}
+          WORKBUDDY_CHANNEL: ${{ matrix.release.channel }}
+        run: |
+          node --input-type=module <<'NODE'
+          import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+          import { join } from 'node:path';
+          const temp = process.env.RUNNER_TEMP;
+          const bundle = JSON.parse(readFileSync(join(temp, 'workbuddy-bundle.json'), 'utf8'));
+          const release = JSON.parse(readFileSync(join(temp, 'workbuddy-release.json'), 'utf8'));
+          // Linux records the downloaded hash and only warns on a difference; macOS and Windows stop before use unless it matches.
+          // An accepted Linux release must also match the SHA-256 its acceptance recorded, so the suites below never run it.
+          const actual = String(bundle.sha256).toLowerCase();
+          const status = actual === release.sha256 ? 'match' : process.env.WORKBUDDY_CHANNEL === 'accepted' ? 'mismatch' : 'warning';
+          mkdirSync(join(temp, 'workbuddy-report'), { recursive: true });
+          writeFileSync(join(temp, 'workbuddy-report', 'report.json'), `${JSON.stringify({ schemaVersion: 2,
+            runId: process.env.GITHUB_RUN_ID, runAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+            os: process.env.WORKBUDDY_OS, node: process.env.WORKBUDDY_NODE, channel: process.env.WORKBUDDY_CHANNEL,
+            desktopVersion: bundle.desktopVersion, runtimeVersion: bundle.runtimeVersion, arch: bundle.arch,
+            source: new URL(release.url).host,
+            sha256: { reference: release.sha256, actual, status } }, null, 2)}\n`);
+          if (status === 'mismatch') throw new Error('WORKBUDDY_ACCEPTED_HASH_MISMATCH');
+          NODE
+      - name: Run strict native WorkBuddy suites with isolated local services (macOS/Linux)
+        id: native-posix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          test_root="$RUNNER_TEMP/workbuddy-diagnostic"
+          mkdir -p "$test_root/user" "$test_root/tmp"
+          env -i PATH="$PATH" HOME="$test_root/user" \
+            MEMORAX_CODE_HOME="$test_root/state" \
+            npm_config_cache="$test_root/npm-cache" TMPDIR="$test_root/tmp" \
+            node scripts/ci/codebuddy-workbuddy/workbuddy-e2e.mjs dist/npm/tarballs "$WORKBUDDY_BUNDLED_COMMAND" "$WORKBUDDY_RUNTIME_VERSION" 0.1.18
+      - name: Verify shared Windows user PATH cleanup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/ci/shared/codex-install-user-path.test.ps1
+      - name: Run strict native WorkBuddy suites with isolated local services (Windows)
+        id: native-windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: |
+          & node scripts/ci/codebuddy-workbuddy/workbuddy-e2e.mjs dist/npm/tarballs $env:WORKBUDDY_BUNDLED_COMMAND $env:WORKBUDDY_RUNTIME_VERSION 0.1.18
+          if ($LASTEXITCODE -ne 0) { throw 'WorkBuddy native suites failed; isolated state retained.' }
+      - name: Unmount the owned WorkBuddy image
+        if: always() && runner.os == 'macOS' && env.WORKBUDDY_IMAGE_ATTACHED == 'true'
+        shell: bash
+        run: hdiutil detach "$RUNNER_TEMP/workbuddy-bundle/mounted"
+      - name: Record the acceptance boundary
+        if: always()
+        env:
+          NATIVE_OUTCOME: ${{ runner.os == 'Windows' && steps.native-windows.outcome || steps.native-posix.outcome }}
+        shell: bash
+        run: |
+          printf 'WorkBuddy %s native checks: **%s**.\n\n' "$RUNNER_OS" "$NATIVE_OUTCOME" >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n' 'Installation, setup interruption, Memory/Skill, four permission cases and Repo Memory worker configuration checks. The two explicit runtime interrupt cases are excluded and remain separate strict manual diagnostics. General runtime interruption, desktop UI and valid Repo Memory generation are not established. This result covers only the selected verified package and current runner; the entire platform, release and Node matrix must pass for an overall result.' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: workbuddy-report-${{ matrix.os }}-${{ matrix.release.channel }}-node-${{ matrix.node }}-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/workbuddy-report/report.json
+          if-no-files-found: warn
+          retention-days: 30
 
   opencode-initialization-diagnostic:
     name: OpenCode Windows initialization diagnostic (not functional acceptance)
     needs: package
-    if: github.event_name == 'workflow_dispatch' && inputs.diagnose_opencode_initialization && needs.package.outputs.artifact-ready == 'true'
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'opencode-initialization-diagnostic' && needs.package.outputs.artifact-ready == 'true'
     runs-on: windows-2025
     timeout-minutes: 25
     steps:
@@ -452,11 +1094,11 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version-file: .node-version
           package-manager-cache: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
-          name: memorax-code-package
+          name: ${{ needs.package.outputs.package-artifact-name }}
           path: dist/npm/tarballs
       - name: Compare initialization locations and path lengths with a warm offline cache
         shell: pwsh
@@ -500,96 +1142,333 @@ jobs:
           Remove-Item -LiteralPath $root -Recurse -Force
 
   opencode-result:
-    name: OpenCode functional result
-    if: always() && !(github.event_name == 'workflow_dispatch' && (inputs.check_deepseek || inputs.diagnose_opencode_initialization))
-    needs: [package, opencode]
+    # Only pull request runs report the formal result names, and a pull request skips the result of a client it does not
+    # select; the compatibility monitor and manual runs add their purpose. Main pushes skip these jobs; the (main push)
+    # suffix keeps even their skipped placeholders from carrying a formal name.
+    name: ${{ github.event_name == 'pull_request' && 'OpenCode functional result' || format('OpenCode functional result ({0})', github.event_name == 'push' && 'main push' || github.event_name == 'schedule' && 'compatibility monitor' || inputs.mode) }}
+    if: always() && (needs.scope.outputs.opencode == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance')
+    needs: [scope, package, opencode]
     runs-on: ubuntu-24.04
-    timeout-minutes: 2
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
     steps:
-      - name: Require the package and entire OpenCode matrix to succeed
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Read this attempt's jobs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The listing is written only after every page was read; a failed query leaves a marker, never a listing.
+          api="$RUNNER_TEMP/client-api"
+          mkdir -p "$api"
+          if gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
+            > "$api/attempt-$GITHUB_RUN_ATTEMPT.partial"; then
+            mv "$api/attempt-$GITHUB_RUN_ATTEMPT.partial" "$api/attempt-$GITHUB_RUN_ATTEMPT.json"
+          else
+            rm -f "$api/attempt-$GITHUB_RUN_ATTEMPT.partial"
+            : > "$api/attempt-$GITHUB_RUN_ATTEMPT.failed"
+          fi
+      - name: Require the package and every OpenCode cell to pass
         shell: bash
         env:
           PACKAGE_RESULT: ${{ needs.package.result }}
           OPENCODE_RESULT: ${{ needs.opencode.result }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
           printf 'Package: **%s**\n\nOpenCode matrix: **%s**\n' "$PACKAGE_RESULT" "$OPENCODE_RESULT" >> "$GITHUB_STEP_SUMMARY"
-          if [[ "$PACKAGE_RESULT" != success || "$OPENCODE_RESULT" != success ]]; then
-            echo '::error::All package and OpenCode matrix jobs must succeed. Failed, cancelled or skipped dependencies do not pass this check.'
+          if [[ "$PACKAGE_RESULT" != success ]]; then
+            echo '::error::The package job must succeed. Failed, cancelled or skipped dependencies do not pass this check.'
             exit 1
           fi
+          # The cells decide the compatibility monitor; every other run still requires the entire matrix to succeed.
+          node scripts/ci/shared/client-result.mjs decide --client opencode --needs "$NEEDS_JSON" --api-dir "$RUNNER_TEMP/client-api" \
+            --output "$RUNNER_TEMP/client-result/client-result-opencode-attempt$GITHUB_RUN_ATTEMPT.json" --github-summary "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: client-result-opencode-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/client-result/client-result-opencode-attempt${{ github.run_attempt }}.json
+          if-no-files-found: warn
+          retention-days: 30
 
   claude-result:
-    name: Claude native smoke result
-    if: always() && !(github.event_name == 'workflow_dispatch' && (inputs.check_deepseek || inputs.diagnose_opencode_initialization))
-    needs: [package, claude]
+    name: ${{ github.event_name == 'pull_request' && 'Claude native smoke result' || format('Claude native smoke result ({0})', github.event_name == 'push' && 'main push' || github.event_name == 'schedule' && 'compatibility monitor' || inputs.mode) }}
+    if: always() && (needs.scope.outputs.claude == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance')
+    needs: [scope, package, claude]
     runs-on: ubuntu-24.04
-    timeout-minutes: 2
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
     steps:
-      - name: Require the package and entire Claude native smoke matrix to succeed
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Read this attempt's jobs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The listing is written only after every page was read; a failed query leaves a marker, never a listing.
+          api="$RUNNER_TEMP/client-api"
+          mkdir -p "$api"
+          if gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
+            > "$api/attempt-$GITHUB_RUN_ATTEMPT.partial"; then
+            mv "$api/attempt-$GITHUB_RUN_ATTEMPT.partial" "$api/attempt-$GITHUB_RUN_ATTEMPT.json"
+          else
+            rm -f "$api/attempt-$GITHUB_RUN_ATTEMPT.partial"
+            : > "$api/attempt-$GITHUB_RUN_ATTEMPT.failed"
+          fi
+      - name: Require the package and every Claude native smoke cell to pass
         shell: bash
         env:
           PACKAGE_RESULT: ${{ needs.package.result }}
           CLAUDE_RESULT: ${{ needs.claude.result }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
           printf 'Package: **%s**\n\nClaude native smoke matrix: **%s**\n\nShared lifecycle, setup interruption, native memory, Skill, permission and Repo Memory global-configuration checks; client-specific coverage remains bounded.\n' "$PACKAGE_RESULT" "$CLAUDE_RESULT" >> "$GITHUB_STEP_SUMMARY"
-          if [[ "$PACKAGE_RESULT" != success || "$CLAUDE_RESULT" != success ]]; then
-            echo '::error::All package and Claude native smoke matrix jobs must succeed. Failed, cancelled or skipped dependencies do not pass this check.'
+          if [[ "$PACKAGE_RESULT" != success ]]; then
+            echo '::error::The package job must succeed. Failed, cancelled or skipped dependencies do not pass this check.'
             exit 1
           fi
+          # The cells decide the compatibility monitor; every other run still requires the entire matrix to succeed.
+          node scripts/ci/shared/client-result.mjs decide --client claude --needs "$NEEDS_JSON" --api-dir "$RUNNER_TEMP/client-api" \
+            --output "$RUNNER_TEMP/client-result/client-result-claude-attempt$GITHUB_RUN_ATTEMPT.json" --github-summary "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: client-result-claude-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/client-result/client-result-claude-attempt${{ github.run_attempt }}.json
+          if-no-files-found: warn
+          retention-days: 30
 
   codebuddy-result:
-    name: CodeBuddy functional result
-    if: always() && !(github.event_name == 'workflow_dispatch' && (inputs.check_deepseek || inputs.diagnose_opencode_initialization))
-    needs: [package, codebuddy]
+    name: ${{ github.event_name == 'pull_request' && 'CodeBuddy functional result' || format('CodeBuddy functional result ({0})', github.event_name == 'push' && 'main push' || github.event_name == 'schedule' && 'compatibility monitor' || inputs.mode) }}
+    if: always() && (needs.scope.outputs.codebuddy == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance')
+    needs: [scope, package, codebuddy]
     runs-on: ubuntu-24.04
-    timeout-minutes: 2
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
     steps:
-      - name: Require the package and entire CodeBuddy functional matrix to succeed
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Read this attempt's jobs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The listing is written only after every page was read; a failed query leaves a marker, never a listing.
+          api="$RUNNER_TEMP/client-api"
+          mkdir -p "$api"
+          if gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
+            > "$api/attempt-$GITHUB_RUN_ATTEMPT.partial"; then
+            mv "$api/attempt-$GITHUB_RUN_ATTEMPT.partial" "$api/attempt-$GITHUB_RUN_ATTEMPT.json"
+          else
+            rm -f "$api/attempt-$GITHUB_RUN_ATTEMPT.partial"
+            : > "$api/attempt-$GITHUB_RUN_ATTEMPT.failed"
+          fi
+      - name: Require the package and every CodeBuddy functional cell to pass
         shell: bash
         env:
           PACKAGE_RESULT: ${{ needs.package.result }}
           CODEBUDDY_RESULT: ${{ needs.codebuddy.result }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
           printf 'Package: **%s**\n\nCodeBuddy functional matrix: **%s**\n\nShared lifecycle, setup interruption, native memory, Skill, permission and Repo Memory global-configuration checks; WorkBuddy is excluded and client-specific coverage remains bounded.\n' "$PACKAGE_RESULT" "$CODEBUDDY_RESULT" >> "$GITHUB_STEP_SUMMARY"
-          if [[ "$PACKAGE_RESULT" != success || "$CODEBUDDY_RESULT" != success ]]; then
-            echo '::error::All package and CodeBuddy functional matrix jobs must succeed. Failed, cancelled or skipped dependencies do not pass this check.'
+          if [[ "$PACKAGE_RESULT" != success ]]; then
+            echo '::error::The package job must succeed. Failed, cancelled or skipped dependencies do not pass this check.'
             exit 1
           fi
+          # The cells decide the compatibility monitor; every other run still requires the entire matrix to succeed.
+          node scripts/ci/shared/client-result.mjs decide --client codebuddy --needs "$NEEDS_JSON" --api-dir "$RUNNER_TEMP/client-api" \
+            --output "$RUNNER_TEMP/client-result/client-result-codebuddy-attempt$GITHUB_RUN_ATTEMPT.json" --github-summary "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: client-result-codebuddy-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/client-result/client-result-codebuddy-attempt${{ github.run_attempt }}.json
+          if-no-files-found: warn
+          retention-days: 30
 
   cursor-app-result:
-    name: Cursor App canary result
-    if: always() && !(github.event_name == 'workflow_dispatch' && (inputs.check_deepseek || inputs.diagnose_opencode_initialization))
-    needs: [package, cursor-app]
+    name: ${{ github.event_name == 'pull_request' && 'Cursor App canary result' || format('Cursor App canary result ({0})', github.event_name == 'push' && 'main push' || github.event_name == 'schedule' && 'compatibility monitor' || inputs.mode) }}
+    if: always() && (needs.scope.outputs.cursor == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance')
+    needs: [scope, package, cursor-app]
     runs-on: ubuntu-24.04
-    timeout-minutes: 2
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
     steps:
-      - name: Require the package and Cursor App canary to succeed
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Read this attempt's jobs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The listing is written only after every page was read; a failed query leaves a marker, never a listing.
+          api="$RUNNER_TEMP/client-api"
+          mkdir -p "$api"
+          if gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
+            > "$api/attempt-$GITHUB_RUN_ATTEMPT.partial"; then
+            mv "$api/attempt-$GITHUB_RUN_ATTEMPT.partial" "$api/attempt-$GITHUB_RUN_ATTEMPT.json"
+          else
+            rm -f "$api/attempt-$GITHUB_RUN_ATTEMPT.partial"
+            : > "$api/attempt-$GITHUB_RUN_ATTEMPT.failed"
+          fi
+      - name: Require the package and every Cursor App canary cell to pass
         shell: bash
         env:
           PACKAGE_RESULT: ${{ needs.package.result }}
           CURSOR_RESULT: ${{ needs.cursor-app.result }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
-          printf 'Package: **%s**\n\nCursor App Linux/macOS/Windows matrix: **%s**.\n\nUbuntu 24.04, macOS 15 and Windows 2025, baseline/latest on Node 24 and Linux baseline on Node 22. Eleven native App runs per cell cover repeated-prompt follow-up, cross-workspace isolation, App restart/resume, explicit Skill Search/Add, Shell denial, pending-Shell interruption and same-session recovery. A real foreground Hook also delegates a Repo Memory job through native Task: the managed child inherits model selection, claims the job and finishes without a bundle, requiring artifact_validation_failed, no published bundle, exited lease guard and no child automatic Add. Nine completed foreground turns produce exactly nine automatic Adds; the two explicit Skill operations bring the total Memory requests to eleven. Scripted tool requests do not validate model-driven Skill selection or successful Repo Memory generation. macOS and Windows use signature-verified Apps, isolated homes and local fixtures on fresh GitHub-hosted runners, without an additional Seatbelt or WFP prerequisite. Chromium sandboxing remains enabled. This matrix does not validate real login, OS credential-store isolation, hosted models or full functional coverage.\n' "$PACKAGE_RESULT" "$CURSOR_RESULT" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Package: **%s**\n\nCursor App Linux/macOS/Windows matrix: **%s**.\n\nUbuntu 24.04, macOS 15 and Windows 2025, baseline plus the pinned accepted release (pull requests) or official latest (compatibility monitor and release acceptance) on Node 24 and Linux baseline on Node 22. Eleven native App runs per cell cover repeated-prompt follow-up, cross-workspace isolation, App restart/resume, explicit Skill Search/Add, Shell denial, pending-Shell interruption and same-session recovery. A real foreground Hook also delegates a Repo Memory job through native Task: the managed child inherits model selection, claims the job and finishes without a bundle, requiring artifact_validation_failed, no published bundle, exited lease guard and no child automatic Add. Nine completed foreground turns produce exactly nine automatic Adds; the two explicit Skill operations bring the total Memory requests to eleven. Scripted tool requests do not validate model-driven Skill selection or successful Repo Memory generation. macOS and Windows use signature-verified Apps, isolated homes and local fixtures on fresh GitHub-hosted runners, without an additional Seatbelt or WFP prerequisite. Chromium sandboxing remains enabled. This matrix does not validate real login, OS credential-store isolation, hosted models or full functional coverage.\n' "$PACKAGE_RESULT" "$CURSOR_RESULT" >> "$GITHUB_STEP_SUMMARY"
           printf '\nEvery cell also requires the isolated MemoraX package lifecycle check: fresh/repeat setup, uninstall/reinstall, real previous-version upgrade, download and replacement failure recovery, saved account/configuration retention, and four setup interruption stages: after-config-write, before-backend-start, after-backend-start, saved-account-key-cancel. The setup checkpoints use a real PTY, the existing Backend lock and a test-only Node child gate; retries require no account input and verify complete Cursor integration plus a local saved-account Search. This does not simulate power loss or start the Cursor App.\n' >> "$GITHUB_STEP_SUMMARY"
-          if [[ "$PACKAGE_RESULT" != success || "$CURSOR_RESULT" != success ]]; then
-            echo '::error::The package and Cursor App canary must both succeed. Failed, cancelled or skipped dependencies do not pass this check.'
+          if [[ "$PACKAGE_RESULT" != success ]]; then
+            echo '::error::The package job must succeed. Failed, cancelled or skipped dependencies do not pass this check.'
             exit 1
           fi
+          # The cells decide the compatibility monitor; every other run still requires the entire matrix to succeed.
+          node scripts/ci/shared/client-result.mjs decide --client cursor --needs "$NEEDS_JSON" --api-dir "$RUNNER_TEMP/client-api" \
+            --output "$RUNNER_TEMP/client-result/client-result-cursor-attempt$GITHUB_RUN_ATTEMPT.json" --github-summary "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: client-result-cursor-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/client-result/client-result-cursor-attempt${{ github.run_attempt }}.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  workbuddy-result:
+    # Only pull request runs report the formal result name, and a pull request that does not select WorkBuddy skips it;
+    # the compatibility monitor and manual runs add their purpose. Main pushes skip this job; the (main push) suffix keeps
+    # even its skipped placeholder from carrying the formal name.
+    name: ${{ github.event_name == 'pull_request' && 'WorkBuddy functional result' || format('WorkBuddy functional result ({0})', github.event_name == 'push' && 'main push' || github.event_name == 'schedule' && 'compatibility monitor' || inputs.mode) }}
+    if: always() && (needs.scope.outputs.workbuddy == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance' || inputs.mode == 'workbuddy-download-diagnostic')
+    needs: [scope, package, workbuddy-releases, workbuddy-native]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Read this attempt's jobs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The listing is written only after every page was read; a failed query leaves a marker, never a listing.
+          api="$RUNNER_TEMP/client-api"
+          mkdir -p "$api"
+          if gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
+            > "$api/attempt-$GITHUB_RUN_ATTEMPT.partial"; then
+            mv "$api/attempt-$GITHUB_RUN_ATTEMPT.partial" "$api/attempt-$GITHUB_RUN_ATTEMPT.json"
+          else
+            rm -f "$api/attempt-$GITHUB_RUN_ATTEMPT.partial"
+            : > "$api/attempt-$GITHUB_RUN_ATTEMPT.failed"
+          fi
+      - name: Require the package, release resolution and every WorkBuddy cell to pass
+        shell: bash
+        env:
+          PACKAGE_RESULT: ${{ needs.package.result }}
+          RELEASES_RESULT: ${{ needs.workbuddy-releases.result }}
+          WORKBUDDY_RESULT: ${{ needs.workbuddy-native.result }}
+          WORKBUDDY_COVERAGE: ${{ needs.workbuddy-releases.outputs.coverage }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          printf 'Package: **%s**\n\nWorkBuddy releases: **%s**\n\nWorkBuddy matrix: **%s**\n\n%s\n\nThe two explicit runtime interrupt cases remain separate strict manual diagnostics.\n' "$PACKAGE_RESULT" "$RELEASES_RESULT" "$WORKBUDDY_RESULT" "${WORKBUDDY_COVERAGE:-Coverage unavailable.}" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$PACKAGE_RESULT" != success || "$RELEASES_RESULT" != success ]]; then
+            echo '::error::The package and release resolution must succeed. Failed, cancelled or skipped dependencies do not pass this check.'
+            exit 1
+          fi
+          if [[ -z "$WORKBUDDY_COVERAGE" ]]; then
+            echo '::error::WorkBuddy release coverage is missing.'
+            exit 1
+          fi
+          # The cells decide the compatibility monitor; every other run still requires the entire matrix to succeed.
+          node scripts/ci/shared/client-result.mjs decide --client workbuddy --needs "$NEEDS_JSON" --api-dir "$RUNNER_TEMP/client-api" \
+            --output "$RUNNER_TEMP/client-result/client-result-workbuddy-attempt$GITHUB_RUN_ATTEMPT.json" --github-summary "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: client-result-workbuddy-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/client-result/client-result-workbuddy-attempt${{ github.run_attempt }}.json
+          if-no-files-found: warn
+          retention-days: 30
 
   functional-result:
-    name: ${{ github.event_name == 'workflow_dispatch' && inputs.check_deepseek && 'Codex provider-only result' || 'Codex functional result' }}
-    if: always() && !inputs.diagnose_opencode_initialization
-    needs: [package, install, provider]
+    name: ${{ github.event_name == 'pull_request' && 'Codex functional result' || github.event_name == 'workflow_dispatch' && inputs.mode == 'provider-only' && 'Codex provider-only result' || format('Codex functional result ({0})', github.event_name == 'push' && 'main push' || github.event_name == 'schedule' && 'compatibility monitor' || inputs.mode) }}
+    if: always() && (needs.scope.outputs.codex == 'true' || github.event_name == 'schedule' || inputs.mode == 'release-acceptance' || inputs.mode == 'provider-only')
+    needs: [scope, package, install, provider]
     runs-on: ubuntu-24.04
-    timeout-minutes: 2
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
     steps:
-      - name: Require every job for the requested scope to succeed
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Read this attempt's jobs
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The listing is written only after every page was read; a failed query leaves a marker, never a listing.
+          api="$RUNNER_TEMP/client-api"
+          mkdir -p "$api"
+          if gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$GITHUB_RUN_ATTEMPT/jobs?per_page=100" \
+            > "$api/attempt-$GITHUB_RUN_ATTEMPT.partial"; then
+            mv "$api/attempt-$GITHUB_RUN_ATTEMPT.partial" "$api/attempt-$GITHUB_RUN_ATTEMPT.json"
+          else
+            rm -f "$api/attempt-$GITHUB_RUN_ATTEMPT.partial"
+            : > "$api/attempt-$GITHUB_RUN_ATTEMPT.failed"
+          fi
+      - name: Require every job for the requested scope to pass
         shell: bash
         env:
           PACKAGE_RESULT: ${{ needs.package.result }}
           INSTALL_RESULT: ${{ needs.install.result }}
           PROVIDER_RESULT: ${{ needs.provider.result }}
-          PROVIDER_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.check_deepseek }}
+          PROVIDER_ONLY: ${{ github.event_name == 'workflow_dispatch' && inputs.mode == 'provider-only' }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
         run: |
           if [[ "$PROVIDER_ONLY" == true ]]; then
             printf 'Provider-only check: **%s**. This run does not validate the functional matrix.\n' "$PROVIDER_RESULT" >> "$GITHUB_STEP_SUMMARY"
@@ -597,13 +1476,134 @@ jobs:
             exit
           fi
           printf 'Package: **%s**\n\nCodex matrix: **%s**\n' "$PACKAGE_RESULT" "$INSTALL_RESULT" >> "$GITHUB_STEP_SUMMARY"
-          if [[ "$PACKAGE_RESULT" != success || "$INSTALL_RESULT" != success ]]; then
-            echo '::error::All package and Codex matrix jobs must succeed. Failed, cancelled or skipped dependencies do not pass this check.'
+          if [[ "$PACKAGE_RESULT" != success ]]; then
+            echo '::error::The package job must succeed. Failed, cancelled or skipped dependencies do not pass this check.'
+            exit 1
+          fi
+          # The cells decide the compatibility monitor; every other run still requires the entire matrix to succeed.
+          node scripts/ci/shared/client-result.mjs decide --client codex --needs "$NEEDS_JSON" --api-dir "$RUNNER_TEMP/client-api" \
+            --output "$RUNNER_TEMP/client-result/client-result-codex-attempt$GITHUB_RUN_ATTEMPT.json" --github-summary "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always() && inputs.mode != 'provider-only'
+        with:
+          name: client-result-codex-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/client-result/client-result-codex-attempt${{ github.run_attempt }}.json
+          if-no-files-found: warn
+          retention-days: 30
+
+  pr-acceptance:
+    # The pull request merge gate. A client the scope does not select is reported as not validated, never as passed.
+    name: ${{ github.event_name == 'pull_request' && 'PR acceptance' || format('PR acceptance ({0})', github.event_name == 'push' && 'main push' || github.event_name == 'schedule' && 'compatibility monitor' || inputs.mode) }}
+    if: always() && github.event_name == 'pull_request'
+    needs: [scope, package, workbuddy-releases, functional-result, opencode-result, claude-result, codebuddy-result, cursor-app-result, workbuddy-result]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Require the scope, package, contracts and every selected client to succeed
+        shell: bash
+        env:
+          SCOPE_RESULT: ${{ needs.scope.result }}
+          PACKAGE_RESULT: ${{ needs.package.result }}
+          CONTRACTS_RESULT: ${{ needs.workbuddy-releases.result }}
+          CODEX_SELECTED: ${{ needs.scope.outputs.codex }}
+          CODEX_RESULT: ${{ needs.functional-result.result }}
+          OPENCODE_SELECTED: ${{ needs.scope.outputs.opencode }}
+          OPENCODE_RESULT: ${{ needs.opencode-result.result }}
+          CLAUDE_SELECTED: ${{ needs.scope.outputs.claude }}
+          CLAUDE_RESULT: ${{ needs.claude-result.result }}
+          CODEBUDDY_SELECTED: ${{ needs.scope.outputs.codebuddy }}
+          CODEBUDDY_RESULT: ${{ needs.codebuddy-result.result }}
+          CURSOR_SELECTED: ${{ needs.scope.outputs.cursor }}
+          CURSOR_RESULT: ${{ needs.cursor-app-result.result }}
+          WORKBUDDY_SELECTED: ${{ needs.scope.outputs.workbuddy }}
+          WORKBUDDY_RESULT: ${{ needs.workbuddy-result.result }}
+        run: |
+          failed=0
+          printf '### PR acceptance\n\n| Check | Result |\n|---|---|\n' >> "$GITHUB_STEP_SUMMARY"
+          for check in "Native client scope=$SCOPE_RESULT" "Package=$PACKAGE_RESULT" "Contract tests (WorkBuddy releases job)=$CONTRACTS_RESULT"; do
+            printf '| %s | %s |\n' "${check%%=*}" "${check#*=}" >> "$GITHUB_STEP_SUMMARY"
+            [[ "${check#*=}" == success ]] || failed=1
+          done
+          for client in Codex=CODEX OpenCode=OPENCODE Claude=CLAUDE CodeBuddy=CODEBUDDY 'Cursor App=CURSOR' WorkBuddy=WORKBUDDY; do
+            selected_name="${client#*=}_SELECTED"
+            result_name="${client#*=}_RESULT"
+            selected="${!selected_name}"
+            result="${!result_name}"
+            if [[ "$selected" == true && "$result" == success ]]; then
+              status='selected: passed'
+            elif [[ "$selected" == false && "$result" == skipped ]]; then
+              status='not selected: this pull request does not validate it'
+            else
+              status="failed: selected '$selected', result '$result'"
+              failed=1
+            fi
+            printf '| %s | %s |\n' "${client%%=*}" "$status" >> "$GITHUB_STEP_SUMMARY"
+          done
+          if [[ "$failed" != 0 ]]; then
+            echo '::error::The scope, package and contract tests must succeed, every selected client must pass and every other client must be skipped. A skipped selected client does not pass.'
             exit 1
           fi
 
+  acceptance-refresh:
+    # The compatibility monitor proposes the update of scripts/ci/shared/client-acceptance.json that this attempt supports,
+    # for a reviewed pull request: it reads only this attempt's artifacts, never the jobs API, never commits or opens a pull
+    # request, and fails only when its own contract breaks. A missing artifact leaves its client without a candidate.
+    name: Client acceptance refresh (compatibility monitor)
+    if: always() && !cancelled() && github.event_name == 'schedule'
+    needs: [package, workbuddy-releases, functional-result, opencode-result, claude-result, codebuddy-result, cursor-app-result, workbuddy-result]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          pattern: client-result-*-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/acceptance-refresh-inputs/client-result
+          merge-multiple: true
+      - uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: native-client-inputs-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/acceptance-refresh-inputs/native-client-inputs
+      - uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: cursor-app-releases-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/acceptance-refresh-inputs/cursor-app-releases
+      - uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          pattern: cursor-app-*-latest-*-report-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/acceptance-refresh-inputs/cursor-app-reports
+      - uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          pattern: workbuddy-report-*-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/acceptance-refresh-inputs/workbuddy-reports
+      - name: Propose the client acceptance refresh
+        shell: bash
+        env:
+          WORKBUDDY_MATRIX: ${{ needs.workbuddy-releases.outputs.matrix }}
+        run: node scripts/ci/shared/client-acceptance-refresh.mjs propose --inputs "$RUNNER_TEMP/acceptance-refresh-inputs" --output "$RUNNER_TEMP/acceptance-refresh" --github-summary "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: client-acceptance-refresh-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/acceptance-refresh
+          if-no-files-found: warn
+          retention-days: 30
+
   provider:
-    if: github.event_name == 'workflow_dispatch' && inputs.check_deepseek && !inputs.diagnose_opencode_initialization
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'provider-only'
     runs-on: ubuntu-24.04
     environment: test
     timeout-minutes: 5
@@ -613,7 +1613,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v7
         with:
-          node-version: '24'
+          node-version-file: .node-version
           package-manager-cache: false
       - name: Install the pinned Codex CLI
         shell: bash
@@ -629,3 +1629,107 @@ jobs:
           LLM_MODEL: ${{ vars.LLM_MODEL }}
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
         run: node scripts/ci/codex/codex-provider-smoke.mjs "$RUNNER_TEMP/provider-cli/bin/codex"
+
+  candidate:
+    name: Release candidate
+    if: github.event_name == 'workflow_dispatch' && inputs.mode == 'release-acceptance'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      record: ${{ steps.candidate.outputs.record }}
+      docs-base-sha: ${{ steps.candidate.outputs.docs-base-sha }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      # Eligibility problems are recorded, not raised, so they never prevent the planned acceptance jobs from running.
+      - name: Record the candidate commit, version and release eligibility
+        id: candidate
+        env:
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+        run: node scripts/ci/shared/release-acceptance.mjs candidate --sha "$GITHUB_SHA" --ref "$GITHUB_REF" --expected-sha "$EXPECTED_SHA" --github-output "$GITHUB_OUTPUT" --github-summary "$GITHUB_STEP_SUMMARY"
+
+  basic-checks:
+    name: Basic checks
+    needs: candidate
+    if: always() && !cancelled() && github.event_name == 'workflow_dispatch' && inputs.mode == 'release-acceptance'
+    uses: ./.github/workflows/ci.yml
+    with:
+      purpose: release-acceptance
+      candidate-sha: ${{ github.sha }}
+      docs-base-sha: ${{ needs.candidate.outputs.docs-base-sha }}
+
+  release-result:
+    name: Release acceptance result
+    needs: [candidate, basic-checks, package, workbuddy-releases, functional-result, opencode-result, claude-result, codebuddy-result, cursor-app-result, workbuddy-result]
+    if: always() && github.event_name == 'workflow_dispatch' && inputs.mode == 'release-acceptance'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      # Collection failures leave evidence missing; the decision step then reports the acceptance as incomplete.
+      - uses: actions/download-artifact@v8
+        if: needs.package.outputs.package-artifact-id != ''
+        continue-on-error: true
+        with:
+          artifact-ids: ${{ needs.package.outputs.package-artifact-id }}
+          path: ${{ runner.temp }}/release-candidate
+      - uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          pattern: workbuddy-report-*
+          path: ${{ runner.temp }}/workbuddy-reports
+      - name: Read the candidate artifact record and every attempt's jobs
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGE_ARTIFACT_ID: ${{ needs.package.outputs.package-artifact-id }}
+        run: |
+          api="$RUNNER_TEMP/release-api"
+          mkdir -p "$api"
+          if [[ "$PACKAGE_ARTIFACT_ID" =~ ^[0-9]+$ ]] \
+            && gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$PACKAGE_ARTIFACT_ID" > "$api/artifact.partial"; then
+            mv "$api/artifact.partial" "$api/artifact.json"
+          else
+            rm -f "$api/artifact.partial"
+          fi
+          # Each attempt is written only after every page was read; a failed query leaves a marker, never a listing.
+          for (( attempt = 1; attempt <= GITHUB_RUN_ATTEMPT; attempt++ )); do
+            if gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/attempts/$attempt/jobs?per_page=100" \
+              > "$api/attempt-$attempt.partial"; then
+              mv "$api/attempt-$attempt.partial" "$api/attempt-$attempt.json"
+            else
+              rm -f "$api/attempt-$attempt.partial"
+              : > "$api/attempt-$attempt.failed"
+            fi
+          done
+      - name: Decide the release acceptance and write its record
+        shell: bash
+        env:
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: |
+          node scripts/ci/shared/release-acceptance.mjs record --package-dir "$RUNNER_TEMP/release-candidate" \
+            --workbuddy-reports "$RUNNER_TEMP/workbuddy-reports" --api-dir "$RUNNER_TEMP/release-api" \
+            --output "$RUNNER_TEMP/release-record/release-record.json" --github-summary "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: release-acceptance-record-attempt${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-record/release-record.json
+          if-no-files-found: error
+          retention-days: 90

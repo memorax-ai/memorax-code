@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 import { open, writeFile } from "node:fs/promises";
 import { pathToFileURL } from "node:url";
+import { pinNodeVersions, readAcceptance } from "../shared/client-acceptance.mjs";
 import { verifyLinuxAptReleases } from "./cursor-app-apt.mjs";
 
 const platforms = ["linux-x64", "linux-arm64", "darwin-arm64", "win32-x64-user"];
@@ -64,12 +65,13 @@ export function validateLinuxRelease(input, platform) {
   const source = resolveDownload(platform, { version: input.version, commitSha: input.commitSha, debUrl: input.url });
   check(typeof input.sha256 === "string" && input.sha256.length === 64 && hashPattern.test(input.sha256)
     && validDebVersion(input.debVersion, input.version), "CURSOR_RELEASE_LINUX_INVALID");
-  check(["baseline", "latest"].includes(input.channel), "CURSOR_RELEASE_LINUX_INVALID");
+  check(["baseline", "latest", "accepted"].includes(input.channel), "CURSOR_RELEASE_LINUX_INVALID");
   const baseline = baselineRelease(platform);
   if (source.url === baseline.url) check(input.sha256 === baseline.sha256 && input.debVersion === baseline.debVersion,
     "CURSOR_RELEASE_PIN_CONFLICT");
   const release = { ...source, channel: input.channel, sha256: input.sha256, hashSource: input.hashSource, debVersion: input.debVersion };
-  if (input.channel === "latest") {
+  // An accepted release keeps the signed apt checksum and size its acceptance verified.
+  if (input.channel !== "baseline") {
     check(input.hashSource === "official-apt-sha256" && Number.isSafeInteger(input.size) && input.size > 0
       && input.size <= 300_000_000, "CURSOR_RELEASE_LINUX_INVALID");
     release.size = input.size;
@@ -81,11 +83,20 @@ export function validateLinuxRelease(input, platform) {
 
 export function validateDesktopRelease(input, platform, channel = input?.channel) {
   check(["darwin-arm64", "win32-x64-user"].includes(platform) && input?.platform === platform
-    && input.channel === channel && ["baseline", "latest"].includes(channel));
+    && input.channel === channel && ["baseline", "latest", "accepted"].includes(channel));
   const canonical = channel === "baseline" ? baselineRelease(platform)
     : resolveDownload(platform, { version: input.version, commitSha: input.commitSha, downloadUrl: input.url });
-  check(Object.keys(canonical).every((key) => input[key] === canonical[key]));
-  return canonical;
+  // Cursor publishes no desktop checksum. An accepted release, and a baseline read from the acceptance manifest, pin the
+  // SHA-256 and size their acceptance observed, and the download must reproduce both.
+  if (channel === "latest" || (channel === "baseline" && input.sha256 === null)) {
+    check(Object.keys(canonical).every((key) => input[key] === canonical[key]));
+    return canonical;
+  }
+  check(typeof input.sha256 === "string" && hashPattern.test(input.sha256) && input.hashSource === "observed-sha256"
+    && Number.isSafeInteger(input.size) && input.size > 0 && input.size <= 600_000_000);
+  const release = { ...canonical, channel, sha256: input.sha256, hashSource: input.hashSource, size: input.size };
+  check(Object.keys(release).every((key) => input[key] === release[key]));
+  return Object.freeze(release);
 }
 
 export async function downloadDesktopArtifact(release, path, fetchImpl, signal, failure) {
@@ -115,12 +126,15 @@ export async function downloadDesktopArtifact(release, path, fetchImpl, signal, 
       hash.update(chunk);
       await file.writeFile(chunk);
     }
-    check(bytes > 0 && (expectedBytes === undefined || bytes === expectedBytes), "DOWNLOAD_SIZE");
+    check(bytes > 0 && (expectedBytes === undefined || bytes === expectedBytes)
+      && (release.size === undefined || bytes === release.size), "DOWNLOAD_SIZE");
     checkAborted(downloadSignal);
-    return { bytes, observedSha256: hash.digest("hex") };
+    const observedSha256 = hash.digest("hex");
+    check(release.sha256 === null || observedSha256 === release.sha256, "INTEGRITY");
+    return { bytes, observedSha256 };
   } catch (error) {
     if (signal?.aborted) throw failure("ABORTED");
-    if (error?.code === failure("DOWNLOAD_SIZE").code) throw error;
+    if ([failure("DOWNLOAD_SIZE").code, failure("INTEGRITY").code].includes(error?.code)) throw error;
     throw failure("DOWNLOAD");
   } finally {
     controller.abort();
@@ -172,11 +186,70 @@ export async function resolveLatest({ fetchJson = fetchDownloadMetadata, manifes
   return manifest;
 }
 
+// A pull request installs the baseline and the accepted release from the client acceptance manifest instead of resolving
+// latest. Each entry passes the same validators as a frozen latest release, and the frozen inventory keeps that layout with
+// an accepted channel, covering the platforms the pull request matrix runs.
+const acceptedPlatforms = [["ubuntu-24.04", "linux-x64"], ["macos-15", "darwin-arm64"], ["windows-2025", "win32-x64-user"]];
+
+export function acceptedReleases(section) {
+  const inventory = { schemaVersion: 1 };
+  for (const channel of ["baseline", "accepted"]) {
+    const { version, commitSha, platforms: entries } = section?.[channel] ?? {};
+    inventory[channel] = {};
+    for (const [, platform] of acceptedPlatforms) {
+      const entry = entries && Object.hasOwn(entries, platform) ? entries[platform] : undefined;
+      check(entry, "CURSOR_RELEASE_ACCEPTANCE_MISSING");
+      check(Object.keys(entry).every((key) => ["url", "sha256", "hashSource", "debVersion", "size"].includes(key)),
+        "CURSOR_RELEASE_ACCEPTANCE_INVALID");
+      const input = { ...entry, platform, version, commitSha, channel };
+      inventory[channel][platform] = platform.startsWith("linux-") ? validateLinuxRelease(input, platform)
+        : validateDesktopRelease(input, platform);
+    }
+    Object.freeze(inventory[channel]);
+  }
+  // A download both channels name must carry the same recorded hash and, where the baseline records one, the same size.
+  for (const [, platform] of acceptedPlatforms) {
+    const baseline = inventory.baseline[platform], accepted = inventory.accepted[platform];
+    if (accepted.url === baseline.url) check(accepted.sha256 === baseline.sha256 && accepted.debVersion === baseline.debVersion
+      && (baseline.size === undefined || accepted.size === baseline.size), "CURSOR_RELEASE_PIN_CONFLICT");
+  }
+  return Object.freeze(inventory);
+}
+
+export function acceptedMatrix(releases) {
+  const include = [];
+  for (const [os, platform] of acceptedPlatforms) {
+    const baseline = releases.baseline[platform], accepted = releases.accepted[platform];
+    const same = ["version", "commitSha", "url", "sha256", "debVersion"].every((key) => baseline[key] === accepted[key]);
+    include.push({ os, node: "24", cursor: baseline.version, release: "baseline", channel: same ? "baseline+accepted" : "baseline" });
+    if (platform === "linux-x64") include.push({ os, node: "22", cursor: baseline.version, release: "baseline", channel: "baseline" });
+    if (!same) include.push({ os, node: "24", cursor: accepted.version, release: "accepted", channel: "accepted" });
+  }
+  return { include: pinNodeVersions(include) };
+}
+
 async function main(args) {
   const [command, value] = args;
   if (command === "baseline") {
     check(args.length === 2, "CURSOR_RELEASE_ARGUMENTS_INVALID");
     console.log(JSON.stringify(baselineRelease(value)));
+    return;
+  }
+  if (command === "accepted") {
+    check(args.length === 2 && value.length > 0, "CURSOR_RELEASE_ARGUMENTS_INVALID");
+    const releases = acceptedReleases(readAcceptance("cursor"));
+    const matrix = acceptedMatrix(releases);
+    try { await writeFile(value, JSON.stringify(releases, null, 2) + "\n", { flag: "wx", mode: 0o600 }); }
+    catch { fail("CURSOR_RELEASE_FREEZE_FAILED"); }
+    const { GITHUB_OUTPUT: output, GITHUB_STEP_SUMMARY: summary } = process.env;
+    if (output) appendFileSync(output, `matrix=${JSON.stringify(matrix)}\n`);
+    if (summary) {
+      appendFileSync(summary, `Cursor App pinned acceptance inputs: baseline **${releases.baseline["linux-x64"].version}**, `
+        + `accepted **${releases.accepted["linux-x64"].version}**; every download must match its pinned SHA-256.\n\n`
+        + `${matrix.include.length} required Linux, macOS and Windows App jobs, including Linux baseline on Node 22. `
+        + "No latest lookup and no version fallback.\n");
+    }
+    console.log(JSON.stringify(releases));
     return;
   }
   check((command === "resolve" && (args.length === 1 || args.length === 2))
@@ -186,7 +259,7 @@ async function main(args) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main(process.argv.slice(2)).catch((error) => {
-    console.error(/^CURSOR_RELEASE_[A-Z0-9_]+$/.test(error?.code ?? "") ? error.code : "CURSOR_RELEASE_RESOLUTION_FAILED");
+    console.error(/^(?:CURSOR_RELEASE|CLIENT_ACCEPTANCE)_[A-Z0-9_]+$/.test(error?.code ?? "") ? error.code : "CURSOR_RELEASE_RESOLUTION_FAILED");
     process.exitCode = 1;
   });
 }

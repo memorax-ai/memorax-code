@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir, realpath } from "node:fs/promises";
+import { mkdir, readFile, realpath } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { assertNoSensitivePayload, check, createNativeHarness, describeSafeError, fixtureKey, fixtureModel, fixtureProvider, fixtureUser,
-  processAlive, searchResult, waitFor } from "./opencode-native-support.mjs";
+  listRepoMemoryJobMetadataPaths, processAlive, searchResult, waitFor } from "./opencode-native-support.mjs";
 import { assertCompleteText, assertNoForeignContent, assertSearchResult, assertSkillReferenceContract,
   assertWritebackMessages, expectedSearchAnswer } from "../codex/codex-native-content-check.mjs";
+import { createEvidenceRecorder } from "../shared/ci-evidence.mjs";
+import { inventoryRepoMemoryJobs, projectProcessRoles, projectProductDiagnostics, projectRepoMemoryJobs,
+  projectTraceEvents } from "../shared/ci-evidence-projections.mjs";
 
 const report = { status: "FAIL", scope: "native_opencode_installed_plugin_mock_memorax", platform: process.platform,
   paidModelRequests: 0, modelQualityEvaluated: false, checks: [], contentChecks: [],
@@ -14,7 +17,10 @@ const toolCanary = "OPENCODE_TOOL_OUTPUT_MUST_STAY_LOCAL";
 const commentaryCanary = "OPENCODE_INTERMEDIATE_TEXT_MUST_STAY_LOCAL";
 const redactionCanary = "sk_nativeFixtureOnlyAbcdefghijklmnop";
 const expectedTurns = [], workspaceControls = new Map();
-let harness, stage = "prerequisites";
+let harness, stage = "prerequisites", backgroundStage;
+// Evidence stays outside the harness roots, which cleanup removes even after a failed check.
+const evidence = createEvidenceRecorder({ suite: "opencode-native-check", client: "opencode" });
+evidence.track(() => ({ stage, backgroundStage, checks: report.checks.length }));
 try {
   check(process.argv.length === 4, "EXPECTED_INSTALLED_PACKAGE_AND_OPENCODE_PATHS");
   harness = await createNativeHarness({ packageRoot: process.argv[2], openCodeCommand: process.argv[3] });
@@ -219,9 +225,52 @@ try {
     report.cleanup = error.nativeCode ?? "NATIVE_CLEANUP_FAILED";
     report.cleanupErrorDetails = describeSafeError(error);
   }
+  report.evidenceStatus = evidence.finish({ testOutcome: report.status, failure: failureEvidence() });
 }
 console.log(JSON.stringify(report, null, 2));
 if (report.status !== "PASS") process.exitCode = 1;
+
+// Snapshot the background harness before cleanup stops its processes and removes its state.
+// Each collection has its own budget; a failed collection never replaces the original error.
+async function collectBackgroundEvidence(background, server, readJobs, since) {
+  await evidence.collect("background.repoMemoryJobs", async () =>
+    projectRepoMemoryJobs(readJobs ? await readJobs() : [], { since, alive: processAlive }), { budgetMs: 2_000 });
+  await evidence.collect("background.processes", async () => {
+    const record = await readFile(join(background.stateHome, "runtime", "backend", "backend.pid.json"), "utf8")
+      .then(JSON.parse, () => undefined);
+    return projectProcessRoles([{ role: "openCodeServer", child: server?.process }, { role: "backend", pid: record?.pid }], processAlive);
+  }, { budgetMs: 2_000 });
+  await evidence.collect("background.repoMemoryFiles", () => inventoryRepoMemoryJobs(background.stateHome), { budgetMs: 2_000 });
+  await evidence.collect("background.traceEvents", () => projectTraceEvents(background.stateHome, "opencode", { since }), { budgetMs: 3_000 });
+  await evidence.collect("background.productDiagnostics", async () => {
+    const result = await background.runProduct(["logs", "--diagnostics", "--limit", "20", "--json"], { timeoutMs: 15_000 })
+      .catch((error) => { if (/^\s*\{/.test(error.stdout ?? "")) return error; throw error; });
+    return projectProductDiagnostics(JSON.parse(result.stdout));
+  }, { budgetMs: 20_000 });
+}
+
+function failureEvidence() {
+  if (report.status === "PASS") return undefined;
+  const background = report.backgroundGlobalConfiguration?.status === "FAIL" ? report.backgroundGlobalConfiguration : undefined;
+  const backgroundCleanupOnly = background?.stage === "cleanup";
+  const functionalFailed = report.error !== undefined && !backgroundCleanupOnly;
+  const primary = background && !backgroundCleanupOnly ? background : report;
+  const cleanupCode = report.cleanup !== "PASS" ? report.cleanup : background?.cleanup !== "PASS" ? background?.cleanup : undefined;
+  const cleanupDetails = report.cleanup !== "PASS" ? report.cleanupErrorDetails : background?.cleanupErrorDetails;
+  const systemCode = typeof primary.errorDetails?.code === "string" ? primary.errorDetails.code : undefined;
+  return {
+    kind: functionalFailed ? (cleanupCode ? "functional+cleanup" : "functional") : "cleanup",
+    stage: functionalFailed ? [report.stage, background?.stage].filter(Boolean).join("/") : undefined,
+    code: functionalFailed ? [primary.error, systemCode].filter(Boolean).join(":") : cleanupCode,
+    errorDetails: functionalFailed ? primary.errorDetails : undefined,
+    cleanupStage: cleanupCode ? cleanupDetails?.cleanupOperation ?? cleanupDetails?.operation ?? "harness" : undefined,
+    cleanupCode, cleanupErrorDetails: cleanupDetails,
+    wait: background?.wait,
+    foregroundRequests: background?.foregroundRequests, backgroundRequests: background?.backgroundRequests,
+    observedModelRequests: report.observedModelRequests, observedMemoryRequests: report.observedMemoryRequests,
+    receiverErrors: report.receiverErrors, checksPassed: report.checks.length,
+  };
+}
 
 async function turn({ prompt, answer, sessionId, cwd = harness.workspace, expectedPrompt = prompt, kind = "ordinary",
   explicitRequests = 0, steps = [() => ({ text: answer })] }) {
@@ -267,7 +316,8 @@ async function verifyBackgroundGlobalConfiguration() {
   const result = { status: "FAIL" };
   report.backgroundGlobalConfiguration = result;
   let background, server, primaryFailed = false;
-  let backgroundStage = "harness creation";
+  let jobs, waitStartedAt, waitFinished = false, polls = 0, lastJobs;
+  backgroundStage = "harness creation";
   const received = { foreground: 0, background: 0 };
   const observedPids = new Set();
   try {
@@ -290,6 +340,7 @@ async function verifyBackgroundGlobalConfiguration() {
       if (!body.tools?.length) return { text: "Native background fixture" };
       const kind = inputText(body).includes("This invocation is the authorized background repo-memory worker.") ? "background" : "foreground";
       received[kind] += 1;
+      evidence.observe("background.modelRequests", { ...received });
       check(received[kind] === 1, "UNEXPECTED_BACKGROUND_CONTINUATION");
       return { text: kind === "background" ? "BACKGROUND_MODEL_CONFIGURATION_ONLY" : "FOREGROUND_MODEL_CONFIGURATION_ONLY" };
     });
@@ -304,22 +355,29 @@ async function verifyBackgroundGlobalConfiguration() {
       "BACKGROUND_FOREGROUND_CONFIGURATION_MISMATCH");
     backgroundStage = "background job wait";
     const repository = await realpath(background.workspace);
-    const jobs = async () => {
+    jobs = async () => {
       const jobsRoot = join(background.stateHome, "repo-memory-jobs");
-      const files = await readdir(jobsRoot, { recursive: true }).catch((error) => {
-        if (error.code === "ENOENT") return []; throw error;
-      });
-      return Promise.all(files.filter((file) => basename(file) === "job.json").map(async (file) => {
-        const job = JSON.parse(await readFile(join(jobsRoot, file), "utf8"));
+      const files = await listRepoMemoryJobMetadataPaths(jobsRoot);
+      return Promise.all(files.map(async (file) => {
+        let job;
+        try { job = JSON.parse(await readFile(join(jobsRoot, file), "utf8")); }
+        catch (error) { error.nativeOperation ??= "REPO_JOB_READ"; throw error; }
         check(job.repo === repository && job.runner === "opencode", "BACKGROUND_JOB_AUTHORITY_MISMATCH");
         for (const pid of [job.workerPid, job.childPid]) if (Number.isInteger(pid)) observedPids.add(pid);
         return job;
       }));
     };
+    waitStartedAt = Date.now();
     const [job] = await waitFor(async () => {
+      polls += 1;
       const result = await jobs();
+      try {
+        lastJobs = projectRepoMemoryJobs(result, { since: waitStartedAt, alive: processAlive });
+        evidence.observe("background.repoMemoryJobs", lastJobs);
+      } catch { evidence.issue("OBSERVE_FAILED"); }
       return result.length === 1 && ["failed", "succeeded"].includes(result[0].status) ? result : undefined;
     }, "BACKGROUND_JOB_DID_NOT_FINISH", 45_000);
+    waitFinished = true;
     backgroundStage = "background job assertions";
     check(job.snapshotHead === snapshotHead && job.sharedSnapshot?.head === snapshotHead
       && job.sharedSnapshot.ref === "refs/remotes/origin/main" && job.sharedSnapshot.baseHead === null,
@@ -346,6 +404,11 @@ async function verifyBackgroundGlobalConfiguration() {
     result.foregroundRequests = received.foreground;
     result.backgroundRequests = received.background;
     result.receiverErrors = background?.serverErrors ?? [];
+    if (waitStartedAt !== undefined) {
+      result.wait = { condition: "exactly one Repo Memory job in a terminal state", timeoutMs: 45_000,
+        elapsedMs: Date.now() - waitStartedAt, polls, finished: waitFinished, lastJobs };
+    }
+    if (background) await collectBackgroundEvidence(background, server, jobs, waitStartedAt ?? Date.now());
     throw error;
   } finally {
     try { await background?.close(); result.cleanup = "PASS"; }

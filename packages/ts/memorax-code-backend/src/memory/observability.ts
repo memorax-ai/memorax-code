@@ -10,6 +10,7 @@ export type MemoryObservabilitySource =
   | "workbuddy_hook_writeback"
   | "trae_hook_writeback"
   | "cursor_hook_writeback"
+  | "qoder_hook_writeback"
   | "memory_cli"
   | "unknown";
 

@@ -1,0 +1,13 @@
+{
+  "name": "@memorax-code/qoder-adapter",
+  "version": "0.1.21",
+  "private": true,
+  "type": "module",
+  "description": "Qoder Hook adapter for MemoraX Code memory services.",
+  "bin": {
+    "memorax-code-qoder": "src/cli.mjs"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}

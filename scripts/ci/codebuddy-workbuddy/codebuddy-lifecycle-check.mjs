@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
+import { projectTerminalDisposal } from "../codex/codex-setup-pty-evidence.mjs";
 import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
@@ -7,7 +8,7 @@ import { createServer as createTcpServer } from "node:net";
 import { tmpdir, userInfo } from "node:os";
 import { delimiter, dirname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { assertBackendReplacement, assertCredentialNotEchoed, assertSetupInputRejection,
+import { verifyBackendReplacementState, assertCredentialNotEchoed, assertSetupInputRejection,
   snapshotProtectedConfiguration, assertProtectedConfiguration } from "../codex/codex-lifecycle-assertions.mjs";
 import { startLifecycleCommand } from "../claude/claude-lifecycle-process.mjs";
 import { snapshotCodeBuddySettings, assertCodeBuddySettings, assertLifecycleIntegrationAbsent,
@@ -17,7 +18,7 @@ import { classifyLifecycleRequest } from "../claude/claude-lifecycle-assertions.
 const pluginName = "memorax-code-codebuddy-adapter";
 const client = process.argv[10] ?? "codebuddy";
 const clientName = client === "workbuddy" ? "WorkBuddy" : "CodeBuddy";
-const otherClients = ["codex", "claude", "opencode", "dsh", "codebuddy", "workbuddy", "trae", "cursor"]
+const otherClients = ["codex", "claude", "opencode", "dsh", "codebuddy", "workbuddy", "trae", "cursor", "qoder"]
   .filter((name) => name !== client);
 const fixtureKey = `sk_${"E".repeat(43)}`;
 const fixtureUser = "lifecycle-saved-account";
@@ -465,6 +466,7 @@ try {
   if (error.terminalError) report.terminalError = error.terminalError;
   if (error.terminalDiagnostics) report.terminalDiagnostics = error.terminalDiagnostics;
   if (error.terminalNativeError) report.terminalNativeError = error.terminalNativeError;
+  if (error.terminalDisposal) report.terminalDisposal = error.terminalDisposal;
 } finally {
   await cleanup();
   report.requestCounts = { connectivity: connectivityRequests, unexpected: requests,
@@ -611,18 +613,15 @@ async function rememberPid() {
 }
 async function verifyBackendReplacement(before, label) {
   stage = `${label} Backend replacement`;
-  const after = await readJson(pidPath());
-  let oldProcessAlive = true;
-  try { process.kill(before.pid, 0); }
-  catch (error) { if (error.code === "ESRCH") oldProcessAlive = false; else throw error; }
-  try { process.kill(after.pid, 0); }
-  catch { check(false, "Updated Backend PID does not identify a live process"); }
-  check(after.url === `http://127.0.0.1:${backendPort}`, "Updated Backend has an unexpected endpoint");
-  const response = await fetch(new URL("/health", after.url), { signal: AbortSignal.timeout(5_000) });
-  check(response.ok, "Updated Backend did not answer its health endpoint successfully");
-  assertBackendReplacement(before, after, await response.json(), oldProcessAlive);
+  const after = await verifyBackendReplacementState(before, {
+    readAfter: () => readJson(pidPath()), expectedUrl: `http://127.0.0.1:${backendPort}`,
+    observe(diagnostic) {
+      report.backendReplacement = diagnostic;
+    },
+  });
   backendPids.delete(before.pid);
-  report.checks.push(`${label}: old Backend exited; new PID, instance and live health identity agree`);
+  backendPids.add(after.pid);
+  report.checks.push(`${label}: Backend instance changed; current process and health identity agree`);
 }
 async function stopAndVerify() {
   cleanupStage = "pid_record_read";
@@ -685,6 +684,7 @@ async function terminalSetup(mode) {
         "usernamePromptSeen", "keyPromptSeen", "languagePromptSeen", "accountInputSent", "outputBytes", "cursorPositionReplies", "exitCode", "signal",
       ].filter((key) => typeof safe[key] === "boolean" || Number.isFinite(safe[key])).map((key) => [key, safe[key]]));
       if (/^[A-Z][A-Z0-9_]{1,79}$/.test(safe.nativeErrorCode)) error.terminalNativeError = safe.nativeErrorCode;
+      error.terminalDisposal = projectTerminalDisposal(safe.terminalDisposal);
     } catch {}
     throw error;
   } finally {
@@ -821,6 +821,7 @@ function isolatedEnv(userHome, codebuddyCommand) {
     CLAUDE_HOME: join(userHome, ".claude"), CLAUDE_CONFIG_DIR: join(userHome, ".claude"),
     WORKBUDDY_HOME: join(userHome, ".workbuddy"),
     TRAE_CN_HOME: join(userHome, ".trae-cn"), TRAE_HOME: join(userHome, ".trae-cn"), CURSOR_HOME: join(userHome, ".cursor"),
+    QODER_CONFIG_DIR: join(userHome, ".qoder"),
     [`MEMORAX_CODE_${client.toUpperCase()}_TRACE_ENABLED`]: "false",
   };
   if (client === "workbuddy") isolated.WORKBUDDY_CONFIG_DIR = codebuddyHome;

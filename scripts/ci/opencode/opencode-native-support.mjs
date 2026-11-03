@@ -9,7 +9,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
-const otherClients = ["codex", "claude", "dsh", "codebuddy", "workbuddy", "trae", "cursor"];
+const otherClients = ["codex", "claude", "dsh", "codebuddy", "workbuddy", "trae", "cursor", "qoder"];
 const signalCleanups = new Set();
 const signalHandlers = new Map(["SIGINT", "SIGTERM"].map((signal) => [signal, () => handleSignal(signal)]));
 const safeErrorNames = new Set(["Error", "TypeError", "RangeError", "SyntaxError", "AbortError", "TimeoutError", "AggregateError"]);
@@ -475,6 +475,23 @@ export function processAlive(pid) {
     throw error;
   }
 }
+// Lists `<job>/job.json` paths relative to jobsRoot, reading only the root and each direct job directory: never
+// `in-progress` or job subtrees such as the temporary `source` snapshot. An ENOENT from any of these reads means
+// no jobs for this poll. Callers read and check each listed file.
+export async function listRepoMemoryJobMetadataPaths(jobsRoot, { readDirectory = readdir } = {}) {
+  try {
+    const paths = [];
+    for (const entry of await readDirectory(jobsRoot, { withFileTypes: true })) {
+      if (!entry.isDirectory() || entry.name === "in-progress") continue;
+      if ((await readDirectory(join(jobsRoot, entry.name))).includes("job.json")) paths.push(join(entry.name, "job.json"));
+    }
+    return paths;
+  } catch (error) {
+    if (error.code === "ENOENT") return [];
+    error.nativeOperation ??= "REPO_JOBS_READ";
+    throw error;
+  }
+}
 export async function stopNativeProcessTree(child, env) {
   if (!child.pid) return;
   let operation = "TASKKILL";
@@ -561,7 +578,7 @@ function isolatedEnv({ root, home, stateHome, openCodeConfigDir, openCodeCommand
     CLAUDE_HOME: join(home, ".claude"), CODEBUDDY_HOME: join(home, ".codebuddy"),
     CODEBUDDY_CONFIG_DIR: join(home, ".codebuddy"), WORKBUDDY_HOME: join(home, ".workbuddy"),
     WORKBUDDY_CONFIG_DIR: join(home, ".workbuddy"), TRAE_HOME: join(home, ".trae-cn"), TRAE_CN_HOME: join(home, ".trae-cn"),
-    CURSOR_HOME: join(home, ".cursor"),
+    CURSOR_HOME: join(home, ".cursor"), QODER_CONFIG_DIR: join(home, ".qoder"),
   };
   if (process.platform === "win32") Object.assign(env, { SystemRoot: windowsRoot, WINDIR: windowsRoot,
     ComSpec: join(windowsRoot, "System32", "cmd.exe"), PATHEXT: ".COM;.EXE;.BAT;.CMD", USERNAME: "native-fixture" });

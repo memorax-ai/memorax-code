@@ -91,6 +91,9 @@ function dshAdapterOptions(context: AdapterLifecycleContext): Record<string, unk
     memoraxCodeHome: serviceOptions.home,
     ...(argValue(argv, "--dsh-home") ? { dshHome: argValue(argv, "--dsh-home") } : {}),
     ...(argValue(argv, "--dsh-command") ? { dshCommand: argValue(argv, "--dsh-command") } : {}),
+    ...(argValue(argv, "--dsh-desktop-command")
+      ? { dshDesktopCommand: argValue(argv, "--dsh-desktop-command") }
+      : {}),
     ...(argValue(argv, "--dsh-adapter-root")
       ? { adapterRoot: argValue(argv, "--dsh-adapter-root") }
       : {}),

@@ -6,7 +6,8 @@ import { access, chmod, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFil
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
-import { baselineRelease, resolveDownload } from "./cursor-app-release.mjs";
+import { readAcceptance } from "../shared/client-acceptance.mjs";
+import { acceptedReleases, baselineRelease, resolveDownload } from "./cursor-app-release.mjs";
 import { selectCursorWindowsRelease, withVerifiedCursorWindowsInstaller } from "./cursor-app-windows-artifact.mjs";
 
 const baseline = baselineRelease("win32-x64-user");
@@ -69,6 +70,13 @@ async function fixture(t, configuration = {}) {
 test("selects each frozen Windows UserSetup release without fallback or invented hashes", () => {
   for (const channel of ["baseline", "latest"]) {
     assert.deepEqual(selectCursorWindowsRelease(manifest, channel), manifest[channel]["win32-x64-user"]);
+  }
+  // A pull request's inventory pins both releases with the SHA-256 and size their acceptance recorded.
+  const pinned = JSON.parse(JSON.stringify(acceptedReleases(readAcceptance("cursor"))));
+  for (const channel of ["baseline", "accepted"]) {
+    assert.deepEqual(selectCursorWindowsRelease(pinned, channel), pinned[channel]["win32-x64-user"]);
+    assert.throws(() => selectCursorWindowsRelease({ ...pinned, [channel]: { "win32-x64-user": { ...pinned[channel]["win32-x64-user"],
+      sha256: null } } }, channel), error("RELEASE"));
   }
   for (const input of [null, {}, { ...manifest, schemaVersion: 2 }, { ...manifest, latest: {} }]) {
     assert.throws(() => selectCursorWindowsRelease(input, "latest"), error("RELEASE"));

@@ -19,7 +19,16 @@ New-Item -ItemType Directory -Force $userRoot, $tempRoot, $prefix | Out-Null
 New-Item -ItemType Directory -Force (Join-Path $testRoot 'codex') | Out-Null
 [IO.File]::WriteAllText((Join-Path $prefix ".memorax-code-ci-owned"), "codex-install-check`n")
 
+# Evidence lives outside the isolated runtime; an unusable location disables it without affecting the suites.
+. (Join-Path $PSScriptRoot '../shared/ci-evidence.ps1')
+Initialize-CiEvidence -Tool (Join-Path $repoRoot 'scripts/ci/shared/ci-evidence.mjs') -RuntimeRoot $testRoot
+
 . (Join-Path $PSScriptRoot '../shared/codex-install-user-path.ps1')
+$plannedSuites = 'codex-install-smoke,codex-native-check,codex-permissions-check,codex-install-interruption-check'
+Write-CiLedger plan $plannedSuites
+Write-CiLedger phase setup
+Write-CiLedger skip codex-model-inheritance-check pending_implementation
+try {
 Invoke-WithCodexTestUserPath -Prefix $prefix -Action {
 # This step owns its temporary account state; do not change machine settings.
 $allowedEnvironment = @('PATH', 'SystemRoot', 'WINDIR', 'ComSpec', 'PATHEXT',
@@ -52,24 +61,43 @@ if ($LASTEXITCODE -ne 0) { throw 'The test-only terminal dependency installation
 if ($LASTEXITCODE -ne 0) { throw 'The installed MemoraX Code command shim failed.' }
 & (Join-Path $prefix 'codex.cmd') --version
 if ($LASTEXITCODE -ne 0) { throw 'The installed Codex command shim failed.' }
+# Only the test runners receive the evidence location; npm and product commands above do not.
+if ($CiEvidenceDir) { $env:MEMORAX_CI_EVIDENCE_DIR = $CiEvidenceDir }
+Write-CiLedger phase suites
+Write-CiLedger start codex-install-smoke
 & node (Join-Path $repoRoot 'scripts/ci/codex/codex-install-smoke.mjs') `
   (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'codex.cmd') `
   $tarball $npmCommand $PreviousVersion `
   (Join-Path $testRoot 'terminal/node_modules/node-pty') (Join-Path $repoRoot 'scripts/ci/codex/codex-setup-pty.mjs') $CodexVersion
-if ($LASTEXITCODE -ne 0) { throw 'The Codex installation smoke failed; isolated state retained.' }
+$suiteExit = $LASTEXITCODE
+Write-CiLedger end codex-install-smoke $suiteExit
+if ($suiteExit -ne 0) { throw 'The Codex installation smoke failed; its runtime stays on this runner and is not exported.' }
 
+Write-CiLedger start codex-native-check
 & node (Join-Path $repoRoot 'scripts/ci/codex/codex-native-check.mjs') `
   (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'codex.cmd')
-if ($LASTEXITCODE -ne 0) { throw 'The Codex native flow check failed; isolated state retained.' }
+$suiteExit = $LASTEXITCODE
+Write-CiLedger end codex-native-check $suiteExit
+if ($suiteExit -ne 0) { throw 'The Codex native flow check failed; its runtime stays on this runner and is not exported.' }
+Write-CiLedger start codex-permissions-check
 & node (Join-Path $repoRoot 'scripts/ci/codex/codex-permissions-check.mjs') `
   (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'codex.cmd')
-if ($LASTEXITCODE -ne 0) { throw 'The Codex permissions check failed; isolated state retained.' }
+$suiteExit = $LASTEXITCODE
+Write-CiLedger end codex-permissions-check $suiteExit
+if ($suiteExit -ne 0) { throw 'The Codex permissions check failed; its runtime stays on this runner and is not exported.' }
+Write-CiLedger start codex-install-interruption-check
 & node (Join-Path $repoRoot 'scripts/ci/codex/codex-install-interruption-check.mjs') `
   (Join-Path $prefix 'node_modules/@memorax/memorax-code') (Join-Path $prefix 'codex.cmd') `
   (Join-Path $testRoot 'terminal/node_modules/node-pty')
-if ($LASTEXITCODE -ne 0) { throw 'The Codex interruption check failed; isolated state retained.' }
+$suiteExit = $LASTEXITCODE
+Write-CiLedger end codex-install-interruption-check $suiteExit
+if ($suiteExit -ne 0) { throw 'The Codex interruption check failed; its runtime stays on this runner and is not exported.' }
 Write-Output 'SKIP: foreground model/provider override inheritance is pending implementation (see CONTRIBUTING.md).'
 
 # Remove the runtime only after the smoke has confirmed process shutdown.
+Write-CiLedger phase cleanup
 Remove-Item -LiteralPath $testRoot -Recurse -Force
+}
+} finally {
+  Write-CiLedger finalize $plannedSuites
 }

@@ -1,13 +1,13 @@
 # @memorax/memorax-code
 
 MemoraX Code adds persistent coding memory to Codex, Claude Code,
-CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, Trae, and Cursor.
+CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, Trae, Cursor, and Qoder.
 
 ## Requirements
 
 - Node.js 20 or newer (Node.js 24 LTS recommended) and npm.
 - At least one of Codex, Claude Code, CodeBuddy CLI, WorkBuddy, DeepSeek Harness,
-  OpenCode Desktop or CLI, Trae, or Cursor.
+  OpenCode Desktop or CLI, Trae, Cursor, or Qoder.
 
 ## Install
 
@@ -83,6 +83,15 @@ from Plugins or `/plugins` if it is not already enabled.
 For Trae, open Settings and enable **Global Hooks** once before starting a new
 Trae session; setup installs the managed Hooks and Skill but cannot switch that
 Trae setting reliably.
+Qoder installs user Hooks in `~/.qoder/settings.json` and the canonical Skill
+in `~/.qoder/skills/memorax-code/`; use `QODER_CONFIG_DIR` for a custom root.
+Restart Qoder and start a new task. The tested target is Desktop 0.4.3 with
+runtime 1.1.64. Search/manual Add use the shared CLI; automatic Add uses the
+exact completed native transcript turn. Repo Memory builds and maintenance use
+the managed native background subagent with Qoder's normal tool permissions;
+no separate Qoder CLI installation or login is required. See the Qoder section
+in `docs/configuration.md`.
+
 Cursor installs native user Hooks and the shared Skill under `~/.cursor`,
 independently of Claude Code; `CURSOR_HOME` overrides that root. Restart or
 refresh Cursor and open a new conversation. Use the Skill for CLI Search and

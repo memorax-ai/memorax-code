@@ -1,24 +1,38 @@
 import assert from "node:assert/strict";
 import { EventEmitter, once } from "node:events";
-import { readFile } from "node:fs/promises";
+import { appendFile, mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import { createServer, request as httpRequest } from "node:http";
+import { tmpdir } from "node:os";
 import { basename, dirname, join, win32 } from "node:path";
 import { PassThrough } from "node:stream";
 import test from "node:test";
-import { runInNewContext } from "node:vm";
-import { collectCursorAppBackendDiagnostics, collectCursorAppShellDiagnostics, collectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
-import { projectCursorAppHookTiming } from "./cursor-app-hook-diagnostics.mjs";
+import { createContext, isContext, runInNewContext } from "node:vm";
+import { collectCursorAppBackendDiagnostics, collectCursorAppShellDiagnostics, collectCursorAppStopDiagnostics, collectCursorAppSubmissionDiagnostics, createCursorAppDriverDiagnostics } from "./cursor-app-diagnostics.mjs";
+import { collectCursorAppHookTiming, projectCursorAppHookTiming, collectCursorAppSessionHookDiagnostics, projectCursorAppSessionHookDiagnostics,
+  projectCursorAppHookReadinessFailure, projectCursorAppHookTimeline } from "./cursor-app-hook-diagnostics.mjs";
 import { collectCursorAppSkillHookContext } from "./cursor-app-hook-context.mjs";
+import { classifyCursorAppExecution, collectCursorAppNativeReport } from "./cursor-app-report.mjs";
 
 const source = (await readFile(new URL("./cursor-app-native-check.mjs", import.meta.url), "utf8")).replaceAll("\r\n", "\n");
 const privateCanary = "private-content-path-token-canary";
 function check(value, code) { if (!value) throw Object.assign(new Error(code), { code }); }
+function nativeContext(context) {
+  return { check, Buffer, basename, dirname, join, once, createCursorAppDriverDiagnostics, collectCursorAppSkillHookContext, projectCursorAppHookTiming, collectCursorAppSubmissionDiagnostics,
+    process: { platform: "darwin" }, appLaunch: 0, readyHookSessions: new Map(), activeHookTiming: undefined, appStartedAt: 0, userData: undefined,
+    bounded: promise => promise, collectCursorAppSessionHookDiagnostics, projectCursorAppHookReadinessFailure,
+    safeCode: error => /^CURSOR_(?:APP|AGENT|MOCK)_[A-Z0-9_]+$/.test(error?.code) ? error.code : "CURSOR_APP_CHECK_FAILED",
+    checkpointReport() {}, beginHookTiming() {}, markHookSubmit() {}, markTimeline() {}, async observeHookTiming() {}, finishHookTiming() {}, async waitForHookReady() {}, async recordSubmissionFailure() {}, ...context };
+}
 function nativeFunction(name, context = {}) {
   const definition = source.match(new RegExp(`(?:async )?function ${name}\\([\\s\\S]*?(?=\\n(?:async )?function )`))?.[0];
   assert.ok(definition, name);
-  return runInNewContext(`(${definition})`, { check, Buffer, basename, dirname, join, once, collectCursorAppSkillHookContext, projectCursorAppHookTiming,
-    process: { platform: "darwin" }, appLaunch: 0, readyHookSessions: new Map(),
-    beginHookTiming() {}, markHookSubmit() {}, async observeHookTiming() {}, finishHookTiming() {}, async waitForHookReady() {}, ...context }, { timeout: 100 });
+  return runInNewContext(`(${definition})`, isContext(context) ? context : nativeContext(context), { timeout: 100 });
+}
+// Defines native functions in one context, so they share launch, readiness and timing state as the check does.
+function nativeScope(names, context) {
+  const scope = createContext(nativeContext(context));
+  for (const name of names) scope[name] = nativeFunction(name, scope);
+  return scope;
 }
 function childProcess() {
   return Object.assign(new EventEmitter(), { pid: 201, exitCode: null, signalCode: null,
@@ -149,6 +163,7 @@ test("App launch preserves the sandbox and isolated arguments with a longer Wind
       fetch: async () => ({ ok: true }), bounded: (promise) => promise,
       chromium: { connectOverCDP: async () => ({ contexts: () => [{ pages: () => [page] }] }) },
       async waitFor(predicate, code, deadline) { waits.push([code, deadline]); assert.equal(await predicate(), true); },
+      async waitForDriverReady(predicate, deadline) { waits.push(["CURSOR_APP_DRIVER", deadline]); assert.equal(await predicate(), true); },
       spawn(file, args, options) {
         assert.equal(file, "/owned/app"); assert.equal(options.shell, undefined);
         argumentsSeen.push(...args);
@@ -157,7 +172,7 @@ test("App launch preserves the sandbox and isolated arguments with a longer Wind
     });
     await start();
     assert.deepEqual(readiness, ["config"]);
-    assert.equal(readyHookSessions.size, platform === "win32" ? 1 : 0);
+    assert.equal(readyHookSessions.size, 0);
     assert.equal(argumentsSeen.includes("--force-disable-user-env"), platform !== "linux");
     assert.ok(argumentsSeen.includes("--use-inmemory-secretstorage"));
     assert.ok(argumentsSeen.includes("--test-backend-url=http://127.0.0.1:12345"));
@@ -173,10 +188,10 @@ test("native sequence restores the original session after workspace switching wi
   const body = source.split('  report.stage = "app-start";')[1]?.split('  report.stage = "cleanup";')[0];
   const starts = [], stops = [], turns = [], commands = [];
   let sessions = 0;
-  const context = { check, join, root: "/owned", firstWorkspace: "/owned/workspace", workspace: "/owned/workspace",
+  const context = { check, checkpointReport() {}, join, root: "/owned", firstWorkspace: "/owned/workspace", workspace: "/owned/workspace",
     report: { evidence: {} }, recoveryFixture: { prompt: "recovery" },
-    async mkdir() {}, async startApp() { context.app = { pid: starts.length + 1 }; starts.push(context.workspace); },
-    async stopApp() { stops.push(context.workspace); context.app = undefined; },
+    async mkdir() {}, async startApp() { context.app = { pid: 201, exitCode: null, signalCode: null }; starts.push(context.workspace); },
+    async stopApp() { stops.push(context.workspace); context.app.exitCode = 0; context.app = undefined; },
     async assertProcessesStopped(options) { assert.equal(options.includeBackend, false); },
     async openSession(id) { return id ?? ["session-a", "session-b", "session-deny"][sessions++]; },
     async runTurn(sessionId) { turns.push([sessionId, context.workspace]); }, assertWriteback() {}, assertSnapshot() {},
@@ -247,21 +262,43 @@ test("Run and Skip bind completed clicks to the exact run and fail closed on ide
   }
 });
 
-test("same-session recovery requires new identities and excludes the cancelled turn from history", async () => {
-  for (const mode of ["recovered", "cancelled-history", "reused-id"]) {
+test("same-session recovery uses the primary input beside the cancelled turn editor and keeps native identity checks", async () => {
+  for (const mode of ["recovered", "cancelled-history", "reused-id", "primary-missing", "primary-ambiguous"]) {
     const prior = { conversationId: "session", requestId: "old", userMessageId: "old", cancelled: true,
       completed: false, kvWrites: [], turnBlobId: Buffer.alloc(32) };
     const run = { conversationId: "session", prompt: "recovery", completed: true, userMessageId: "new",
       requestId: mode === "reused-id" ? "old" : "new", turnRefs: mode === "cancelled-history" ? [prior.turnBlobId] : [],
       kvReadCount: 0, kvReadResultCount: 0, kvWriteCount: 3, kvAckCount: 3,
       requestContextRequestCount: 1, requestContextResultCount: 1, requestContextCloseCount: 1 };
-    const agent = { runs: [prior], errors: [] }, report = {};
+    const inline = { className: "ui-prompt-input-editor__input", value: "cancelled prompt" };
+    const primary = { className: "aislash-editor-input", value: "" };
+    const editors = [inline, ...(mode === "primary-missing" ? [] : [primary]),
+      ...(mode === "primary-ambiguous" ? [{ ...primary }] : [])];
+    const agent = { runs: [prior], errors: [] }, report = {}, submitted = [];
+    const composer = { locator(selector) {
+      assert.ok(selector.endsWith('[contenteditable="true"][role="textbox"]:visible'));
+      const className = selector.match(/^\.([a-z_-]+)/)?.[1];
+      const matches = editors.filter(editor => !className || editor.className === className);
+      return { async fill(value) { check(matches.length === 1, "INPUT_LOCATOR_AMBIGUOUS"); matches[0].value = value; },
+        async press(key) {
+          check(matches.length === 1, "INPUT_LOCATOR_AMBIGUOUS");
+          check(matches[0] === primary, "EDITED_TURN_SUBMITTED");
+          assert.equal(key, "Enter"); assert.equal(primary.value, run.prompt);
+          submitted.push({ sessionId: prior.conversationId, requestId: run.requestId }); agent.runs.push(run);
+        } };
+    } };
     const runTurn = nativeFunction("runTurn", { agent, report, turns: [], workspace: "/owned/workspace",
-      page: { locator: () => ({ locator: () => ({}) }) }, async submitPrompt() { agent.runs.push(run); },
+      page: { locator(selector) { assert.equal(selector, '[data-composer-id="session"][data-composer-status]:visible'); return composer; } },
+      submitPrompt: nativeFunction("submitPrompt"),
       async waitFor(predicate) { check(report.stage !== "native-persistence", "VERIFIED"); assert.equal(await predicate(), true); },
     });
-    await assert.rejects(runTurn("session", { prompt: "recovery" }), { code: mode === "recovered" ? "VERIFIED"
-      : mode === "reused-id" ? "CURSOR_APP_REUSED_TURN_IDENTITY" : "CURSOR_APP_HISTORY_MISMATCH" });
+    const inputRejected = mode.startsWith("primary-");
+    await assert.rejects(runTurn("session", { prompt: "recovery" }), { code: inputRejected ? "INPUT_LOCATOR_AMBIGUOUS"
+      : mode === "recovered" ? "VERIFIED" : mode === "reused-id" ? "CURSOR_APP_REUSED_TURN_IDENTITY" : "CURSOR_APP_HISTORY_MISMATCH" });
+    assert.equal(inline.value, "cancelled prompt");
+    assert.equal(prior.requestId, "old");
+    assert.deepEqual(submitted, inputRejected ? [] : [{ sessionId: "session", requestId: run.requestId }]);
+    assert.equal(agent.runs[0], prior);
   }
 });
 
@@ -384,13 +421,13 @@ test("Skill shell steps bind the isolated endpoint, state and session with macOS
 
 test("cleanup captures macOS descendants before closing even when capture fails", async () => {
   for (const failed of [false, true]) {
-    const calls = [], app = childProcess(), observedMacosPids = new Set();
-    const stop = nativeFunction("stopApp", { app, observedMacosPids, windows: undefined, page: {},
-      macos: { async captureMacosDescendants() { calls.push("capture"); check(!failed, "AUDIT_FAILED"); return [201, 202]; } },
+    const calls = [], app = childProcess(), observedMacosProcesses = new Map();
+    const stop = nativeFunction("stopApp", { app, observedMacosProcesses, windows: undefined, page: {},
+      macos: { async captureMacosDescendants() { calls.push("capture"); check(!failed, "AUDIT_FAILED"); return new Map([[201, "first"], [202, "second"]]); } },
       browser: { async close() { calls.push("close"); app.exitCode = 0; } }, bounded: (promise) => promise });
     if (failed) await assert.rejects(stop(), { code: "AUDIT_FAILED" }); else await stop();
     assert.deepEqual(calls, ["capture", "close"]);
-    assert.deepEqual([...observedMacosPids], failed ? [] : [201, 202]);
+    assert.deepEqual([...observedMacosProcesses], failed ? [] : [[201, "first"], [202, "second"]]);
   }
 });
 
@@ -475,7 +512,7 @@ test("preflight rejects unsupported runtimes, Linux root and unowned Windows run
   const body = source.split("\ntry {\n")[1]?.split("  // macOS Unix sockets")[0];
   for (const [platform, node, uid, code] of [["win32", "24.0.0"], ["linux", "24.0.0", 1000],
     ["linux", "24.0.0", 0, "CURSOR_APP_ISOLATION"], ["win32", "22.12.0", undefined, "CURSOR_APP_ARGUMENTS"]]) {
-    const preflight = runInNewContext(`(() => {${body}})`, { check, expectedNodeMajor: node.split(".")[0],
+    const preflight = runInNewContext(`(() => {${body}})`, { check, checkpointReport() {}, expectedNodeMajor: node.split(".")[0],
       process: { platform, versions: { node }, argv: Array(8), getuid() { assert.notEqual(platform, "win32"); return uid; } } });
     if (code) assert.throws(preflight, { code }); else preflight();
   }
@@ -487,8 +524,8 @@ test("preflight rejects unsupported runtimes, Linux root and unowned Windows run
   }
 });
 
-test("Linux and macOS readiness use bounded independent gates and preserve failure before submission", async () => {
-  for (const platform of ["linux", "darwin"]) for (const phase of ["config", "session"]) for (const ready of [false, true]) {
+test("readiness uses bounded independent gates on every platform and preserves failure before submission", async () => {
+  for (const platform of ["linux", "darwin", "win32"]) for (const phase of ["config", "session"]) for (const ready of [false, true]) {
     const calls = [], report = {};
     const gate = nativeFunction("waitForHookReady", { process: { platform }, report,
       beginHookTiming(value, id) { calls.push([value, id]); },
@@ -503,9 +540,6 @@ test("Linux and macOS readiness use bounded independent gates and preserve failu
     assert.equal(calls.at(-1), "snapshot");
     assert.deepEqual(calls[0], [phase, "session"]);
   }
-  for (const platform of ["win32"]) {
-    await nativeFunction("waitForHookReady", { process: { platform }, beginHookTiming() { assert.fail("unsupported readiness gate"); } })("config");
-  }
 });
 
 test("new sessions wait for their Hook but resumed sessions do not require a new sessionStart", async () => {
@@ -519,6 +553,129 @@ test("new sessions wait for their Hook but resumed sessions do not require a new
     });
     assert.equal(await open(resumed ? selected : undefined), selected);
     assert.deepEqual(calls, resumed ? [] : [["session", selected]]);
+  }
+});
+
+// Hooks log lines as Windows writes them (CRLF, the owned Hook behind an encoded PowerShell command), at virtual times.
+const hookBase = Date.parse("2026-10-27T09:00:00.000Z"), hookRule = "\u2550".repeat(87);
+const hookSession = "11111111-1111-4111-8111-111111111111", hookForeign = "22222222-2222-4222-8222-222222222222";
+const hookLine = (at, text) => "[" + new Date(hookBase + at).toISOString() + "] " + text + "\n";
+const hookInitialized = at => hookLine(at, "Initializing Cursor Hooks Service...");
+const hookLoaded = at => hookLine(at, "Loaded 5 user hook(s) for steps: sessionStart, beforeSubmitPrompt, preCompact, afterAgentResponse, stop");
+function hookSessionStart(at, id) {
+  const command = Buffer.from("node D:\\owned\\runtime-hook.mjs --memorax-code-cursor-hook-v1", "utf16le").toString("base64");
+  const input = { hook_event_name: "sessionStart", conversation_id: id, session_id: id, generation_id: "", workspace_roots: ["D:\\owned\\workspace"] };
+  return hookLine(at, "Hook step requested: sessionStart") + [hookRule, "sessionStart", hookRule,
+    `Command: powershell -EncodedCommand ${command} (42ms) exit code: 0`, "", "INPUT:", JSON.stringify(input, null, 2), "", "OUTPUT:",
+    JSON.stringify({ additional_context: `MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT=cursor and MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID=${id}` }, null, 2),
+    "", "STDERR:", "", hookRule, ""].join("\n");
+}
+// Runs the real launch, session and readiness functions with the real Hooks log reader. Each poll delay advances virtual
+// time and then appends the log events due by then; events are [at, launch directory, text].
+async function readinessChain(t, platform, events) {
+  const home = await realpath(await mkdtemp(join(tmpdir(), "cursor-native-readiness-")));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const pending = [...events].sort((a, b) => a[0] - b[0]), report = {}, stages = [], requests = [], reads = [];
+  let clock = hookBase;
+  const flush = async () => {
+    while (pending.length && pending[0][0] <= clock - hookBase) {
+      const [, launch, text] = pending.shift();
+      const log = join(home, "logs", launch, "window1", `output_${launch}`, "cursor.hooks.workspaceId-fixture.log");
+      await mkdir(dirname(log), { recursive: true });
+      await appendFile(log, text.replaceAll("\n", "\r\n"));
+    }
+  };
+  await flush();
+  const child = childProcess();
+  t.after(() => { child.stdout.end(); child.stderr.end(); });
+  const page = { url: () => "file:///workbench.html", setDefaultTimeout() {},
+    locator: () => ({ count: async () => 1, getAttribute: async () => "completed" }),
+    async evaluate(callback, id) {
+      const text = String(callback);
+      if (text.includes("Boolean(window.driver)")) return true;
+      if (text.includes("devGetComposerDataForTesting")) return { composerId: hookSession };
+      if (text.includes("workbench.action.chat.open")) requests.push([id ? "resume" : "create", clock - hookBase]);
+    } };
+  const scope = nativeScope(["startApp", "openSession", "waitFor", "waitForHookReady", "beginHookTiming", "observeHookTiming", "finishHookTiming"], {
+    process: { platform }, macos: undefined, windows: platform === "win32" ? {} : undefined, report, AbortSignal,
+    Date: { now: () => clock }, async delay(milliseconds) { clock += milliseconds; await flush(); },
+    userData: home, env: {}, turns: [], agent: { url: "http://127.0.0.1:1", runs: [] }, appPath: "/owned/app", root: "/owned",
+    workspace: "/owned/workspace", debugPort: 1, spawn: () => child, fetch: async () => ({ ok: true }),
+    chromium: { connectOverCDP: async () => ({ contexts: () => [{ pages: () => [page] }] }) },
+    async waitForDriverReady(predicate) { assert.equal(await predicate(), true); },
+    checkpointReport() { stages.push(report.stage); },
+    collectCursorAppHookTiming(input) { reads.push(input.sessionId ?? null); return collectCursorAppHookTiming(input); } });
+  return { scope, report, stages, requests, reads, now: () => clock - hookBase };
+}
+
+test("a new session is created only after this launch loads its Hooks and is submitted only after its own sessionStart", async (t) => {
+  for (const platform of ["linux", "darwin", "win32"]) {
+    // Configuration is reloading until 3s, and the session's own sessionStart is written at 6s without any submission.
+    const chain = await readinessChain(t, platform, [[1000, "20261027T090000", hookInitialized(1000)],
+      [1500, "20261027T090000", hookLine(1500, "Reloading hooks configuration...")], [3000, "20261027T090000", hookLoaded(3000)],
+      [6000, "20261027T090000", hookSessionStart(6000, hookSession)]]);
+    await chain.scope.startApp();
+    assert.equal(await chain.scope.openSession(), hookSession);
+    assert.deepEqual(chain.requests, [["create", 3000]], platform);
+    assert.equal(chain.now(), 6000, platform);
+    assert.deepEqual(chain.stages, ["hook-config-ready", "session-open", "hook-session-ready"], platform);
+    assert.equal(chain.scope.appLaunch, 1, platform);
+    assert.equal(chain.scope.readyHookSessions.get(hookSession), 6000, platform);
+    assert.deepEqual(Array.from(chain.report.hookTimings, ({ phase, appLaunch }) => [phase, appLaunch]), [["config", 1], ["session", 1]], platform);
+  }
+});
+
+test("another session's or an earlier launch's sessionStart cannot satisfy a session wait, which fails before submission", async (t) => {
+  for (const platform of ["linux", "darwin", "win32"]) for (const own of [false, true]) {
+    // An earlier launch ran this session's sessionStart; the current launch runs only another session's until 9s.
+    const chain = await readinessChain(t, platform, [
+      [-60000, "20261027T085900", hookInitialized(-60000) + hookLoaded(-59000) + hookSessionStart(-58000, hookSession)],
+      [2000, "20261027T090000", hookInitialized(1000) + hookLoaded(2000)],
+      [4000, "20261027T090000", hookSessionStart(4000, hookForeign)],
+      ...own ? [[9000, "20261027T090000", hookSessionStart(9000, hookSession)]] : []]);
+    await chain.scope.startApp();
+    const submitted = [];
+    const error = await chain.scope.openSession().then(() => { submitted.push(chain.now()); }, (caught) => caught);
+    if (own) {
+      assert.deepEqual(submitted, [9000], platform);
+      continue;
+    }
+    assert.equal(error?.code, "CURSOR_APP_SESSION_START_READY_TIMEOUT", platform);
+    assert.deepEqual(submitted, [], platform);
+    assert.equal(chain.report.stage, "hook-session-ready", platform);
+    const failure = chain.report.hookReadinessFailure;
+    assert.equal(failure.phase, "session"); assert.equal(failure.appLaunch, 1); assert.equal(failure.timeoutKind, "overall");
+    assert.equal(failure.waitElapsedMs, 30000);
+    assert.equal(failure.lastObservation.requiredUserHooksLoaded, true); assert.equal(failure.lastObservation.sessionStartReady, false);
+    assert.equal(failure.sessionDiagnosticsStatus, "completed");
+    assert.equal(failure.sessionStart.currentLogFiles, 1); assert.equal(failure.sessionStart.unscopedRequests, 1);
+    assert.equal(failure.sessionStart.ownedExecutionBlocks, 1); assert.equal(failure.sessionStart.filteredExecutionBlocks.session, 1);
+    assert.deepEqual(failure.sessionStart.executions, []);
+  }
+});
+
+test("a resumed session waits only for its launch's Hooks configuration, and Windows turns stay unobserved", async (t) => {
+  for (const platform of ["linux", "darwin", "win32"]) {
+    const chain = await readinessChain(t, platform, [[1000, "20261027T090000", hookInitialized(1000) + hookLoaded(1000)],
+      [2000, "20261027T090000", hookSessionStart(2000, hookSession)],
+      [20000, "20261027T090100", hookInitialized(20000) + hookLoaded(20000)]]);
+    await chain.scope.startApp();
+    await chain.scope.openSession();
+    // The next launch logs no sessionStart for the resumed session.
+    await chain.scope.startApp();
+    assert.equal(chain.now(), 20000, platform);
+    assert.equal(chain.scope.appLaunch, 2, platform);
+    assert.equal(chain.scope.readyHookSessions.size, 0, platform);
+    const reads = chain.reads.length;
+    assert.equal(await chain.scope.openSession(hookSession), hookSession);
+    assert.deepEqual(chain.requests.at(-1), ["resume", 20000], platform);
+    assert.equal(chain.reads.length, reads, platform);
+    assert.equal(chain.scope.activeHookTiming, undefined, platform);
+    // Repo Memory starts its turn timing through the same function.
+    chain.scope.beginHookTiming("turn", hookSession, { runIndex: 0, resumedSession: true });
+    await chain.scope.observeHookTiming();
+    assert.equal(chain.scope.activeHookTiming?.phase, platform === "win32" ? undefined : "turn", platform);
+    assert.equal(chain.reads.length, reads + (platform === "win32" ? 0 : 1), platform);
   }
 });
 
@@ -588,10 +745,16 @@ test("Repo Memory timing observes the first submission before reporting its orig
   assert.ok(body);
   const calls = [], agent = { runs: [], errors: [] }, report = { evidence: {} };
   const failure = "CURSOR_APP_REPO_MEMORY_DELEGATION_INVALID";
-  const worker = runInNewContext("(async function () {" + body + ")", { check, basename, report, agent, turns: [], repoMemory: undefined,
+  const worker = runInNewContext("(async function () {" + body + ")", { check, checkpointReport() {}, basename, report, agent, turns: [], repoMemory: undefined,
     async stopApp() {}, async assertProcessesStopped() {}, async prepareRepoMemoryWorkspace() { return { repo: "/owned/repo" }; },
     async startApp() { calls.push("config-ready"); }, async openSession() { calls.push("session-ready"); return "parent-session"; },
-    page: { locator: () => ({ locator: () => ({}) }) }, repoMemoryFixture: { prompt: "synthetic" },
+    page: { locator(selector) {
+      assert.equal(selector, '[data-composer-id="parent-session"][data-composer-status]:visible');
+      return { locator(inputSelector) {
+        assert.equal(inputSelector, '.aislash-editor-input[contenteditable="true"][role="textbox"]:visible');
+        return {};
+      } };
+    } }, repoMemoryFixture: { prompt: "synthetic" },
     beginHookTiming(phase, sessionId, options) { calls.push([phase, sessionId, options.runIndex]); },
     async submitPrompt() { calls.push("submit"); agent.runs.push({ requestId: "first" }, { requestId: "retry" }); agent.errors.push(failure); },
     async observeHookTiming() { calls.push("observe"); },
@@ -599,4 +762,657 @@ test("Repo Memory timing observes the first submission before reporting its orig
   });
   await assert.rejects(worker(), { code: failure });
   assert.deepEqual(calls, ["config-ready", "session-ready", ["turn", "parent-session", 0], "submit", "observe"]);
+});
+
+
+test("submission failures retain the exact error and action phase without retrying or submitting later", async () => {
+  for (const phase of ["fill", "type-skill", "select-skill", "verify-skill", "move-to-end", "insert-text", "enter"]) {
+    const error = new Error(privateCanary), actions = [], records = [];
+    const act = async (current) => { actions.push(current); if (current === phase) throw error; };
+    const input = { fill: () => act("fill"), pressSequentially: () => act("type-skill"),
+      press: key => act(key === "End" ? "move-to-end" : "enter"),
+      locator: () => ({ count: async () => { await act("verify-skill"); return 1; } }) };
+    const composer = {}, sessionId = privateCanary;
+    const submit = nativeFunction("submitPrompt", {
+      page: { locator: () => ({ locator: () => ({ filter: () => ({ count: async () => 1, click: () => act("select-skill") }) }) }),
+        keyboard: { insertText: () => act("insert-text") } },
+      async waitFor(predicate, code) { check(await predicate(), code); },
+      async recordSubmissionFailure(value) { records.push(value); throw new Error("diagnostic read failed"); },
+      markHookSubmit() { actions.push("mark"); },
+    });
+    await assert.rejects(submit(input, { operation: phase === "fill" ? undefined : "search", prompt: "/memorax-code synthetic" },
+      { composer, sessionId }), failure => failure === error);
+    assert.equal(records.length, 1);
+    assert.equal(records[0].phase, phase);
+    assert.equal(records[0].error, error);
+    assert.equal(records[0].input, input);
+    assert.equal(records[0].composer, composer);
+    assert.equal(records[0].sessionId, sessionId);
+    assert.equal(actions.at(-1), phase);
+    assert.equal(actions.filter(action => action === phase).length, 1);
+    assert.equal(actions.includes("mark"), phase === "enter");
+  }
+});
+
+test("failed submission snapshots distinguish duplicate editors and never act on an ambiguous locator", async () => {
+  for (const mode of ["unique", "duplicate", "absent", "not-editable", "different-session", "missing-session", "unknown-status"]) {
+    const report = {}, calls = [], count = mode === "absent" ? 0 : mode === "duplicate" ? 2 : 1;
+    const sessionId = privateCanary, error = Object.assign(new Error(privateCanary), { name: "TimeoutError" });
+    const composer = { async count() { return mode === "absent" ? 0 : 1; },
+      async getAttribute(name) { calls.push("status"); assert.equal(name, "data-composer-status"); return mode === "unknown-status" ? privateCanary : "cancelled"; },
+      locator(selector) {
+        assert.ok(['.aislash-editor-input[contenteditable="true"][role="textbox"]:visible',
+          '.ui-prompt-input-editor__input[contenteditable="true"][role="textbox"]:visible'].includes(selector));
+        calls.push(selector);
+        return { count: async () => mode === "absent" ? 0 : selector.includes("aislash") || mode === "duplicate" ? 1 : 0 };
+      } };
+    const input = { async count() { return count; }, async isEditable() { calls.push("editable"); return mode !== "not-editable"; } };
+    const capture = nativeFunction("recordSubmissionFailure", { report,
+      async bounded(promise, code, timeout) { assert.equal(code, "CURSOR_APP_SUBMIT_DIAGNOSTICS_TIMEOUT"); assert.equal(timeout, 1000); return promise; },
+      page: { async evaluate(fn, id) {
+        const composerId = mode === "different-session" ? "different-synthetic-session" : mode === "missing-session" ? undefined : sessionId;
+        const read = runInNewContext("(" + fn.toString() + ")", { window: { driver: { async executeCommand(command) {
+          assert.equal(command, "workbench.action.devGetComposerDataForTesting");
+          return { composerId, privateData: privateCanary };
+        } } } });
+        return read(id);
+      } },
+    });
+    await capture({ composer, input, sessionId, phase: "fill", error });
+    const value = report.nativeSubmit;
+    assert.equal(value.readStatus, "present");
+    assert.equal(value.failureKind, "timeout");
+    assert.equal(value.inputCount, count);
+    assert.equal(value.primaryInputCount, mode === "absent" ? 0 : 1);
+    assert.equal(value.editingInputCount, mode === "duplicate" ? 1 : 0);
+    assert.equal(value.editable, count === 1 ? mode !== "not-editable" : null);
+    assert.equal(value.selectedSessionMatches, mode === "missing-session" ? null : mode !== "different-session");
+    assert.equal(value.composerStatus, mode === "absent" ? "absent" : mode === "unknown-status" ? "other" : "cancelled");
+    assert.equal(calls.includes("editable"), count === 1);
+    assert.equal(calls.includes("status"), mode !== "absent");
+    assert.equal(JSON.stringify(value).includes(privateCanary), false);
+    await capture({ phase: "enter", error: new Error("later error") });
+    assert.equal(report.nativeSubmit, value);
+  }
+});
+
+test("unavailable submission diagnostics preserve the original phase and failure without inventing zero counts", async () => {
+  for (const failure of ["read", "timeout"]) {
+    const report = {}, error = new Error("strict mode violation " + privateCanary);
+    const capture = nativeFunction("recordSubmissionFailure", { report,
+      async bounded(promise) { await promise.catch(() => {}); throw new Error(privateCanary); },
+      page: { evaluate: async () => true },
+    });
+    const composer = { count: async () => { if (failure === "read") throw new Error(privateCanary); return 1; },
+      getAttribute: async () => "cancelled", locator: () => ({ count: async () => 1 }) };
+    const input = { count: async () => 2 };
+    await capture({ composer, input, sessionId: privateCanary, phase: "fill", error });
+    assert.equal(report.nativeSubmit.readStatus, "unavailable");
+    assert.equal(report.nativeSubmit.failureKind, "ambiguous");
+    assert.equal(report.nativeSubmit.phase, "fill");
+    for (const key of ["composerCount", "inputCount", "primaryInputCount", "editingInputCount", "editable", "selectedSessionMatches"]) {
+      assert.equal(report.nativeSubmit[key], null);
+    }
+    assert.equal(JSON.stringify(report).includes(privateCanary), false);
+  }
+});
+
+
+test("a hung diagnostic read cannot hold submission failure open beyond its own bounded budget", async () => {
+  const report = {}, original = new Error("strict mode violation " + privateCanary);
+  const bounded = nativeFunction("bounded", { setTimeout, clearTimeout });
+  const capture = nativeFunction("recordSubmissionFailure", { report, bounded,
+    page: { evaluate: async () => true } });
+  const composer = { count: () => new Promise(() => {}), locator: () => ({ count: async () => 1 }) };
+  const input = { count: async () => 2 };
+  await capture({ composer, input, sessionId: privateCanary, phase: "fill", error: original });
+  assert.equal(report.nativeSubmit.readStatus, "unavailable");
+  assert.equal(report.nativeSubmit.phase, "fill");
+  assert.equal(report.nativeSubmit.failureKind, "ambiguous");
+  assert.equal(JSON.stringify(report).includes(privateCanary), false);
+});
+
+
+test("the pending-shell interruption fixture also submits only through its session's primary input", async () => {
+  const actions = [], finished = new Error("submission observed"), sessionId = "interrupted-session";
+  const input = { async fill(value) { actions.push(["fill", value]); }, async press(key) { actions.push(["press", key]); throw finished; } };
+  const interrupt = nativeFunction("interruptPendingShell", { agent: { runs: [] }, report: {}, interruption: undefined,
+    workspace: "/owned/workspace", interruptedFixture: { prompt: "synthetic interruption" }, async openSession() { return sessionId; },
+    page: { locator(selector) {
+      assert.equal(selector, '[data-composer-id="interrupted-session"][data-composer-status]:visible');
+      return { locator(inputSelector) {
+        assert.equal(inputSelector, '.aislash-editor-input[contenteditable="true"][role="textbox"]:visible');
+        return input;
+      } };
+    } },
+  });
+  await assert.rejects(interrupt(), error => error === finished);
+  assert.deepEqual(actions, [["fill", "synthetic interruption"], ["press", "Enter"]]);
+});
+
+test("restart identity follows ChildProcess lifetimes and accepts a recycled PID", async () => {
+  const body = source.split('  report.stage = "app-restart";')[1].split('  await openSession(firstSession);')[0];
+  for (const outcome of ["recycled-pid", "old-live", "new-closed", "same-child"]) {
+    const old = { pid: 201, exitCode: null, signalCode: null };
+    const context = { app: old, check, checkpointReport() {}, firstWorkspace: "/owned/workspace", workspace: "/owned/other",
+      async stopApp() { if (outcome !== "old-live") old.exitCode = 0; },
+      async assertProcessesStopped() {}, assertWriteback() {},
+      async startApp() { context.app = outcome === "same-child" ? old
+        : { pid: 201, exitCode: outcome === "new-closed" ? 0 : null, signalCode: null }; },
+    };
+    const run = runInNewContext("(async () => {" + body + "})", context);
+    if (outcome === "recycled-pid") await run();
+    else await assert.rejects(run(), { code: "CURSOR_APP_RESTART_IDENTITY" });
+  }
+});
+
+test("macOS observations retire only after a complete clear audit and can be captured for the next launch", async () => {
+  const observedMacosProcesses = new Map([[201, "first-launch"]]);
+  let remains = true, fails = false;
+  const audit = nativeFunction("assertProcessesStopped", { observedMacosProcesses, windows: undefined, macos: {},
+    async ownedProcessesRemain() { if (fails) throw Object.assign(new Error("unavailable"), { code: "AUDIT_FAILED" }); return remains; },
+    async delay() {},
+  });
+  await assert.rejects(audit(), { code: "CURSOR_APP_CLEANUP_DESCENDANTS" });
+  assert.equal(observedMacosProcesses.get(201), "first-launch");
+  fails = true;
+  await assert.rejects(audit(), { code: "AUDIT_FAILED" });
+  assert.equal(observedMacosProcesses.size, 1);
+  fails = false; remains = false;
+  await audit();
+  assert.equal(observedMacosProcesses.size, 0);
+  observedMacosProcesses.set(201, "second-launch");
+  remains = true;
+  await assert.rejects(audit(), { code: "CURSOR_APP_CLEANUP_DESCENDANTS" });
+  assert.equal(observedMacosProcesses.get(201), "second-launch");
+});
+
+test("progress persistence failures preserve the first native failure and private fields never reach the writer", () => {
+  const report = { status: "FAIL", stage: "native-submit", errorCode: "CURSOR_APP_DRIVER", evidence: {} };
+  const persist = nativeFunction("checkpointReport", { report, memoryRequests: [], agent: undefined, activeHookTiming: undefined,
+    reportDir: "/owned/report", expectedVersion: "3.21.18", expectedNodeMajor: "24",
+    writeCursorAppProgress() { throw new Error(privateCanary); },
+  });
+  persist();
+  assert.equal(report.errorCode, "CURSOR_APP_DRIVER");
+  assert.equal(report.stage, "native-submit");
+  assert.equal(JSON.stringify(report).includes(privateCanary), false);
+});
+
+
+test("driver readiness reports absent pages, absent drivers, evaluation rejection and success without changing page selection", async (t) => {
+  for (const mode of ["page-absent", "driver-absent", "evaluation-rejected", "ready", "first-page-only", "cdp-failed"]) {
+    let clock = 0, evaluations = 0;
+    const child = childProcess(), report = { errorCode: "CURSOR_APP_DRIVER" }, selected = [], deadlines = [];
+    t.after(() => { child.stdout.end(); child.stderr.end(); });
+    const first = { url: () => "file:///" + privateCanary + "/workbench.html", setDefaultTimeout() {},
+      async evaluate() {
+        selected.push("first"); evaluations += 1;
+        if (mode === "evaluation-rejected") throw new Error("Execution context was destroyed " + privateCanary);
+        return mode === "ready" && evaluations >= 2;
+      } };
+    const second = { url: () => "file:///workbench.html?" + privateCanary,
+      async evaluate() { selected.push("second"); return true; } };
+    const bounded = nativeFunction("bounded", { setTimeout, clearTimeout });
+    const waitFor = nativeFunction("waitFor", { app: child, bounded, Date: { now: () => clock },
+      async delay(milliseconds) { assert.equal(milliseconds, 200); clock += mode === "ready" ? 200 : 90000; } });
+    const waitForDriverReady = nativeFunction("waitForDriverReady", { app: child, Date: { now: () => clock }, setTimeout, clearTimeout,
+      async delay(milliseconds) { assert.equal(milliseconds, 200); clock += mode === "ready" ? 200 : 90000; } });
+    const original = Object.assign(new Error(privateCanary), { code: "SYNTHETIC_CDP_FAILURE" });
+    const start = nativeFunction("startApp", {
+      process: { platform: "win32" }, macos: undefined, windows: {}, report, AbortSignal,
+      createCursorAppDriverDiagnostics: options => createCursorAppDriverDiagnostics({ ...options, now: () => clock }),
+      appPath: "/owned/app", userData: "/owned/app-data", root: "/owned", workspace: "/owned/workspace", env: {},
+      agent: { url: "http://127.0.0.1:12345" }, debugPort: 12346, spawn: () => child,
+      fetch: async () => ({ ok: true }), bounded,
+      chromium: { async connectOverCDP() {
+        if (mode === "cdp-failed") throw original;
+        return { contexts: () => [{ pages: () => mode === "page-absent" ? [] : mode === "first-page-only" ? [first, second] : [first] }] };
+      } },
+      async waitFor(predicate, code, deadline, onTimeout) { deadlines.push([code, deadline]); return waitFor(predicate, code, deadline, onTimeout); },
+      async waitForDriverReady(predicate, deadline, driver) {
+        deadlines.push(["CURSOR_APP_DRIVER", deadline]); return waitForDriverReady(predicate, deadline, driver);
+      },
+    });
+    if (mode === "ready") await start();
+    else await assert.rejects(start(), error => mode === "cdp-failed" ? error === original : error.code === "CURSOR_APP_DRIVER");
+    const value = report.appDriver;
+    assert.equal(report.errorCode, "CURSOR_APP_DRIVER");
+    assert.equal(value.cdpConnected, mode !== "cdp-failed");
+    assert.equal(value.outcome, mode === "ready" ? "ready" : "failed");
+    assert.equal(value.timeoutKind, ["ready", "cdp-failed"].includes(mode) ? "none" : "overall");
+    assert.equal(selected.includes("second"), false);
+    if (mode === "cdp-failed") {
+      assert.equal(value.firstProbe, null); assert.equal(value.waitElapsedMs, null); assert.equal(value.probeCount, 0);
+    } else {
+      assert.deepEqual(deadlines.at(-1), ["CURSOR_APP_DRIVER", 90000]);
+      assert.equal(value.lastProbe.contextCount, 1);
+      assert.equal(value.lastProbe.pageCount, mode === "page-absent" ? 0 : mode === "first-page-only" ? 2 : 1);
+      assert.equal(value.lastProbe.workbenchCount, value.lastProbe.pageCount);
+      assert.equal(value.lastProbe.evaluation, mode === "page-absent" ? "not-started" : mode === "evaluation-rejected" ? "rejected" : "resolved");
+      assert.equal(value.lastProbe.driverState, mode === "ready" ? "ready" : ["driver-absent", "first-page-only"].includes(mode) ? "absent" : "unobserved");
+      if (mode === "evaluation-rejected") assert.equal(value.lastProbe.evaluationFailure, "context-destroyed");
+      if (mode === "ready") {
+        assert.equal(value.firstProbe.driverState, "absent"); assert.equal(value.probeCount, 2);
+        assert.equal(value.waitElapsedMs, 200);
+      }
+    }
+    assert.equal(JSON.stringify(report).includes(privateCanary), false);
+  }
+});
+
+// Virtual time for readiness tests: timers fire in due order (one may be made late), and pending promise work drains
+// between them. External events such as an evaluation settling are scheduled at absolute times.
+function virtualClock({ lateMs = () => 0 } = {}) {
+  let clock = 0, sequence = 0;
+  const timers = new Map();
+  const at = (time, callback) => { const id = ++sequence; timers.set(id, { time, callback, id }); return id; };
+  return { at, now: () => clock,
+    setTimeout: (callback, milliseconds) => at(clock + milliseconds + lateMs(clock + milliseconds), callback),
+    clearTimeout: id => { timers.delete(id); },
+    async run() {
+      for (let step = 0; step < 1000; step++) {
+        for (let turn = 0; turn < 10; turn++) await new Promise(setImmediate);
+        const [next] = [...timers.values()].sort((a, b) => a.time - b.time || a.id - b.id);
+        if (!next) return;
+        timers.delete(next.id); clock = Math.max(clock, next.time); next.callback();
+      }
+      throw new Error("virtual clock did not settle");
+    } };
+}
+// Starts the App through the real readiness helper; evaluate(n) returns the n-th readiness evaluation's promise.
+async function driverReadiness(t, { platform = "win32", lateMs, evaluate, events = () => {} }) {
+  const clock = virtualClock({ lateMs }), child = childProcess(), report = {}, starts = [];
+  let inFlight = 0, maxInFlight = 0, outcome, settledReport;
+  t.after(() => { child.stdout.end(); child.stderr.end(); });
+  const page = { url: () => "file:///workbench.html", setDefaultTimeout() {},
+    evaluate(callback) {
+      if (!String(callback).includes("Boolean(window.driver)")) return Promise.resolve();
+      starts.push(clock.now()); inFlight += 1; maxInFlight = Math.max(maxInFlight, inFlight);
+      return Promise.resolve(evaluate(starts.length, clock)).finally(() => { inFlight -= 1; });
+    } };
+  const delay = milliseconds => new Promise(resolve => clock.setTimeout(resolve, milliseconds));
+  const bounded = nativeFunction("bounded", { setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout });
+  const waitFor = nativeFunction("waitFor", { app: child, bounded, Date: { now: clock.now }, delay });
+  const waitForDriverReady = nativeFunction("waitForDriverReady", { app: child, Date: { now: clock.now },
+    setTimeout: clock.setTimeout, clearTimeout: clock.clearTimeout, delay });
+  const start = nativeFunction("startApp", { process: { platform }, macos: undefined, windows: platform === "win32" ? {} : undefined,
+    report, AbortSignal, Date: { now: clock.now },
+    createCursorAppDriverDiagnostics: options => createCursorAppDriverDiagnostics({ ...options, now: clock.now }),
+    appPath: "/owned/app", userData: "/owned/app-data", root: "/owned", workspace: "/owned/workspace", env: {},
+    agent: { url: "http://127.0.0.1:12345" }, debugPort: 12346, spawn: () => child, fetch: async () => ({ ok: true }),
+    bounded, waitFor, waitForDriverReady,
+    chromium: { connectOverCDP: async () => ({ contexts: () => [{ pages: () => [page] }] }) } });
+  events(clock, child);
+  const done = start().then(() => ({ ok: true }), error => ({ ok: false, code: error.code }))
+    .then(value => { outcome = { ...value, at: clock.now() }; settledReport = JSON.stringify(report); });
+  await clock.run(); await done;
+  return { outcome, report, settledReport, starts, maxInFlight, clock };
+}
+const settleAt = (clock, time, settle) => new Promise((resolve, reject) => clock.at(time, () => settle(resolve, reject)));
+
+test("a slow driver evaluation stays the only one in flight and its result before the deadline counts", async (t) => {
+  const run = await driverReadiness(t, { evaluate: (n, clock) => settleAt(clock, 7000, resolve => resolve(true)) });
+  assert.deepEqual(run.outcome, { ok: true, at: 7000 });
+  assert.deepEqual(run.starts, [0]);
+  assert.equal(run.maxInFlight, 1);
+  const value = run.report.appDriver;
+  assert.equal(value.outcome, "ready"); assert.equal(value.timeoutKind, "none");
+  assert.equal(value.probeCount, 1); assert.equal(value.slowProbeCount, 1);
+  assert.equal(value.lastProbe.slowAtElapsedMs, 5000); assert.equal(value.lastProbe.completedElapsedMs, 7000);
+  assert.equal(value.lastProbe.driverState, "ready"); assert.equal(value.waitElapsedMs, 7000);
+});
+
+test("a driver evaluation that never returns fails only at the strict deadline and late results cannot change it", async (t) => {
+  for (const [platform, deadline] of [["win32", 90000], ["linux", 30000]]) {
+    for (const late of [undefined, resolve => resolve(true),
+      (resolve, reject) => reject(new Error("Target page, context or browser has been closed"))]) {
+      const run = await driverReadiness(t, { platform,
+        evaluate: (n, clock) => late ? settleAt(clock, deadline + 10, late) : new Promise(() => {}) });
+      assert.deepEqual(run.outcome, { ok: false, code: "CURSOR_APP_DRIVER", at: deadline });
+      assert.deepEqual(run.starts, [0]);
+      const value = run.report.appDriver;
+      assert.equal(value.outcome, "failed"); assert.equal(value.timeoutKind, "overall");
+      assert.equal(value.waitElapsedMs, deadline); assert.equal(value.slowProbeCount, 1);
+      assert.equal(value.lastProbe.evaluation, "pending"); assert.equal(value.lastProbe.slowAtElapsedMs, 5000);
+      assert.equal(value.lastProbe.completedElapsedMs, null);
+      assert.equal(JSON.stringify(run.report), run.settledReport);
+    }
+  }
+});
+
+test("a driver result observed after the deadline stays a failure when the deadline timer runs late", async (t) => {
+  const run = await driverReadiness(t, { lateMs: time => time === 90000 ? 50 : 0,
+    evaluate: (n, clock) => settleAt(clock, 90010, resolve => resolve(true)) });
+  assert.deepEqual(run.outcome, { ok: false, code: "CURSOR_APP_DRIVER", at: 90010 });
+  const value = run.report.appDriver;
+  assert.equal(value.outcome, "failed"); assert.equal(value.timeoutKind, "overall");
+  assert.equal(value.lastProbe.evaluation, "pending"); assert.equal(value.lastProbe.driverState, "unobserved");
+  assert.equal(JSON.stringify(run.report), run.settledReport);
+});
+
+test("the App exiting during an in-flight driver evaluation fails at once without another evaluation", async (t) => {
+  const run = await driverReadiness(t, { evaluate: (n, clock) => settleAt(clock, 20000, resolve => resolve(true)),
+    events: (clock, child) => clock.at(6000, () => { child.exitCode = 0; child.emit("exit", 0, null); }) });
+  assert.deepEqual(run.outcome, { ok: false, code: "CURSOR_APP_EXITED", at: 6000 });
+  assert.deepEqual(run.starts, [0]);
+  assert.equal(run.report.appDriver.outcome, "failed");
+  assert.equal(run.report.appDriver.lastProbe.evaluation, "pending");
+  assert.equal(JSON.stringify(run.report), run.settledReport);
+});
+
+test("slow false and rejected driver evaluations keep one in flight and never overrun the deadline", async (t) => {
+  const run = await driverReadiness(t, { evaluate: (n, clock) => n === 1 ? settleAt(clock, 6000, resolve => resolve(false))
+    : n === 2 ? settleAt(clock, 7200, (resolve, reject) => reject(new Error("Execution context was destroyed")))
+      : true });
+  assert.deepEqual(run.outcome, { ok: true, at: 7400 });
+  assert.deepEqual(run.starts, [0, 6200, 7400]);
+  assert.equal(run.maxInFlight, 1);
+  assert.equal(run.report.appDriver.slowProbeCount, 1);
+  assert.equal(run.report.appDriver.firstProbe.slowAtElapsedMs, 5000);
+  assert.equal(run.report.appDriver.firstProbe.driverState, "absent");
+  const tail = await driverReadiness(t, { platform: "linux", evaluate: (n, clock) => settleAt(clock, 29900, resolve => resolve(false)) });
+  assert.deepEqual(tail.outcome, { ok: false, code: "CURSOR_APP_DRIVER", at: 30000 });
+  assert.deepEqual(tail.starts, [0]);
+});
+
+test("a slow driver probe is recorded when its result arrives before a late slow timer", async (t) => {
+  const settles = [["true", resolve => resolve(true)], ["false", resolve => resolve(false)],
+    ["rejection", (resolve, reject) => reject(new Error("Execution context was destroyed"))]];
+  for (const [label, settle] of settles) {
+    const run = await driverReadiness(t, { lateMs: time => time === 5000 ? 3000 : 0,
+      evaluate: (n, clock) => n === 1 ? settleAt(clock, 7000, settle) : true });
+    assert.deepEqual(run.outcome, { ok: true, at: label === "true" ? 7000 : 7200 }, label);
+    assert.deepEqual(run.starts, label === "true" ? [0] : [0, 7200], label);
+    assert.equal(run.maxInFlight, 1, label);
+    const value = run.report.appDriver;
+    assert.equal(value.slowProbeCount, 1, label);
+    assert.equal(value.firstProbe.slowAtElapsedMs, 7000, label);
+    assert.equal(value.firstProbe.completedElapsedMs, 7000, label);
+    assert.equal(value.firstProbe.evaluation, label === "rejection" ? "rejected" : "resolved", label);
+  }
+  // A slow timer that fires on time and the completed result do not count the same probe twice.
+  const onTime = await driverReadiness(t, { evaluate: (n, clock) => settleAt(clock, 7000, resolve => resolve(true)) });
+  assert.equal(onTime.report.appDriver.slowProbeCount, 1);
+  assert.equal(onTime.report.appDriver.lastProbe.slowAtElapsedMs, 5000);
+});
+
+test("readiness observers and predicate errors keep their existing precedence", async () => {
+  const observer = () => { throw new Error(privateCanary); };
+  let clock = 0;
+  const helper = nativeFunction("waitForDriverReady", { app: undefined, Date: { now: () => clock },
+    setTimeout: (callback, milliseconds) => setImmediate(() => { clock += milliseconds; callback(); }), clearTimeout: clearImmediate,
+    async delay() { assert.fail("a pending evaluation must not poll"); } });
+  await assert.rejects(helper(() => new Promise(() => {}), 90000, { closeAt: observer, slow: observer, timeout: observer }),
+    { code: "CURSOR_APP_DRIVER" });
+  const original = Object.assign(new Error(privateCanary), { code: "SYNTHETIC_PREDICATE_FAILURE" });
+  await assert.rejects(helper(() => { throw original; }, 90000, { closeAt() {}, slow() {}, timeout() {} }), error => error === original);
+});
+
+test("readiness timeout observers cannot replace predicate or overall timeout errors", async () => {
+  const observer = () => { throw new Error(privateCanary); };
+  const bounded = nativeFunction("bounded", { setTimeout: callback => setImmediate(callback), clearTimeout: clearImmediate });
+  await assert.rejects(bounded(new Promise(() => {}), "CURSOR_APP_DRIVER", 5000, observer), { code: "CURSOR_APP_DRIVER" });
+  let clock = 0;
+  const waitFor = nativeFunction("waitFor", { app: undefined, bounded: promise => promise, Date: { now: () => clock },
+    async delay() { clock = 90000; } });
+  await assert.rejects(waitFor(() => false, "CURSOR_APP_DRIVER", 90000, observer), { code: "CURSOR_APP_DRIVER" });
+});
+
+
+async function readinessFailureFixture(options = {}) {
+  const sessionId = "11111111-1111-4111-8111-111111111111";
+  const current = { phase: "session", appLaunch: 1, sessionId, runIndex: null, observedMs: {} };
+  const report = {}, readyHookSessions = new Map(), collected = [], checkpoints = [], deadlines = [], polls = [];
+  let clock = 0, resolveRead, resolveDiagnostics, timerId = 0, reads = 0, predicateTimers = 0;
+  const timers = new Set();
+  const original = Object.assign(new Error(privateCanary), { code: "CURSOR_APP_HOOK_LOG_READ_FAILED" });
+  const bounded = nativeFunction("bounded", {
+    setTimeout(callback, milliseconds) {
+      const id = ++timerId; timers.add(id); deadlines.push(milliseconds);
+      if (milliseconds === 5000) predicateTimers += 1;
+      if (milliseconds === 5000 && (options.predicateTimeout || options.predicateTimeoutAfterObservation && predicateTimers === 2)
+        || options.diagnosticTimeout && milliseconds === 1000) {
+        queueMicrotask(() => { if (timers.has(id)) { clock += milliseconds; callback(); } });
+      }
+      return id;
+    },
+    clearTimeout(id) { timers.delete(id); },
+  });
+  const waitFor = nativeFunction("waitFor", { app: undefined, bounded, Date: { now: () => clock },
+    async delay(milliseconds) { polls.push(milliseconds); clock += 15000; } });
+  const observe = nativeFunction("observeHookTiming", { activeHookTiming: current, appStartedAt: 0,
+    userData: "/owned/app-data", agent: { runs: [] }, readyHookSessions, Date: { now: () => clock },
+    async collectCursorAppHookTiming() {
+      reads += 1;
+      if (options.readRejected) throw original;
+      if (options.predicateTimeout || options.predicateTimeoutAfterObservation && reads === 2) return new Promise(resolve => { resolveRead = resolve; });
+      return projectCursorAppHookTiming({ phase: "session", readStatus: "present", currentLogFiles: 1,
+        requiredUserHooksLoaded: true, sessionStartReady: false });
+    },
+  });
+  const finish = nativeFunction("finishHookTiming", { activeHookTiming: current, report });
+  const gate = nativeFunction("waitForHookReady", { process: { platform: options.platform ?? "darwin" }, activeHookTiming: current,
+    appLaunch: 1, appStartedAt: 0, userData: "/owned/app-data", report, bounded, waitFor, Date: { now: () => clock },
+    beginHookTiming(phase, id) { assert.equal(phase, "session"); assert.equal(id, sessionId); },
+    observeHookTiming: observe, finishHookTiming: finish,
+    checkpointReport() { checkpoints.push(JSON.parse(JSON.stringify(report))); },
+    async collectCursorAppSessionHookDiagnostics(input) {
+      collected.push({ ...input });
+      if (options.diagnosticRejected) throw new Error(privateCanary);
+      if (options.diagnosticTimeout) return new Promise(resolve => { resolveDiagnostics = resolve; });
+      return projectCursorAppSessionHookDiagnostics({ readStatus: "present", filesRead: 1, currentLogFiles: 1,
+        unscopedRequests: 1, ownedExecutionBlocks: 1, filteredExecutionBlocks: { parse: 1 }, executions: [] });
+    },
+  });
+  let error;
+  try { await gate("session", sessionId); } catch (caught) { error = caught; }
+  return { report, error, original, current, readyHookSessions, collected, checkpoints, deadlines, polls,
+    sessionId, resolveRead, resolveDiagnostics, timers };
+}
+
+test("first-session overall timeout preserves the last completed observation and collects without a model turn", async () => {
+  const value = await readinessFailureFixture();
+  assert.equal(value.error.code, "CURSOR_APP_SESSION_START_READY_TIMEOUT");
+  const failure = value.report.hookReadinessFailure;
+  assert.equal(failure.timeoutKind, "overall");
+  assert.equal(failure.waitElapsedMs, 30000);
+  assert.equal(failure.lastObservationElapsedMs, 15000);
+  assert.equal(failure.observationPending, false);
+  assert.equal(failure.lastObservation.requiredUserHooksLoaded, true);
+  assert.equal(failure.lastObservation.sessionStartReady, false);
+  assert.equal(failure.sessionDiagnosticsStatus, "completed");
+  assert.equal(failure.sessionStart.filteredExecutionBlocks.parse, 1);
+  assert.deepEqual(value.collected, [{ home: "/owned/app-data", startedAt: 0, sessionId: value.sessionId }]);
+  assert.deepEqual(value.deadlines, [5000, 5000, 1000]);
+  assert.deepEqual(value.polls, [200, 200]);
+  assert.equal(value.checkpoints[1].hookReadinessFailure.sessionDiagnosticsStatus, "not-requested");
+  assert.equal(value.checkpoints[1].errorCode, "CURSOR_APP_SESSION_START_READY_TIMEOUT");
+  assert.equal(value.report.hookTimings.length, 1);
+  assert.equal(value.timers.size, 0);
+  for (const secret of [value.sessionId, "/owned/app-data", privateCanary]) assert.equal(JSON.stringify(value.report).includes(secret), false);
+});
+
+test("a pending readiness read retains its 5s timeout and cannot mutate the frozen failure after resolving", async () => {
+  const value = await readinessFailureFixture({ predicateTimeout: true });
+  assert.equal(value.error.code, "CURSOR_APP_SESSION_START_READY_TIMEOUT");
+  const failure = value.report.hookReadinessFailure;
+  assert.equal(failure.timeoutKind, "predicate");
+  assert.equal(failure.waitElapsedMs, 5000);
+  assert.equal(failure.lastObservationElapsedMs, null);
+  assert.equal(failure.lastObservation, null);
+  assert.equal(failure.observationPending, true);
+  const before = JSON.stringify(value.report);
+  value.resolveRead({ readStatus: "present", currentLogFiles: 1, requiredUserHooksLoaded: true, sessionStartReady: true });
+  await new Promise(setImmediate);
+  assert.equal(JSON.stringify(value.report), before);
+  assert.equal(value.readyHookSessions.size, 0);
+  assert.equal(value.current.snapshot, undefined);
+  assert.equal(value.timers.size, 0);
+});
+
+test("failed or late diagnostic collection cannot replace the first readiness error or infer a turn", async () => {
+  for (const diagnosticTimeout of [false, true]) {
+    const value = await readinessFailureFixture({ readRejected: true, diagnosticRejected: !diagnosticTimeout, diagnosticTimeout });
+    assert.equal(value.error, value.original);
+    const failure = value.report.hookReadinessFailure;
+    assert.equal(failure.code, "CURSOR_APP_HOOK_LOG_READ_FAILED");
+    assert.equal(failure.timeoutKind, "none");
+    assert.equal(failure.observationPending, false);
+    assert.equal(failure.sessionDiagnosticsStatus, diagnosticTimeout ? "timeout" : "failed");
+    assert.equal(failure.sessionStart.readStatus, "unavailable");
+    assert.equal(Object.hasOwn(value.collected[0], "turnId"), false);
+    const before = JSON.stringify(value.report);
+    value.resolveDiagnostics?.({ readStatus: "present", unscopedRequests: 99, raw: privateCanary });
+    await new Promise(setImmediate);
+    assert.equal(JSON.stringify(value.report), before);
+    assert.equal(value.timers.size, 0);
+  }
+});
+
+test("a later pending readiness read preserves the previous completed observation", async () => {
+  const value = await readinessFailureFixture({ predicateTimeoutAfterObservation: true });
+  const failure = value.report.hookReadinessFailure;
+  assert.equal(failure.timeoutKind, "predicate");
+  assert.equal(failure.waitElapsedMs, 20000);
+  assert.equal(failure.lastObservationElapsedMs, 0);
+  assert.equal(failure.lastObservation.requiredUserHooksLoaded, true);
+  assert.equal(failure.lastObservation.sessionStartReady, false);
+  assert.equal(failure.observationPending, true);
+  const before = JSON.stringify(value.report);
+  value.resolveRead({ requiredUserHooksLoaded: true, sessionStartReady: true });
+  await new Promise(setImmediate);
+  assert.equal(JSON.stringify(value.report), before);
+  assert.equal(value.readyHookSessions.size, 0);
+});
+
+test("an outer timeout during session diagnostics recovers the first failure from its earlier checkpoint", async () => {
+  const value = await readinessFailureFixture({ diagnosticTimeout: true });
+  const checkpoint = { status: "FAIL", client: "cursor", kind: "app-native-session-flows", platform: "darwin",
+    node: "24.22.0", version: "3.21.18", evidence: {}, ...value.checkpoints[1] };
+  const output = await collectCursorAppNativeReport({ expected: { expectedVersion: "3.21.18", platform: "darwin" },
+    fallback: { status: "FAIL", evidence: {} }, execution: classifyCursorAppExecution({ code: "ETIMEDOUT" }),
+    exitErrorCode: "CURSOR_APP_NATIVE_EXIT", async readReport(name) {
+      if (name === "report.json") throw Object.assign(new Error(privateCanary), { code: "ENOENT" });
+      return JSON.stringify(checkpoint);
+    } });
+  assert.equal(output.errorCode, "CURSOR_APP_SESSION_START_READY_TIMEOUT");
+  assert.equal(output.hookReadinessFailure.code, output.errorCode);
+  assert.equal(output.hookReadinessFailure.sessionDiagnosticsStatus, "not-requested");
+  assert.equal(output.hookReadinessFailure.lastObservation.requiredUserHooksLoaded, true);
+  assert.equal(output.nativeExecution.status, "timeout");
+  assert.equal(output.nativeExecution.reportSource, "progress");
+  assert.equal(output.nativeExecution.finalReport, "missing");
+  assert.equal(output.stage, "hook-session-ready");
+  assert.equal(JSON.stringify(output).includes(privateCanary), false);
+});
+
+test("Windows readiness failures keep the frozen first failure and recover it from the progress checkpoint", async () => {
+  const overall = await readinessFailureFixture({ platform: "win32" });
+  assert.equal(overall.error.code, "CURSOR_APP_SESSION_START_READY_TIMEOUT");
+  assert.equal(overall.report.hookReadinessFailure.timeoutKind, "overall");
+  assert.equal(overall.report.hookReadinessFailure.sessionDiagnosticsStatus, "completed");
+  assert.deepEqual(overall.deadlines, [5000, 5000, 1000]);
+  const pending = await readinessFailureFixture({ platform: "win32", predicateTimeout: true });
+  assert.equal(pending.report.hookReadinessFailure.timeoutKind, "predicate");
+  const before = JSON.stringify(pending.report);
+  pending.resolveRead({ readStatus: "present", currentLogFiles: 1, requiredUserHooksLoaded: true, sessionStartReady: true });
+  await new Promise(setImmediate);
+  assert.equal(JSON.stringify(pending.report), before);
+  assert.equal(pending.readyHookSessions.size, 0);
+  const late = await readinessFailureFixture({ platform: "win32", diagnosticTimeout: true });
+  const checkpoint = { status: "FAIL", client: "cursor", kind: "app-native-session-flows", platform: "win32",
+    node: "24.22.0", version: "3.27.14", evidence: {}, ...late.checkpoints[1],
+    hookTimings: [projectCursorAppHookTiming({ phase: "session", appLaunch: 1 })] };
+  const output = await collectCursorAppNativeReport({ expected: { expectedVersion: "3.27.14", platform: "win32" },
+    fallback: { status: "FAIL", evidence: {} }, execution: classifyCursorAppExecution({ code: "ETIMEDOUT" }),
+    exitErrorCode: "CURSOR_APP_NATIVE_EXIT", async readReport(name) {
+      if (name === "report.json") throw Object.assign(new Error(privateCanary), { code: "ENOENT" });
+      return JSON.stringify(checkpoint);
+    } });
+  assert.equal(output.errorCode, "CURSOR_APP_SESSION_START_READY_TIMEOUT");
+  assert.equal(output.stage, "hook-session-ready");
+  assert.equal(output.hookReadinessFailure.code, output.errorCode);
+  assert.equal(output.hookReadinessFailure.sessionDiagnosticsStatus, "not-requested");
+  // Windows reports keep the readiness failure but still carry no per-phase Hook timing.
+  assert.equal(Object.hasOwn(output, "hookTimings"), false);
+  assert.equal(JSON.stringify(output).includes(privateCanary), false);
+});
+
+test("timeline marks record launches, new sessions and the step before Enter on every platform without waiting", async () => {
+  let now = 100;
+  const checkTimeline = { launches: [], sessions: [] };
+  const mark = nativeFunction("markTimeline", { checkTimeline, Date: { now: () => now } });
+  mark("launch"); now = 120; mark("create", "first", 105); now = 130; mark("submit", "first"); mark("submit", "unknown");
+  now = 200; mark("launch"); now = 210; mark("submit", "first");
+  assert.deepEqual(JSON.parse(JSON.stringify(checkTimeline)), { launches: [100, 200], sessions: [{ id: "first", launch: 1,
+    requestedAt: 105, observedAt: 120, submits: [{ launch: 1, at: 130 }, { launch: 2, at: 210 }] }] });
+  // The launch mark comes right before the spawn on every platform.
+  for (const platform of ["linux", "darwin", "win32"]) {
+    const order = [], stop = new Error("spawn observed");
+    const start = nativeFunction("startApp", { process: { platform }, report: {}, macos: undefined, windows: platform === "win32" ? {} : undefined,
+      appPath: "/owned/app", root: "/owned", workspace: "/owned/workspace", agent: { url: "http://127.0.0.1:1" }, debugPort: 1, env: {},
+      markTimeline(kind) { order.push(kind); }, spawn() { order.push("spawn"); throw stop; } });
+    await assert.rejects(start(), (error) => error === stop);
+    assert.deepEqual(order, ["launch", "spawn"], platform);
+  }
+  const selected = "11111111-1111-4111-8111-111111111111", marks = [], order = [];
+  for (const resumed of [false, true]) {
+    const open = nativeFunction("openSession", { report: {}, turns: [], agent: { runs: [] }, bounded: (promise) => promise,
+      Date: { now: () => { order.push("now"); return 7; } }, markTimeline(...args) { marks.push(args); },
+      page: { async evaluate(callback, id) { order.push("evaluate"); return id ? undefined : { composerId: selected }; },
+        locator: () => ({ count: async () => 1 }) },
+      async waitFor(predicate) { assert.equal(await predicate(), true); } });
+    await open(resumed ? selected : undefined);
+  }
+  assert.deepEqual(order.slice(0, 2), ["now", "evaluate"]);
+  assert.deepEqual(marks, [["create", selected, 7]]);
+  const calls = [];
+  const submit = nativeFunction("submitPrompt", { markHookSubmit() { calls.push("mark"); },
+    markTimeline(kind, id) { calls.push(`${kind}:${id}`); }, page: {}, bounded: (promise) => promise });
+  await submit({ async fill() { calls.push("fill"); }, async press(key) { calls.push(key); } }, { prompt: "synthetic" }, { sessionId: "first" });
+  assert.deepEqual(calls, ["fill", "mark", "submit:first", "Enter"]);
+  const actions = [], finished = new Error("submission observed");
+  const input = { async fill() { actions.push("fill"); }, async press(key) { actions.push(key); throw finished; } };
+  const interrupt = nativeFunction("interruptPendingShell", { agent: { runs: [] }, report: {}, interruption: undefined,
+    workspace: "/owned/workspace", interruptedFixture: { prompt: "synthetic interruption" }, async openSession() { return "interrupted"; },
+    markTimeline(kind, id) { actions.push(`${kind}:${id}`); }, page: { locator: () => ({ locator: () => input }) } });
+  await assert.rejects(interrupt(), (error) => error === finished);
+  assert.deepEqual(actions, ["fill", "submit:interrupted", "Enter"]);
+});
+
+test("the final Hook timeline has its own time and size budget and never replaces the result", async () => {
+  const value = { collection: "completed", readStatus: "present", filesRead: 4, launches: [{ launch: 1, logFiles: 1 }] };
+  for (const outcome of ["completed", "timeout", "failed", "oversized"]) {
+    const report = { status: "FAIL", errorCode: "CURSOR_APP_SESSION", stage: "session-open", evidence: { cleanup: true },
+      ...(outcome === "oversized" ? { padding: "x".repeat(60 * 1024) } : {}) };
+    const before = JSON.stringify(report), calls = [], waits = [];
+    const record = nativeFunction("recordHookTimeline", { report, userData: "/owned/app-data", agent: { runs: ["run"] },
+      checkTimeline: { launches: [1], sessions: [{ id: "first" }] }, projectCursorAppHookTimeline,
+      collectCursorAppHookTimeline(input) {
+        calls.push(input);
+        return outcome === "timeout" ? new Promise(() => {}) : outcome === "failed" ? Promise.reject(new Error(privateCanary)) : Promise.resolve(value);
+      },
+      async bounded(promise, code, timeoutMs, onTimeout) {
+        calls.push([code, timeoutMs]);
+        if (outcome !== "timeout") return promise;
+        onTimeout();
+        throw Object.assign(new Error(code), { code });
+      },
+      async delay(milliseconds) { waits.push(milliseconds); } });
+    await record();
+    const { hookTimeline, ...rest } = report;
+    assert.equal(JSON.stringify(rest), before, outcome);
+    assert.equal(hookTimeline.collection, outcome);
+    assert.equal(hookTimeline.readStatus, ["completed", "oversized"].includes(outcome) ? "present" : "unavailable");
+    assert.equal(hookTimeline.launches.length, outcome === "completed" ? 1 : 0);
+    assert.deepEqual(JSON.parse(JSON.stringify(calls)), [{ home: "/owned/app-data", launches: [1], sessions: [{ id: "first" }], runs: ["run"] },
+      ["CURSOR_APP_HOOK_TIMELINE_TIMEOUT", 2000]]);
+    // A timed-out read gets a bounded chance to close its log before state cleanup.
+    assert.deepEqual(waits, outcome === "timeout" ? [5000] : []);
+    assert.equal(JSON.stringify(report).includes(privateCanary), false);
+  }
+  const final = source.slice(source.indexOf("\n}\nfinally {"));
+  assert.ok(final.indexOf('report.status = "PASS"') < final.indexOf("await recordHookTimeline()")
+    && final.indexOf("await recordHookTimeline()") < final.indexOf("await rm(root"));
 });

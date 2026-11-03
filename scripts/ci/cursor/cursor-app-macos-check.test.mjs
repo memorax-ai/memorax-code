@@ -4,7 +4,7 @@ import { posix } from "node:path";
 import test from "node:test";
 import { runInNewContext } from "node:vm";
 import { macosCheckEnvironment, runMacosCheck } from "./cursor-app-macos-check.mjs";
-import { projectNativeReport } from "./cursor-app-container-check.mjs";
+import { classifyCursorAppExecution, collectCursorAppNativeReport, writeCursorAppFinalReport } from "./cursor-app-report.mjs";
 import { projectCursorMacosDetachDiagnostics } from "./cursor-app-macos-artifact.mjs";
 const { dirname, join, resolve } = posix;
 
@@ -29,7 +29,7 @@ test("macOS controller preserves failures and removes state only after confirmed
     ["smoke", "CURSOR_APP_MACOS_PACKAGE_SMOKE", true], ["artifact", "CURSOR_APP_MACOS_ARTIFACT_SIGNATURE", false],
     ["detach", "CURSOR_APP_MACOS_ARTIFACT_DETACH", true], ["native", "CURSOR_APP_DRIVER", false],
     ["native-cleanup", "CURSOR_APP_DRIVER", true], ["native-detach", "CURSOR_APP_DRIVER", true],
-    ["invalid-report", "CURSOR_CONTAINER_REPORT", true], ["missing-report", "CURSOR_APP_MACOS_CHECK_FAILED", true],
+    ["invalid-report", "CURSOR_APP_NATIVE_TIMEOUT", true], ["missing-report", "CURSOR_APP_NATIVE_TIMEOUT", true],
   ]) {
     await t.test(kind, async () => {
       const calls = [], output = new Map();
@@ -45,11 +45,11 @@ test("macOS controller preserves failures and removes state only after confirmed
         process: { platform: "darwin", arch: "arm64", versions: { node: "24.20.0" }, execPath: "/node/bin/node",
           env: { GITHUB_ACTIONS: "true", RUNNER_OS: "macOS" } },
         dirname, join, resolve, scripts: "/scripts", tmpdir: () => "/tmp", macosCheckEnvironment,
-        projectNativeReport, projectCursorMacosDetachDiagnostics,
+        classifyCursorAppExecution, collectCursorAppNativeReport, writeCursorAppFinalReport, projectCursorMacosDetachDiagnostics,
         check(value, code) { if (!value) throw failure(code); },
         safeCode: (error) => /^CURSOR_(?:APP|CONTAINER)_[A-Z0-9_]{1,100}$/.test(error.code) ? error.code : "CURSOR_APP_MACOS_CHECK_FAILED",
         async lstat(path) {
-          if (kind === "missing-report" && path.endsWith("report.json")) throw failure("ENOENT");
+          if (kind === "missing-report" && path.endsWith(".json")) throw failure("ENOENT");
           return { isFile: () => true, isDirectory: () => true, isSymbolicLink: () => false, size: 100 };
         },
         async mkdir() {}, async readdir() { return []; }, async realpath(path) { return path; },

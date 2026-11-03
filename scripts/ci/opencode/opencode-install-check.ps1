@@ -18,8 +18,16 @@ $tempRoot = Join-Path $testRoot 'tmp'
 New-Item -ItemType Directory -Force $userRoot, $tempRoot, $prefix | Out-Null
 [IO.File]::WriteAllText((Join-Path $prefix '.memorax-code-ci-owned'), "opencode-install-check`n")
 
+# Evidence lives outside the isolated runtime; an unusable location disables it without affecting the suites.
+. (Join-Path $PSScriptRoot '../shared/ci-evidence.ps1')
+Initialize-CiEvidence -Tool (Join-Path $repoRoot 'scripts/ci/shared/ci-evidence.mjs') -RuntimeRoot $testRoot
+
 # Both client suites share the existing, interruption-tested exact-prefix PATH guard.
 . (Join-Path $PSScriptRoot '../shared/codex-install-user-path.ps1')
+$plannedSuites = 'opencode-install-smoke,opencode-native-check,opencode-permissions-check,opencode-server-check,opencode-install-interruption-check'
+Write-CiLedger plan $plannedSuites
+Write-CiLedger phase setup
+try {
 Invoke-WithCodexTestUserPath -Prefix $prefix -Action {
   $allowedEnvironment = @('PATH', 'SystemRoot', 'WINDIR', 'ComSpec', 'PATHEXT',
     'ProgramFiles', 'ProgramFiles(x86)', 'ProgramW6432', 'PSModulePath',
@@ -62,16 +70,33 @@ Invoke-WithCodexTestUserPath -Prefix $prefix -Action {
   Write-Output "OpenCode requested: $OpenCodeVersion; installed: $actualVersion"
   $packageRoot = Join-Path $prefix 'node_modules/@memorax/memorax-code'
   $openCode = Join-Path $prefix 'node_modules/opencode-ai/bin/opencode.exe'
+  # Only the test runners receive the evidence location; npm and product commands above do not.
+  if ($CiEvidenceDir) { $env:MEMORAX_CI_EVIDENCE_DIR = $CiEvidenceDir }
+  Write-CiLedger phase suites
+  Write-CiLedger start opencode-install-smoke
   & node (Join-Path $repoRoot 'scripts/ci/opencode/opencode-install-smoke.mjs') `
     $packageRoot $openCode $tarball $npmCommand $PreviousVersion `
     (Join-Path $testRoot 'terminal/node_modules/node-pty') (Join-Path $repoRoot 'scripts/ci/opencode/opencode-setup-pty.mjs') $OpenCodeVersion
-  if ($LASTEXITCODE -ne 0) { throw 'The OpenCode installation smoke failed; isolated state retained.' }
+  $suiteExit = $LASTEXITCODE
+  Write-CiLedger end opencode-install-smoke $suiteExit
+  if ($suiteExit -ne 0) { throw 'The OpenCode installation smoke failed; its runtime stays on this runner and is not exported.' }
   foreach ($suite in @('opencode-native-check.mjs', 'opencode-permissions-check.mjs', 'opencode-server-check.mjs')) {
+    $suiteName = [IO.Path]::GetFileNameWithoutExtension($suite)
+    Write-CiLedger start $suiteName
     & node (Join-Path $repoRoot "scripts/ci/opencode/$suite") $packageRoot $openCode
-    if ($LASTEXITCODE -ne 0) { throw "The OpenCode $suite failed; isolated state retained." }
+    $suiteExit = $LASTEXITCODE
+    Write-CiLedger end $suiteName $suiteExit
+    if ($suiteExit -ne 0) { throw "The OpenCode $suite failed; its runtime stays on this runner and is not exported." }
   }
+  Write-CiLedger start opencode-install-interruption-check
   & node (Join-Path $repoRoot 'scripts/ci/opencode/opencode-install-interruption-check.mjs') `
     $packageRoot $openCode (Join-Path $testRoot 'terminal/node_modules/node-pty')
-  if ($LASTEXITCODE -ne 0) { throw 'The OpenCode interruption check failed; isolated state retained.' }
+  $suiteExit = $LASTEXITCODE
+  Write-CiLedger end opencode-install-interruption-check $suiteExit
+  if ($suiteExit -ne 0) { throw 'The OpenCode interruption check failed; its runtime stays on this runner and is not exported.' }
+  Write-CiLedger phase cleanup
   Remove-Item -LiteralPath $testRoot -Recurse -Force
+}
+} finally {
+  Write-CiLedger finalize $plannedSuites
 }
