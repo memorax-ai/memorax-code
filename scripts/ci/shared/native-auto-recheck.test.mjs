@@ -206,6 +206,8 @@ test("any other failure, unmatched evidence, incomplete cell, later attempt, mov
     ["PULL_REQUEST_NOT_OPEN", (state) => { state.pull.state = "closed"; }],
     ["HEAD_CHANGED", (state) => { state.pull.head.sha = "55fca975".padEnd(40, "0"); }],
     ["NEWER_RUN", (state) => { state.runs.workflow_runs.unshift(state.newerRun); }],
+    // Rechecked by hand after the run was read.
+    ["RUN_CHANGED", (state) => { state.runs.workflow_runs[0].run_attempt = 2; }],
     ["RUNS_INVALID", (state) => { state.runs.workflow_runs = []; }],
     ["RUNS_INVALID", (state) => { delete state.runs.workflow_runs[0].run_number; }],
     ["LISTING_INVALID", (state) => { state.listing[0].total_count += 1; }],
@@ -297,6 +299,10 @@ test("right before the request, the branch's runs and then the pull request's he
     ["HEAD_CHANGED", (state) => { state.pull.head.sha = "55fca975".padEnd(40, "0"); }],
     ["PULL_REQUEST_NOT_OPEN", (state) => { state.pull.state = "closed"; }],
     ["NEWER_RUN", (state) => { state.runs.workflow_runs.unshift(state.newerRun); }],
+    // A recheck by hand since decide: another attempt, not completed, or no longer failed.
+    ["RUN_CHANGED", (state) => { state.runs.workflow_runs[0].run_attempt = 2; }],
+    ["RUN_CHANGED", (state) => { state.runs.workflow_runs[0].status = "in_progress"; }],
+    ["RUN_CHANGED", (state) => { state.runs.workflow_runs[0].conclusion = "success"; }],
     ["RUNS_INVALID", (state) => { state.runs.workflow_runs = []; }],
     ["RUNS_UNREADABLE", (state) => { state.unreadable = [RUNS]; }],
     ["PULL_REQUEST_UNREADABLE", (state) => { state.unreadable = [PULL]; }],

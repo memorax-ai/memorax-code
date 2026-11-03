@@ -78,6 +78,6 @@
     }
   },
   "pull": {"number":260,"state":"open","head":{"sha":"7c0a49d892149d4b0f2b972ae38e76aa22109d67","repo":{"full_name":"memorax-ai/memorax-code"}}},
-  "runs": {"total_count":1,"workflow_runs":[{"id":41570380043,"run_number":296}]},
-  "newerRun": {"id":41585762475,"run_number":299}
+  "runs": {"total_count":1,"workflow_runs":[{"id":41570380043,"run_number":296,"run_attempt":1,"status":"completed","conclusion":"failure"}]},
+  "newerRun": {"id":41585762475,"run_number":299,"run_attempt":1,"status":"in_progress","conclusion":null}
 }

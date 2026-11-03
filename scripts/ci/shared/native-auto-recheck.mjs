@@ -185,8 +185,9 @@ function reading(api, sleep) {
   return { reasons, retries, hold, get, read };
 }
 
-// Whether the run's head is still the head of its open pull request, whose branch has no newer run of this workflow. A
-// push moves the pull request's head before its run is created, so the branch's runs are read first.
+// Whether the run is still a completed, failed attempt 1, as a recheck by hand starts another attempt of the same run,
+// and its head is still the head of its open pull request, whose branch has no newer run of this workflow. A push moves
+// the pull request's head before its run is created, so the branch's runs are read first.
 function current({ repository, run, read, hold }) {
   const runs = read(`repos/${repository}/actions/workflows/${run.workflow}/runs?event=pull_request&branch=`
     + `${encodeURIComponent(String(run.branch ?? ""))}&per_page=100`, "RUNS_UNREADABLE");
@@ -194,6 +195,10 @@ function current({ repository, run, read, hold }) {
   if (runs && (!Array.isArray(listed) || !listed.every((item) => Number.isSafeInteger(item?.run_number))
     || !listed.some((item) => String(item.id) === run.id) || !Number.isSafeInteger(run.number))) hold("RUNS_INVALID");
   else if (runs && listed.some((item) => item.run_number > run.number)) hold("NEWER_RUN");
+  const entry = Array.isArray(listed) ? listed.find((item) => String(item?.id) === run.id) : undefined;
+  if (entry && (entry.run_attempt !== 1 || entry.status !== "completed" || entry.conclusion !== "failure")) {
+    hold("RUN_CHANGED");
+  }
   const pull = run.pullRequest === null ? null : read(`repos/${repository}/pulls/${run.pullRequest}`, "PULL_REQUEST_UNREADABLE");
   if (pull && pull.state !== "open") hold("PULL_REQUEST_NOT_OPEN");
   if (pull && pull.head?.sha !== run.head) hold("HEAD_CHANGED");
