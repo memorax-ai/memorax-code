@@ -38,7 +38,12 @@ listed.
   `accepted` signature on a `latest` cell, is recorded under the original
   signature with that cell's channel and version, as S1 records its `latest`
   sightings, and restarts the closing-rule count like any other sighting.
-- **Rechecks**: job-level rechecks of the failure and their results.
+- **Rechecks**: job-level rechecks of the failure and their results. A recheck
+  requested by the
+  [native auto recheck](../.github/workflows/native-auto-recheck.yml) workflow
+  is marked automatic; the sighting that caused it is added to Later sightings
+  from the run's `auto-recheck-decision-<run>-attempt1` artifact at the next
+  update of this register, together with the recheck's result.
 - **Status**: one of
   - `open`: registered, with nothing in place for it;
   - `observing #PR`: the pull request added observation for the next

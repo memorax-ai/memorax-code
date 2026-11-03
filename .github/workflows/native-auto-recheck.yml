@@ -1,0 +1,80 @@
+name: Native auto recheck
+
+# Rechecks the failed jobs of a pull request run of the native client functional workflow once, when every failure in its
+# first attempt is a cell with a registered signature; scripts/ci/shared/native-auto-recheck.mjs decides from that
+# attempt's jobs and evidence artifacts, and reads the branch's runs and the pull request's head again right before the
+# request. The job runs this repository's default-branch code only and reads the run's data without executing it. A
+# manual run decides for a given run and never requests a recheck.
+
+on:
+  workflow_run:
+    workflows: ["Native client functional checks"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: ID of a Native client functional checks run to decide for
+        type: string
+        required: true
+      mode:
+        description: decide-only records the decision and never requests a recheck
+        type: choice
+        default: decide-only
+        options:
+          - decide-only
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: read
+
+concurrency:
+  # One decision at a time for a run; a decision is never cancelled.
+  group: native-auto-recheck-${{ github.event.workflow_run.id || inputs.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  decide:
+    name: Native auto recheck
+    # Only a failed first attempt of a pull request run from this repository; the completion of a recheck is not handled.
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (github.event.workflow_run.event == 'pull_request'
+      && github.event.workflow_run.conclusion == 'failure'
+      && github.event.workflow_run.run_attempt == 1
+      && github.event.workflow_run.head_repository.full_name == github.repository)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      RUN_ID: ${{ github.event.workflow_run.id || inputs.run_id }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Decide from attempt 1's jobs and evidence
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/ci/shared/native-auto-recheck.mjs decide --repository "$GITHUB_REPOSITORY" --run-id "$RUN_ID" --output "$RUNNER_TEMP/auto-recheck/auto-recheck-decision-$RUN_ID-attempt1.json" --github-output "$GITHUB_OUTPUT" --github-summary "$GITHUB_STEP_SUMMARY"
+      # The branch's runs and the pull request's head are read again in this step, right before the request, so that the
+      # pull request has as little time as possible to move on. The request itself is never retried.
+      - name: Recheck the failed jobs once
+        if: github.event_name == 'workflow_run' && steps.decide.outputs.decision == 'recheck'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          decision="$(node scripts/ci/shared/native-auto-recheck.mjs confirm --record "$RUNNER_TEMP/auto-recheck/auto-recheck-decision-$RUN_ID-attempt1.json" --github-summary "$GITHUB_STEP_SUMMARY")"
+          if [ "$decision" = recheck ]; then
+            gh api --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID/rerun-failed-jobs"
+          fi
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: auto-recheck-decision-${{ env.RUN_ID }}-attempt1
+          path: ${{ runner.temp }}/auto-recheck
+          if-no-files-found: error
+          retention-days: 30

@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "signatures": [
+    {
+      "id": "S1",
+      "signature": "codex|windows-2025|codex-install-smoke|cleanup:directory_removal|CLEANUP_DIRECTORY_REMOVAL_FAILED:EBUSY",
+      "status": "mitigated #251"
+    },
+    {
+      "id": "S7",
+      "signature": "codebuddy|windows-2025|codebuddy-install-interruption-check|unknown|EXIT_1",
+      "status": "open"
+    },
+    {
+      "id": "S8",
+      "signature": "claude|windows-2025|claude-install-interruption-check|unknown|EXIT_1",
+      "status": "open"
+    }
+  ]
+}
