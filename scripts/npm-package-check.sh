@@ -150,8 +150,8 @@ memorax_defaults = (
     / "src"
     / "memorax-defaults.mjs"
 ).read_text()
-assert 'MEMORAX_DEFAULT_BASE_URL = "https://platform.memorax.net"' in memorax_defaults
-assert 'MEMORAX_ACCOUNT_URL = "https://platform.memorax.net/"' in memorax_defaults
+assert 'MEMORAX_DEFAULT_BASE_URL = "https://platform.memoraxai.com"' in memorax_defaults
+assert 'MEMORAX_ACCOUNT_URL = "https://platform.memoraxai.com/"' in memorax_defaults
 assert 'MEMORAX_DEFAULT_MEMORY_OUTPUT_LANGUAGE = "zh"' in memorax_defaults
 manifest = json.loads((package_root / "lib" / "memorax-code-codex-adapter" / ".codex-plugin" / "plugin.json").read_text())
 codebuddy_manifest = json.loads((package_root / "lib" / "memorax-code-codebuddy-adapter" / ".codebuddy-plugin" / "plugin.json").read_text())
@@ -600,6 +600,7 @@ MEMORAX_CODE_MEMORAX_USER_ID="package-check-user" \
 node -e '
   const report = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
   if (report.ok !== true || report.action !== "memory.status" || report.provider !== "memory.memorax") process.exit(1);
+  if (report.config?.baseUrl !== "https://platform.memoraxai.com") process.exit(1);
 ' "$home_dir/memorax-cli-status.json"
 node scripts/memory-cli-npm-package-e2e.mjs "$package_install_root"
 node scripts/lifecycle-cli-npm-package-e2e.mjs "$package_install_root"

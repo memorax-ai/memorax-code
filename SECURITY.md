@@ -252,9 +252,12 @@ content and Search queries are sent as entered and do not use this automatic
 writeback detector; do not intentionally submit credentials or private data
 through those operations.
 
-The packaged default uses `https://platform.memorax.net`. An endpoint override
-is a separate trust decision; configure only a compatible MemoraX service you
-trust.
+The packaged default uses `https://platform.memoraxai.com`. The legacy official
+HTTPS root endpoint `https://platform.memorax.net` is normalized locally to
+the current official endpoint before requests are sent; see the precise
+[compatibility rules](docs/configuration.md#memorax-connection). Custom endpoint
+overrides are a separate trust decision; configure only a compatible MemoraX
+service you trust.
 
 Treat the MemoraX API key, trial Mark ID, Base User ID, repository identity,
 queries, selected writeback content, and saved memories as sensitive.

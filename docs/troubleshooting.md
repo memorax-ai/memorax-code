@@ -403,7 +403,7 @@ Default setup creates or restores an account-free connection. For an existing
 account, run `memorax-code setup --existing-account`. A manually managed
 connection may instead configure `endpoint`, `user_id`, and `api_key`
 under `[memorax]`, or set their environment equivalents. The current default
-endpoint is `https://platform.memorax.net`.
+endpoint is `https://platform.memoraxai.com`.
 
 After changing persistent configuration:
 
@@ -956,7 +956,7 @@ describe where these records live.
 | `MEMORY_INPUT_INVALID`, `MEMORY_INPUT_UNREADABLE` | Check required flags and values, or the input file's existence and readability. |
 | `MEMORY_CONFIG_MISSING`, `MEMORY_ADD_DISABLED` | Check `memorax-cli status`, connection setup, and the explicit Add settings. |
 | `MEMORY_SCOPE_UNAVAILABLE`, `MEMORY_SCOPE_MISMATCH` | Verify repository metadata and start a new session in the intended workspace; see the scope rules below. |
-| `MEMORAX_HTTP_ERROR` | Check `httpStatus`: `401`/`403` point to credentials or permissions; `429` calls for checking limits and any retry delay. Other statuses require checking service availability. |
+| `MEMORAX_HTTP_ERROR` | Check `httpStatus`: for `401`/`403`, check the endpoint, credentials, and permissions; see [legacy endpoint recovery](#http-401-after-setup-with-the-legacy-official-endpoint). `429` calls for checking limits and any retry delay. Other statuses require checking service availability. |
 | `MEMORAX_TIMEOUT`, `MEMORAX_TRANSPORT_ERROR` | Use the known system code, if present, to check DNS, endpoint reachability, proxy, or TLS configuration. |
 | `MEMORAX_INVALID_JSON`, `MEMORAX_INVALID_RESPONSE`, `MEMORAX_RESPONSE_REJECTED` | Check endpoint and service compatibility; share a reviewed diagnostic if the failure persists. |
 | `MEMORY_CLI_INTERNAL` | Share the reviewed diagnostic and the operation that failed. |
@@ -1025,6 +1025,33 @@ conversation is the projectless form of this scope. Check the
 ordinary selected directories and verified Git repositories keep their normal
 scope. Existing memories under `Codex-General` or the previous default-folder
 names are not migrated or searched together with `General`.
+
+### HTTP 401 after setup with the legacy official endpoint
+
+On older releases, setup can complete successfully while Search or Add returns
+`MEMORAX_HTTP_ERROR` with HTTP `401`. `API Key match: true` verifies local
+persistence only. The legacy `https://platform.memorax.net` endpoint redirects
+to `https://platform.memoraxai.com`; following that cross-origin `301` can turn
+the POST into a GET and remove its Authorization header, producing a `401`
+even with a valid key.
+
+Update MemoraX Code with `memorax-code update`. The updated runtime uses the
+current official endpoint and automatically maps the legacy official HTTPS
+root URL from saved configuration or an environment override. Existing keys,
+user IDs, and other settings are retained; you do not need to rerun setup or
+rewrite the configuration. See [endpoint compatibility](configuration.md#memorax-connection).
+
+If you must keep an older release, change only `[memorax].endpoint` in the
+private configuration to `https://platform.memoraxai.com`, then run
+`memorax-code restart`. If `MEMORAX_CODE_MEMORAX_ENDPOINT` is set, update that
+override as well and restart the processes that inherited it. Keep the
+existing key and user ID.
+
+Verify remote access from the intended workspace with
+`memorax-cli search --query 'connection check'` (`memorax-cli.cmd` in Windows
+PowerShell). A successful search with zero results still verifies the request;
+it does not require adding a test memory. If `401` persists at the current
+endpoint, check the key's validity and permissions without sharing it.
 
 ## Model-provider requests fail while MemoraX Code is healthy
 

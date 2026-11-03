@@ -686,7 +686,7 @@ MemoraX is the required remote-memory service:
 
 ```toml
 [memorax]
-endpoint = "https://platform.memorax.net"
+endpoint = "https://platform.memoraxai.com"
 user_id = "your-username"
 api_key = "your-api-key"
 # timeout_ms = 5000
@@ -694,10 +694,25 @@ api_key = "your-api-key"
 
 | Field | Environment override | Fallback |
 | --- | --- | --- |
-| `endpoint` | `MEMORAX_CODE_MEMORAX_ENDPOINT` | `https://platform.memorax.net` |
+| `endpoint` | `MEMORAX_CODE_MEMORAX_ENDPOINT` | `https://platform.memoraxai.com` |
 | `user_id` | `MEMORAX_CODE_MEMORAX_USER_ID` | required username |
 | `api_key` | `MEMORAX_CODE_MEMORAX_API_KEY` | required; setup writes it |
 | `timeout_ms` | `MEMORAX_CODE_MEMORAX_TIMEOUT_MS` | `5000` ms |
+
+The environment override takes precedence over the saved endpoint, followed by
+the packaged default. After selecting that value, MemoraX Code maps the legacy
+official HTTPS root endpoint `https://platform.memorax.net` to
+`https://platform.memoraxai.com` before sending requests. Equivalent spellings
+with scheme or hostname case differences, explicit port `443`, or trailing
+slashes are included. This compatibility rule does not change custom hosts,
+other schemes or ports, non-root paths, query strings, or fragments.
+
+Upgrading enables this compatibility for both existing `config.toml` values
+and environment overrides without rewriting the saved configuration. The
+existing API key, base user ID, and other settings remain in place; rerunning
+setup is unnecessary. New setup uses the current official endpoint. For older
+releases affected by the legacy endpoint's redirect, see
+[HTTP 401 recovery](troubleshooting.md#http-401-after-setup-with-the-legacy-official-endpoint).
 
 MemoraX requests send the API key and the query or content required by the
 selected memory operation to the HTTPS endpoint. Override `endpoint` only with

@@ -73,7 +73,7 @@ npm install -g @memorax/memorax-code
 
 #### 2. 注册或接入 MemoraX 账号（推荐）
 
-前往 [MemoraX](https://platform.memorax.net/) 注册账号；已有账号可直接使用，然后在正常的交互式终端中运行：
+前往 [MemoraX](https://platform.memoraxai.com/) 注册账号；已有账号可直接使用，然后在正常的交互式终端中运行：
 
 ```bash
 memorax-code setup --existing-account
@@ -122,7 +122,7 @@ memorax-code account --show-mark-id
 ```
 
 > [!IMPORTANT]
-> 请先获取 Mark ID，再前往 [MemoraX](https://platform.memorax.net/) 注册并使用它激活游客账号。
+> 请先获取 Mark ID，再前往 [MemoraX](https://platform.memoraxai.com/) 注册并使用它激活游客账号。
 > 当前暂不支持为已经注册的账号补绑 Mark ID。
 
 #### 3. 激活并验证
@@ -286,7 +286,7 @@ Coding Memory 按仓库或工作区确定范围。Codex、WorkBuddy、OpenCode�
 
 QA 写回会保留可用的原生时间戳，并标明使用观测时间的回退情况，详见[消息时间戳](docs/configuration.md#automatic-writeback-timestamps)。
 
-登录 [MemoraX Console](https://platform.memorax.net/) 后，可以随时查看、修改或删除已经保存的记忆。
+登录 [MemoraX Console](https://platform.memoraxai.com/) 后，可以随时查看、修改或删除已经保存的记忆。
 MemoraX 云端不会接收模型服务商凭据或本地 Backend Token。
 
 完整行为请参阅[配置](docs/configuration.md)，网络、本地数据和保留边界请参阅
@@ -307,6 +307,9 @@ memorax-code update
 如果更新修改了运行中客户端已加载的集成资产，请重启或刷新客户端。
 如果包替换失败，请按[更新恢复步骤](docs/troubleshooting.md#npm-package-transition-fails)
 使用 `memorax-code update --recover`。
+
+官方端点现为 `https://platform.memoraxai.com`。升级后，使用旧官方端点的已有配置会自动兼容，
+无需重新运行 setup 或替换已保存的账号设置。详见[端点兼容说明](docs/configuration.md#memorax-connection)。
 
 ### Windows 升级提示
 

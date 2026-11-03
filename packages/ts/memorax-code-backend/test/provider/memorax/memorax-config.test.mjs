@@ -16,9 +16,6 @@ import {
   memoraxConfigFromEnv,
   seedMissingMemoraxCodeConfig,
 } from "../../../dist/provider/memorax/config.js";
-import {
-  normalizeMemoraxBaseUrl,
-} from "../../../../memorax-code-adapter-common/src/memorax-defaults.mjs";
 
 test("memory CLI uses its executable name as the default session identity", () => {
   assert.equal(MEMORY_CLI_DEFAULT_SESSION_ID, "memorax-cli");
@@ -31,17 +28,48 @@ test("MemoraX config resolver uses the platform endpoint by default", () => {
     MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
   }, {});
 
-  assert.equal(MEMORAX_DEFAULT_BASE_URL, "https://platform.memorax.net");
+  assert.equal(MEMORAX_DEFAULT_BASE_URL, "https://platform.memoraxai.com");
   assert.equal(result.ok, true);
-  assert.equal(result.config.baseUrl, "https://platform.memorax.net");
+  assert.equal(result.config.baseUrl, "https://platform.memoraxai.com");
   assert.equal(result.config.memoryOutputLanguage, "zh");
 });
 
-test("MemoraX endpoint helper normalizes trailing slashes", () => {
-  assert.equal(
-    normalizeMemoraxBaseUrl(" https://platform.memorax.net/// "),
-    "https://platform.memorax.net",
-  );
+test("legacy endpoint overrides retain environment priority and connection identity", () => {
+  const fileConfig = { memorax: {
+    endpoint: "https://custom.example",
+    api_key: "fixture-secret",
+    user_id: "existing-user",
+  } };
+  const result = memoraxConfigFromEnv({
+    MEMORAX_CODE_MEMORAX_ENDPOINT: " https://platform.memorax.net/ ",
+  }, fileConfig);
+  assert.equal(result.ok, true);
+  assert.equal(result.config.baseUrl, "https://platform.memoraxai.com");
+  assert.equal(result.config.apiKey, "fixture-secret");
+  assert.equal(result.config.userId, "existing-user");
+
+  const custom = memoraxConfigFromEnv({
+    MEMORAX_CODE_MEMORAX_ENDPOINT: "https://custom.example/api/",
+  }, { memorax: { ...fileConfig.memorax, endpoint: "https://platform.memorax.net" } });
+  assert.equal(custom.ok, true);
+  assert.equal(custom.config.baseUrl, "https://custom.example/api");
+});
+
+test("saved legacy endpoints use the current platform without rewriting configuration", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-legacy-endpoint-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configPath = join(root, "config.toml");
+  const configText = '[memorax]\nendpoint = "https://platform.memorax.net"\napi_key = "fixture-secret"\nuser_id = "existing-user"\n';
+  await writeFile(configPath, configText);
+  const env = { MEMORAX_CODE_HOME: root };
+
+  const result = memoraxConfigFromEnv(env);
+  assert.equal(result.ok, true);
+  assert.equal(result.config.baseUrl, "https://platform.memoraxai.com");
+  assert.equal(result.config.apiKey, "fixture-secret");
+  assert.equal(result.config.userId, "existing-user");
+  assert.equal(memoryConfigStatus(env).baseUrl, "https://platform.memoraxai.com");
+  assert.equal(await readFile(configPath, "utf8"), configText);
 });
 
 test("seeded MemoraX Code config exposes high-signal choices without a tuning catalog", async () => {
@@ -58,7 +86,7 @@ test("seeded MemoraX Code config exposes high-signal choices without a tuning ca
   const config = await readFile(join(root, "config.toml"), "utf8");
   assert.match(config, /\[clients\]\ncodex = true\nclaude = true/);
   assert.match(config, /\[memorax\]/);
-  assert.match(config, /# endpoint = "https:\/\/platform\.memorax\.net" # MemoraX service URL\./);
+  assert.match(config, /# endpoint = "https:\/\/platform\.memoraxai\.com" # MemoraX service URL\./);
   assert.match(config, /# api_key = "" # MemoraX API key used by the local Backend\./);
   assert.match(config, /# user_id = "" # MemoraX base user ID; requests derive a workspace-scoped namespace\./);
   assert.match(config, /\[jev\]\nenabled = false/);
