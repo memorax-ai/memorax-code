@@ -12,6 +12,10 @@ import {
 } from "../../../memorax-code-adapter-common/src/memorax-defaults.mjs";
 
 export type MemoraxCodeConfig = Readonly<{
+  helpful?: Readonly<{ enabled?: boolean; context_turns_k?: number }>;
+  coding_sessions?: Readonly<{
+    enabled?: boolean;
+  }>;
   clients?: Readonly<{
     codex?: boolean;
     claude?: boolean;
@@ -146,6 +150,18 @@ export type MemoraxCodeConfig = Readonly<{
   }>;
 }>;
 
+export function codingSessionsEnabled(
+  env: Record<string, string | undefined> = process.env,
+  fileConfig?: MemoraxCodeConfig,
+): boolean {
+  const configured = env.MEMORAX_CODE_CODING_SESSIONS_ENABLED
+    ?? fileConfig?.coding_sessions?.enabled;
+  if (typeof configured === "boolean") return configured;
+  return ["1", "true", "yes", "y", "on"].includes(
+    String(configured ?? "").trim().toLowerCase(),
+  );
+}
+
 export function defaultMemoraxCodeHome(env: Record<string, string | undefined> = process.env): string {
   return env.MEMORAX_CODE_HOME?.trim() || join(homedir(), ".memorax-code");
 }
@@ -161,6 +177,9 @@ export function renderDefaultMemoraxCodeConfig(): string {
     "# Environment variables still override values written here.",
     "# See docs/configuration.md for advanced tuning fields and effective defaults.",
     "",
+    "[coding_sessions]",
+    "enabled = true # Attach locally redacted completed coding Turns to automatic QA Add requests.",
+    "",
     "# Client integrations managed by `memorax-code start|status|stop|uninstall`.",
     "[clients]",
     "codex = true",
@@ -175,6 +194,11 @@ export function renderDefaultMemoraxCodeConfig(): string {
     '# user_id = "" # MemoraX base user ID; requests derive a workspace-scoped namespace.',
     "",
     DEFAULT_JEV_CONFIG_TEXT.trimEnd(),
+    "",
+    "# Helpful evaluation attaches QA to automatic Add independently of OSS.",
+    "[helpful]",
+    "enabled = true",
+    "context_turns_k = 2",
     "",
     "# Automatic writeback sends selected prompts and final answers to MemoraX.",
     "[memory.writeback]",
@@ -299,9 +323,13 @@ export function loadLifecycleMemoraxCodeConfig(
 
 function normalizeMemoraxCodeConfig(value: unknown): MemoraxCodeConfig {
   const root = recordValue(value);
+  const codingSessions = recordValue(root?.coding_sessions);
   const clients = recordValue(root?.clients);
   const memorax = recordValue(root?.memorax);
   const jev = recordValue(root?.jev);
+  const helpful = recordValue(root?.helpful);
+  if (helpful?.enabled !== undefined && typeof helpful.enabled !== "boolean") throw new Error("helpful.enabled must be boolean");
+  if (helpful?.context_turns_k !== undefined && (!Number.isSafeInteger(helpful.context_turns_k) || Number(helpful.context_turns_k) < 2)) throw new Error("helpful.context_turns_k must be an integer >= 2");
   const memory = recordValue(root?.memory);
   const trace = recordValue(root?.trace);
   const retrieval = recordValue(memory?.retrieval);
@@ -322,6 +350,13 @@ function normalizeMemoraxCodeConfig(value: unknown): MemoraxCodeConfig {
   const traceQoder = recordValue(trace?.qoder);
 
   return (prune({
+    helpful: prune({
+      enabled: booleanField(helpful, "enabled"),
+      context_turns_k: numberField(helpful, "context_turns_k"),
+    }),
+    coding_sessions: prune({
+      enabled: booleanField(codingSessions, "enabled"),
+    }),
     clients: prune({
       codex: booleanField(clients, "codex"),
       claude: booleanField(clients, "claude"),

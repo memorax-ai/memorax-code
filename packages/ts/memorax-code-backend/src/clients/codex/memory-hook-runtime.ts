@@ -1,9 +1,13 @@
 import {
   readCodexInterruptedRolloutTurn,
+  readCodexCodingSessionTurn,
+  readCodexArchiveSource,
   readCodexRolloutTurn,
   readCodexRolloutSessionWorkspace,
   type CodexRolloutTurn,
   type CodexRolloutTurnFailureReason,
+  type CodexCodingSessionTurn,
+  type CodexRolloutTurnResult,
 } from "./rollout-turn.js";
 import type { AutomaticMemoryWritebackRejectionReason } from "../../memory/automatic-writeback.js";
 import {
@@ -31,6 +35,7 @@ import type {
   RepositoryMemoryScopeFailureReason,
 } from "../../repository/scope.js";
 import { traceContextFromHookBody, type TraceContext } from "../../trace/context.js";
+import { recordWritebackRejection } from "../../memory/background-diagnostics.js";
 import {
   markCurrentCodexTurnOutcome,
   readCurrentCodexTurn,
@@ -65,24 +70,29 @@ type CodexMemoryHookWritebackSkipReason =
   | "turn_id_missing"
   | "turn_metadata_mismatch"
   | "config_missing"
+  | "runtime_closed"
+  | "deferred_capacity_exhausted"
   | CodexRolloutTurnFailureReason
   | RepositoryMemoryScopeFailureReason
   | AutomaticMemoryWritebackRejectionReason;
 
 export type CodexMemoryHookWritebackResult =
   | { ok: true; scheduled: true }
-  | { ok: true; scheduled: false; reason: CodexMemoryHookWritebackSkipReason };
+  | { ok: true; scheduled: false; reason: CodexMemoryHookWritebackSkipReason; deferred?: boolean };
 
 type CodexMemoryHookWritebackRequest = Omit<CodexWritebackCommand, "version" | "client"> & {
   traceContext?: TraceContext;
 };
 
-export type CodexMemoryHookRuntimeOptions = HarnessMemoryRuntimeOptions;
+export type CodexMemoryHookRuntimeOptions = HarnessMemoryRuntimeOptions & {
+  captureCodingTurns?: boolean;
+};
 
 export type CodexMemoryHookRuntime = {
   recordTurnStart(command: CodexTurnStartCommand): Promise<MemoryHookTurnStartResult>;
   writeback(command: CodexWritebackCommand): Promise<CodexMemoryHookWritebackResult>;
   size(): number;
+  drain(): Promise<void>;
   close(): void;
 };
 
@@ -96,10 +106,26 @@ export function createCodexMemoryHookRuntime(options: CodexMemoryHookRuntimeOpti
     diagnosticPrefix: "memory_hook",
     traceFailureEvent: "codex_trace.write_failed",
     turnStartTraceSource: "codex-hook",
-  }, options);
+  }, { readCodingSessionTurn: readCodexArchiveSource, ...options });
   const { turnCoordinator } = memory;
+  let closing = false;
+  const jobs = new Map<string, Promise<CodexMemoryHookWritebackResult>>();
+  const backgrounds = new Set<Promise<void>>();
+  const waits = new Map<ReturnType<typeof setTimeout>, () => void>();
+  function stop() {
+    closing = true;
+    for (const [timer, resolve] of waits) { clearTimeout(timer); resolve(); }
+    waits.clear();
+  }
+  async function wait(ms: number) {
+    await new Promise<void>(resolve => {
+      const timer = setTimeout(() => { waits.delete(timer); resolve(); }, ms);
+      timer.unref?.();
+      waits.set(timer, resolve);
+    });
+  }
 
-  return {
+  const runtime: CodexMemoryHookRuntime = {
     async recordTurnStart(command) {
       const turn = turnStateFromCommand(command, now());
       if (!turn.transcriptPath) {
@@ -135,50 +161,86 @@ export function createCodexMemoryHookRuntime(options: CodexMemoryHookRuntimeOpti
         },
       });
     },
-    async writeback(command) {
-      turnCoordinator.pruneExpired();
-      const request = writebackRequestFromCommand(command);
-      if (!request.sessionId) return { ok: true, scheduled: false, reason: "missing_session_id" };
-      if (!request.lastAssistantMessage) return { ok: true, scheduled: false, reason: "assistant_message_missing" };
-      const coordinatorKey = request.turnId
-        ? codexTurnKey(request.sessionId, request.turnId)
-        : undefined;
-      const entry = coordinatorKey ? turnCoordinator.getTurn(coordinatorKey) : undefined;
-      const recoveredTraceContext = !entry
-        ? await recoverExactCurrentTurnTraceContext(request, options)
-        : undefined;
-      const transcriptPath = request.transcriptPath
-        ?? entry?.transcriptPath
-        ?? recoveredTraceContext?.transcriptPath;
-      if (!transcriptPath) {
-        options.diagnosticLogger?.("memory_hook.writeback", {
-          scheduled: false,
-          reason: "non_materialized_session",
-          sessionId: request.sessionId,
-          turnId: request.turnId,
-        });
-        return { ok: true, scheduled: false, reason: "non_materialized_session" };
-      }
-      const traceContext = traceContextForWriteback(request, entry, recoveredTraceContext);
-      if (!request.turnId) {
-        await recordTurnEnd(options, traceContext, request.lastAssistantMessage);
-        options.diagnosticLogger?.("memory_hook.writeback", {
-          scheduled: false,
-          reason: "turn_id_missing",
-          sessionId: request.sessionId,
-        });
-        return { ok: true, scheduled: false, reason: "turn_id_missing" };
-      }
-      const sessionTurnIndex = entry?.sessionTurnIndex ?? await resolveSessionTurnIndex({
-        sessionId: request.sessionId,
-        turnId: request.turnId,
-        transcriptPath,
-      }, options.diagnosticLogger);
-      const rollout = await readCodexRolloutTurn({
-        transcriptPath,
+    writeback(command) {
+      const key = JSON.stringify([command.sessionId, command.turnId]);
+      const existing = jobs.get(key);
+      if (existing) return existing;
+      if (closing) return Promise.resolve({ ok: true, scheduled: false, reason: "runtime_closed" });
+      if (jobs.size >= 256) return Promise.resolve({ ok: true, scheduled: false, reason: "deferred_capacity_exhausted" });
+      const job = processWriteback(command, key);
+      jobs.set(key, job);
+      void job.then(result => { if (!("deferred" in result && result.deferred)) jobs.delete(key); }, () => jobs.delete(key));
+      return job;
+    },
+    size() { return memory.size(); },
+    async drain() { stop(); await Promise.allSettled([...jobs.values(), ...backgrounds]); },
+    close() { stop(); memory.close(); },
+  };
+  return runtime;
+
+  async function processWriteback(command: CodexWritebackCommand, jobKey: string): Promise<CodexMemoryHookWritebackResult> {
+    turnCoordinator.pruneExpired();
+    const request = writebackRequestFromCommand(command);
+    if (!request.sessionId) return { ok: true, scheduled: false, reason: "missing_session_id" };
+    if (!request.lastAssistantMessage) return { ok: true, scheduled: false, reason: "assistant_message_missing" };
+    const coordinatorKey = request.turnId
+      ? codexTurnKey(request.sessionId, request.turnId)
+      : undefined;
+    const entry = coordinatorKey ? turnCoordinator.getTurn(coordinatorKey) : undefined;
+    const recoveredTraceContext = !entry
+      ? await recoverExactCurrentTurnTraceContext(request, options)
+      : undefined;
+    const transcriptPath = request.transcriptPath
+      ?? entry?.transcriptPath
+      ?? recoveredTraceContext?.transcriptPath;
+    if (!transcriptPath) {
+      options.diagnosticLogger?.("memory_hook.writeback", {
+        scheduled: false,
+        reason: "non_materialized_session",
         sessionId: request.sessionId,
         turnId: request.turnId,
       });
+      return { ok: true, scheduled: false, reason: "non_materialized_session" };
+    }
+    const traceContext = traceContextForWriteback(request, entry, recoveredTraceContext);
+    if (!request.turnId) {
+      await recordTurnEnd(options, traceContext, request.lastAssistantMessage);
+      options.diagnosticLogger?.("memory_hook.writeback", {
+        scheduled: false,
+        reason: "turn_id_missing",
+        sessionId: request.sessionId,
+      });
+      return { ok: true, scheduled: false, reason: "turn_id_missing" };
+    }
+    const sessionTurnIndex = entry?.sessionTurnIndex ?? await resolveSessionTurnIndex({
+      sessionId: request.sessionId,
+      turnId: request.turnId,
+      transcriptPath,
+    }, options.diagnosticLogger);
+    const turnId = request.turnId;
+    const attempt = async (): Promise<CodexMemoryHookWritebackResult> => {
+      const rolloutInput = {
+        transcriptPath,
+        sessionId: request.sessionId,
+        turnId,
+      };
+      let codingSessionTurn: CodexCodingSessionTurn | undefined;
+      let rollout: CodexRolloutTurnResult;
+      if (options.captureCodingTurns) {
+        const source = await readCodexCodingSessionTurn(rolloutInput);
+        if (source.ok) {
+          codingSessionTurn = source.turn;
+          rollout = source;
+        } else {
+          // Source collection validates tool identities beyond the QA contract.
+          // Keep rejected source data out while letting the existing QA reader
+          // independently validate its own exact native prompt and final reply.
+          rollout = await readCodexRolloutTurn(rolloutInput);
+        }
+      } else {
+        rollout = await readCodexRolloutTurn(rolloutInput);
+      }
+      if (closing) return { ok: true, scheduled: false, reason: "runtime_closed" };
       await recordTurnEnd(
         options,
         traceContext,
@@ -198,21 +260,32 @@ export function createCodexMemoryHookRuntime(options: CodexMemoryHookRuntimeOpti
         });
         return { ok: true, scheduled: false, reason: rollout.reason };
       }
+      if (closing) return { ok: true, scheduled: false, reason: "runtime_closed" };
       const writeback = await memory.completeTurn({
         sessionId: request.sessionId,
-        clientTurnId: request.turnId,
+        clientTurnId: turnId,
         metadata: entry,
-        resolveRepositoryMemory: () => resolveCurrentHookRepositoryMemory(
-          entry,
-          request,
-          options,
-          memory,
-          recoveredTraceContext,
-        ),
+        resolveRepositoryMemory: async () => {
+          const resolved = await resolveCurrentHookRepositoryMemory(entry, request, options, memory, recoveredTraceContext);
+          return closing ? { ok: false, reason: "config_missing", error: "runtime closed" } : resolved;
+        },
         userText: rollout.turn.userPrompt,
+        sessionTurnIndex,
         assistantText: rollout.turn.assistantReply,
         userTimestamp: rollout.turn.userTimestamp,
         assistantTimestamp: rollout.turn.assistantTimestamp,
+        ...(codingSessionTurn ? {
+          codingTurn: {
+            client: CODEX_MEMORY_TURN_CLIENT,
+            sessionId: codingSessionTurn.sessionId,
+            turnId: codingSessionTurn.turnId,
+            turnIndex: codingSessionTurn.sessionTurnIndex,
+            items: codingSessionTurn.items,
+            outcome: "completed",
+            closedAt: codingSessionTurn.closedAt ?? new Date(now()).toISOString(),
+            source: codingSessionTurn.source,
+          },
+        } : {}),
         traceContext,
       });
       if (!writeback.scheduled) {
@@ -235,14 +308,31 @@ export function createCodexMemoryHookRuntime(options: CodexMemoryHookRuntimeOpti
         contentSource: "codex_rollout",
       });
       return { ok: true, scheduled: true };
-    },
-    size() {
-      return memory.size();
-    },
-    close() {
-      memory.close();
-    },
-  };
+    };
+    const first = await attempt();
+    if (closing || first.scheduled || first.reason !== "assistant_message_missing") return first;
+    const background = (async () => {
+      let result: CodexMemoryHookWritebackResult = first;
+      try {
+        for (const delay of [100, 250, 500, 1000, 2000]) {
+          await wait(delay);
+          if (closing) return;
+          result = await attempt();
+          if (result.scheduled || result.reason !== "assistant_message_missing") break;
+        }
+        if (!result.scheduled) recordWritebackRejection(
+          result.reason === "assistant_message_missing" ? "deferred_assistant_message_missing" : result.reason, {
+          memoraxCodeHome: options.memoraxCodeHome, env: options.env,
+          client: "codex", sessionId: request.sessionId, turnId: request.turnId,
+        });
+      } catch {
+        options.diagnosticLogger?.("memory_hook.deferred_failed", { reason: "unexpected_read_failure" });
+      } finally { jobs.delete(jobKey); }
+    })();
+    backgrounds.add(background);
+    void background.finally(() => backgrounds.delete(background)).catch(() => undefined);
+    return { ...first, deferred: true };
+  }
 }
 
 async function resolveSessionTurnIndex(input: {

@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { registerHelpfulSearch } from "./helpful-bridge.js";
+import { helpfulSettings } from "./helpful.js";
 import { readFile } from "node:fs/promises";
 import { backendDebug } from "../shared/debug-log.js";
 import { diagnoseMemoryCliFailure, fileErrorFields, memoryCliUnexpectedFailure, type MemoryCliFailureDetails } from "./cli-diagnostics.js";
@@ -60,6 +62,7 @@ type MemoryCliResult = MemoryCliFailureDetails & {
   answer?: string;
   items?: unknown[];
   receipt?: unknown;
+  search_id?: string;
 };
 
 type MemoryCliObservability = {
@@ -152,6 +155,7 @@ async function memorySearch(args: string[], options: MemoryCliOptions): Promise<
   }
   options.diagnosticTrace = repositoryMemory.traceContext;
   const observability = await memoryCliObservability(options.env, repositoryMemory.traceContext);
+  const evaluationSettings = helpfulSettings(defaultMemoraxCodeHome(options.env));
   const response = await invokeMemoraxMemoryProvider(
     { sessionId: memoryCliSessionId(args, options.env), prompt: query },
     {
@@ -185,6 +189,7 @@ async function memorySearch(args: string[], options: MemoryCliOptions): Promise<
     )
     : undefined;
   const payload = isRecord(response.result.tool_result_payload) ? response.result.tool_result_payload : {};
+  await registerHelpfulSearch(payload, repositoryMemory.traceContext, options.env, options.fetchImpl, evaluationSettings);
   return {
     ok: true,
     action: "memory.search",
@@ -194,6 +199,7 @@ async function memorySearch(args: string[], options: MemoryCliOptions): Promise<
     answer: typeof payload.answer === "string" ? payload.answer : "",
     items: Array.isArray(payload.items) ? payload.items : [],
     receipt: response.result.dispatch_receipt ?? null,
+    search_id: typeof payload.search_id === "string" ? payload.search_id : undefined,
     ...(quotaNotice ? { quotaNotice } : {}),
   };
 }

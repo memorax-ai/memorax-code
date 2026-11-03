@@ -18,7 +18,7 @@ const BASE_COMMAND_KEYS = [
 ] as const;
 const TURN_START_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = {
   codex: new Set([...BASE_COMMAND_KEYS, "turnId", "prompt", "transcriptPath"]),
-  "claude-code": new Set([...BASE_COMMAND_KEYS, "promptId", "prompt", "transcriptPath"]),
+  "claude-code": new Set([...BASE_COMMAND_KEYS, "promptId", "prompt", "transcriptPath", "claudeTurnKey"]),
   opencode: new Set([...BASE_COMMAND_KEYS, "userMessageId", "prompt"]),
   dsh: new Set(["version", "client", "sessionId", "turn", "startSeq", "cwd", "prompt"]),
   codebuddy: new Set([...BASE_COMMAND_KEYS, "turnId", "prompt", "transcriptPath"]),
@@ -39,6 +39,7 @@ const WRITEBACK_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = 
     ...BASE_COMMAND_KEYS,
     "userMessageId",
     "assistantMessageId",
+    "turnIndex",
     "messages",
   ]),
   dsh: new Set([
@@ -91,6 +92,7 @@ export type ClaudeTurnStartCommand = MemoryHookCommandBase<"claude-code"> & Read
   promptId: string;
   prompt: string;
   transcriptPath: string;
+  claudeTurnKey?: string;
 }>;
 
 export type OpenCodeTurnStartCommand = MemoryHookCommandBase<"opencode"> & Readonly<{
@@ -159,6 +161,7 @@ export type MemoryHookTurnStartResult = Readonly<{
   ok: true;
   userNotice?: string;
   repoMemoryWorktree?: string;
+  claudeTurnKey?: string;
 }>;
 
 export type CodexWritebackCommand = MemoryHookCommandBase<"codex"> & Readonly<{
@@ -176,6 +179,7 @@ export type ClaudeWritebackCommand = MemoryHookCommandBase<"claude-code"> & Read
 export type OpenCodeWritebackCommand = MemoryHookCommandBase<"opencode"> & Readonly<{
   userMessageId: string;
   assistantMessageId: string;
+  turnIndex?: number;
   messages: readonly unknown[];
 }>;
 
@@ -410,6 +414,9 @@ export function parseTurnStartCommand(
   const promptId = requiredStringField(value, "promptId");
   const transcriptPath = requiredStringField(value, "transcriptPath");
   if (!promptId || !transcriptPath) return invalidCommand();
+  if (Object.hasOwn(value, "claudeTurnKey") && (typeof value.claudeTurnKey !== "string"
+    || value.claudeTurnKey !== value.claudeTurnKey.trim()
+    || !/^claude-start:[a-f0-9]{64}$/.test(value.claudeTurnKey))) return invalidCommand();
   return {
     ok: true,
     command: {
@@ -418,6 +425,7 @@ export function parseTurnStartCommand(
       promptId,
       prompt,
       transcriptPath,
+      ...(typeof value.claudeTurnKey === "string" ? { claudeTurnKey: value.claudeTurnKey } : {}),
     },
   };
 }
@@ -481,7 +489,9 @@ export function parseWritebackCommand(
   if (base.client === "opencode") {
     const userMessageId = requiredStringField(value, "userMessageId");
     const assistantMessageId = requiredStringField(value, "assistantMessageId");
-    if (!userMessageId || !assistantMessageId || !Array.isArray(value.messages)) {
+    const hasTurnIndex = Object.prototype.hasOwnProperty.call(value, "turnIndex");
+    const turnIndex = positiveSafeIntegerField(value, "turnIndex");
+    if (!userMessageId || !assistantMessageId || (hasTurnIndex && turnIndex === undefined) || !Array.isArray(value.messages)) {
       return invalidCommand();
     }
     return {
@@ -491,6 +501,7 @@ export function parseWritebackCommand(
         client: "opencode",
         userMessageId,
         assistantMessageId,
+        ...(turnIndex === undefined ? {} : { turnIndex }),
         messages: value.messages,
       },
     };

@@ -1,3 +1,5 @@
+import type { CodingSessionSourceTurn } from "../coding-sessions/coding-turn.js";
+import type { NativeCodingSessionTurnRef } from "../coding-sessions/contracts.js";
 import {
   createAutomaticMemoryWritebackRuntime,
   type AutomaticMemoryWritebackEnqueue,
@@ -36,6 +38,8 @@ import { recordTraceEvent, traceTurnEventId, writeCurrentTraceTurn } from "../tr
 
 export type HarnessMemoryRuntimeOptions = {
   automaticWriteback?: AutomaticMemoryWritebackEnqueue;
+  captureCodingTurns?: boolean;
+  readCodingSessionTurn?: (ref: NativeCodingSessionTurnRef) => Promise<CodingSessionSourceTurn | undefined>;
   diagnosticLogger?: MemoryDiagnosticLogger;
   env?: Record<string, string | undefined>;
   fetchImpl?: typeof fetch;
@@ -78,11 +82,14 @@ export type HarnessTurnStart = Omit<MemoryTurnStart, "client" | "clientTurnId" |
 // Only client-specific materializers may supply completion content. A terminal
 // Hook signal or a trace record alone does not establish this input.
 export type HarnessTurnCompletion = Readonly<AutomaticMemoryWritebackTiming & {
+  sessionTurnIndex?: number;
   sessionId: string;
   clientTurnId: string;
   metadata?: MemoryTurnState;
   userText: string;
   assistantText: string;
+  nativeTurnId?: string;
+  codingTurn?: CodingSessionSourceTurn;
   searchAssistantText?: string;
   traceContext?: TraceContext;
   resolveRepositoryMemory: () => Promise<ConfiguredRepositoryMemoryResult>;
@@ -109,8 +116,10 @@ export function createHarnessMemoryRuntime(
     : options.automaticWriteback
       ? { enqueue: options.automaticWriteback }
       : createAutomaticMemoryWritebackRuntime({
+        memoraxCodeHome: options.memoraxCodeHome ?? (options.env ?? process.env).MEMORAX_CODE_HOME?.trim(),
         diagnosticLogger: options.diagnosticLogger,
         queueQuotaNotice: pendingQuotaNotice?.queue,
+        readCodingSessionTurn: options.readCodingSessionTurn,
       });
   const turnCoordinator = options.turnCoordinator ?? createMemoryTurnCoordinator({
     automaticWriteback: automaticWriteback!.enqueue,
@@ -122,7 +131,9 @@ export function createHarnessMemoryRuntime(
     cleanupIntervalMs: options.cleanupIntervalMs,
   });
   const repositoryMemorySession = options.repositoryMemorySession ?? createRepositoryMemorySessionRuntime({
-    onScopeUpgrade: automaticWriteback?.discardForScopeUpgrade,
+    onScopeUpgrade(upgrade) {
+      automaticWriteback?.discardForScopeUpgrade?.(upgrade);
+    },
   });
 
   function resolveRepositoryMemory(input: { sessionId: string; cwd?: string; workspaceKind?: string; requireBoundScope?: boolean; restoreScope?: RepositoryMemorySessionRequest["restoreScope"] }) {
@@ -211,9 +222,17 @@ export function createHarnessMemoryRuntime(
       return turnCoordinator.completeMaterializedTurn({
         key: { client: definition.client, sessionId: input.sessionId, clientTurnId: input.clientTurnId },
         metadata: input.metadata,
+        sessionTurnIndex: input.sessionTurnIndex,
         resolveRepositoryMemory: input.resolveRepositoryMemory,
         userText: input.userText,
         assistantText: input.assistantText,
+        ...(definition.client === "claude-code" ? { nativeTurnId: input.nativeTurnId } : {}),
+        ...(options.captureCodingTurns === true
+          && input.codingTurn?.client === definition.client
+          && input.codingTurn.sessionId === input.sessionId
+          && input.codingTurn.turnId === (definition.client === "claude-code"
+            ? input.nativeTurnId ?? input.clientTurnId : input.clientTurnId)
+          ? { codingTurn: input.codingTurn } : {}),
         searchAssistantText: input.searchAssistantText,
         userTimestamp: input.userTimestamp,
         assistantTimestamp: input.assistantTimestamp,
@@ -255,4 +274,3 @@ function validateTraceIdentity(
     || (context.turnId !== undefined && context.turnId !== turn.clientTurnId)
   ) throw new Error("harness trace identity mismatch");
 }
-

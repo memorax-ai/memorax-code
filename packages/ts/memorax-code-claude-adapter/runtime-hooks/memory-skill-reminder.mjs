@@ -27,6 +27,10 @@ const personalMemoryContextOptions = {
 const input = await readStdinJson();
 const turnStart = turnStartCommand(input);
 const registered = turnStart ? await registerTurnStart(turnStart) : undefined;
+// Native prompt IDs can repeat; the Backend key identifies this start observation.
+const claudeTurnKey = typeof registered?.claudeTurnKey === "string"
+  && registered.claudeTurnKey === registered.claudeTurnKey.trim()
+  && /^claude-start:[a-f0-9]{64}$/.test(registered.claudeTurnKey) ? registered.claudeTurnKey : undefined;
 
 await runMemorySkillReminderHook({
   additionalReminderContext: personalMemoryReminderContext(MEMORY_SKILL_INVOCATION),
@@ -37,12 +41,14 @@ await runMemorySkillReminderHook({
   memoryImpactContext: MEMORY_IMPACT_REMINDER_CONTEXT,
   memorySkillInvocation: MEMORY_SKILL_INVOCATION,
   onReminder: registered ? recordReminder : undefined,
-  evaluateSearchGuidance: registered ? () => requestMemorySearchGuidance({ body: turnStart }) : undefined,
+  evaluateSearchGuidance: registered ? () => requestMemorySearchGuidance({
+    body: claudeTurnKey ? { ...turnStart, claudeTurnKey } : turnStart,
+  }) : undefined,
   systemMessage: registered?.userNotice,
   remindOnFirstTurn: true,
   runtime: "claude-code",
   supplementalReminderAfterCompact: true,
-}, input);
+}, claudeTurnKey ? { ...input, turn_id: claudeTurnKey } : input);
 
 function turnStartCommand(input) {
   const sessionId = stringOption(input.session_id) ?? stringOption(input.sessionId);
@@ -77,7 +83,7 @@ async function registerTurnStart(body) {
 }
 
 async function recordReminder(reminder) {
-  const promptId = reminder.turnId;
+  const promptId = turnStart?.promptId ?? reminder.turnId;
   if (!promptId || !reminder.transcriptPath) return;
   const connection = resolveBackendConnection();
   // Optional trace recording must not hold up the reminder for the full memory

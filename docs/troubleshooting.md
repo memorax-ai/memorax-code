@@ -1088,3 +1088,12 @@ Never attach API keys, Backend tokens, environment files, complete client
 configuration, private transcripts, raw trace files, or unreviewed local
 paths. Redact usernames, workspace paths, remote URLs, and content before
 sharing.
+
+## Deferred Codex final replies
+
+`deferred: true` with `assistant_message_missing` means a Codex final record was
+not yet materialized. Five bounded rereads wait 100/250/500/1000/2000 ms; they
+retain exact session/turn/scope, never follow the latest turn. Exhaustion emits
+a local `deferred_assistant_message_missing` writeback diagnostic when writeback
+diagnostics are enabled. Stopping Backend cancels outstanding reads.
+

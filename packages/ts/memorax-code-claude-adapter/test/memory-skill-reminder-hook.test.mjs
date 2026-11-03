@@ -132,6 +132,59 @@ test("Claude memory skill reminder injection survives a trace recorder failure",
   }
 });
 
+test("Claude guidance echoes only a validated local turn key from registration", async (t) => {
+  const token = `claude-start:${"a".repeat(64)}`;
+  for (const [name, returnedKey] of [["registered key", token], ["legacy response", undefined],
+    ["malformed key", "invalid-key"], ["noncanonical whitespace", `${token}\n`]]) {
+    await t.test(name, async () => {
+      const root = await mkdtemp(join(tmpdir(), "memorax-claude-guidance-key-"));
+      const recorder = await listenRecorder({ turnStartBody: JSON.stringify({ ok: true,
+        ...(returnedKey === undefined ? {} : { claudeTurnKey: returnedKey }) }) });
+      try {
+        const result = await runHook({ hook_event_name: "UserPromptSubmit", session_id: "claude-key-session",
+          prompt_id: "reused-prompt-id", transcript_path: "/tmp/claude-key-session.jsonl", prompt: "Check this turn." }, {
+          MEMORAX_CODE_BACKEND_URL: recorder.url, MEMORAX_CODE_CLAUDE_MEMORY_HOOK_TIMEOUT_MS: "1000",
+          MEMORAX_CODE_HOME: join(root, "memorax-code"),
+        });
+        assert.equal(result.code, 0, result.stderr);
+        assert.equal(recorder.turnStarts.length, 1);
+        assert.equal("claudeTurnKey" in recorder.turnStarts[0], false);
+        assert.deepEqual(recorder.guidanceRequests, [{ ...recorder.turnStarts[0],
+          ...(returnedKey === token ? { claudeTurnKey: token } : {}) }]);
+        assert.ok(recorder.requests.every(({ body }) => !("claudeTurnKey" in body)));
+        assert.equal(result.stdout.includes("claude-start:"), false);
+      } finally {
+        await recorder.close();
+        await rm(root, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+test("Claude reminder deduplicates registered occurrences instead of reused native prompt IDs", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-claude-reminder-occurrences-"));
+  const keys = [`claude-start:${"a".repeat(64)}`, `claude-start:${"a".repeat(64)}`, `claude-start:${"b".repeat(64)}`];
+  const recorder = await listenRecorder({ turnStartBody: (index) => JSON.stringify({ ok: true, claudeTurnKey: keys[index - 1] }) });
+  const home = join(root, "memorax-code");
+  try {
+    for (let index = 0; index < keys.length; index += 1) {
+      const result = await runHook({ hook_event_name: "UserPromptSubmit", session_id: "reused-prompt-session",
+        prompt_id: "reused-prompt-id", transcript_path: "/tmp/reused-prompt.jsonl", prompt: "Continue the same review." }, {
+        MEMORAX_CODE_BACKEND_URL: recorder.url, MEMORAX_CODE_CLAUDE_MEMORY_HOOK_TIMEOUT_MS: "1000", MEMORAX_CODE_HOME: home,
+      });
+      assert.equal(result.code, 0, result.stderr);
+    }
+    assert.deepEqual(recorder.guidanceRequests.map(({ claudeTurnKey }) => claudeTurnKey), [keys[0], keys[2]]);
+    assert.ok(recorder.guidanceRequests.every(({ promptId }) => promptId === "reused-prompt-id"));
+    assert.ok(recorder.requests.every(({ body }) => body.promptId === "reused-prompt-id" && !("claudeTurnKey" in body)));
+    const state = JSON.parse(await readFile(join(home, "adapters", "claude-code", "memory-skill-reminders.json"), "utf8"));
+    assert.equal(state.sessions["reused-prompt-session"].turnCount, 2);
+  } finally {
+    await recorder.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("Claude memory skill reminder bounds a hanging trace request without changing output", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-claude-memory-reminder-trace-hang-"));
   const recorder = await listenRecorder({ hang: true });
@@ -574,7 +627,7 @@ async function listenRecorder({ hang = false, statusCode = 200, turnStartStatusC
     if (req.url === "/memory/turn-start") {
       turnStarts.push(JSON.parse(body));
       res.writeHead(turnStartStatusCode, { "content-type": "application/json" });
-      res.end(turnStartBody);
+      res.end(typeof turnStartBody === "function" ? turnStartBody(turnStarts.length) : turnStartBody);
       return;
     }
     if (req.url === "/memory/search-guidance") {

@@ -167,6 +167,7 @@ export function createCursorMemoryHookRuntime(
     const metadata = turnCoordinator.getTurn(turnKey(sessionId, turn.turnId))
       ?? metadataFromStored(sessionId, turn, traceContext);
     const completed = await memory.completeTurn({
+      sessionTurnIndex: snapshot.ok && !turn.continuation ? snapshot.snapshot.turns.length : undefined,
       sessionId, clientTurnId: turn.turnId, metadata,
       userText: native.userPrompt, assistantText: native.assistantReply,
       assistantTimestamp: turn.responseObservedAt, assistantTimestampSource: "observed",

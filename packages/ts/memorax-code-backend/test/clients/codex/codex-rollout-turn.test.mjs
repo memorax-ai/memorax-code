@@ -1,11 +1,13 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
+  codexCodingSessionTurnFromJsonLines,
   codexInterruptedRolloutTurnFromJsonLines,
   codexRolloutTurnFromJsonLines,
   readCodexInterruptedRolloutTurn,
   readCodexRolloutTurn,
 } from "../../../dist/clients/codex/rollout-turn.js";
+import { codexSessionTurnIndexFromJsonLines } from "../../../dist/clients/codex/session-turn-index.js";
 
 test("Codex rollout reader selects the exact open turn and preserves prompt and final reply text", () => {
   const transcript = jsonLines([
@@ -37,6 +39,223 @@ test("Codex rollout reader selects the exact open turn and preserves prompt and 
       activities: [],
     },
   });
+  const source = codexCodingSessionTurnFromJsonLines(transcript, {
+    sessionId: "session-1", turnId: "turn-target",
+  });
+  assert.equal(source.ok, true);
+  assert.equal(source.turn.sessionTurnIndex, 2);
+  assert.equal(source.turn.userTimestamp, Date.parse("2026-09-01T08:00:00.000Z"));
+  assert.equal(source.turn.assistantTimestamp, Date.parse("2026-09-01T08:03:00.000Z"));
+  assert.deepEqual(source.turn.items, [
+    { type: "message", role: "user", content: [{ type: "input_text", text: "  Target prompt with trailing newline.\n" }] },
+    { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "Intermediate update." }] },
+    { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "Target final reply.\n" }] },
+  ]);
+});
+
+test("Codex coding items preserve native fields and text blocks without duplicate mirrors or hidden reasoning", () => {
+  const user = {
+    ...responseItemUserMessage("Inspect the parser.", "turn-1").payload,
+    id: "message-user",
+    content: [
+      { type: "input_text", text: "  Inspect the parser.\n", private_metadata: "omit" },
+      { type: "input_image", image_url: "private-image" },
+      { type: "input_text", text: "\n" },
+      { type: "input_text", text: "Keep its text blocks." },
+    ],
+  };
+  const final = {
+    ...responseMessage("assistant", "The parser is correct.", "final_answer", "turn-1").payload,
+    id: "message-final",
+    content: [
+      { type: "output_text", text: "The parser is correct.", annotations: [{ text: "omit" }] },
+      { type: "output_text", text: "" },
+      { type: "output_text", text: "\nIts fields are preserved.  " },
+    ],
+    status: "completed",
+  };
+  const argumentsText = ' { "z": 2, "cmd": "pwd" }\n';
+  const customInput = "  print('native input')\n";
+  const transcript = jsonLines([
+    sessionMeta("session-1"),
+    taskStarted("turn-1"),
+    turnContext("turn-1"),
+    { type: "response_item", payload: user },
+    userMessage("Inspect the parser."),
+    responseMessage("assistant", "Reading the parser.", "commentary", "turn-1"),
+    agentMessage("Reading the parser.", "commentary"),
+    { type: "response_item", payload: { type: "reasoning", content: [{ text: "private reasoning" }] } },
+    responseMessage("assistant", "Private analysis.", "analysis", "turn-1"),
+    { type: "response_item", payload: { type: "unknown_item", content: [{ text: "unknown content" }] } },
+    { type: "response_item", payload: { type: "function_call", id: "function-1", call_id: "call-1", name: "exec_command", namespace: "functions", arguments: argumentsText, status: "completed" } },
+    { type: "response_item", payload: { type: "function_call_output", id: "result-1", call_id: "call-1", output: "  workspace\n", status: "failed" } },
+    { type: "response_item", payload: { type: "custom_tool_call", id: "custom-1", call_id: "call-2", name: "exec", input: customInput } },
+    { type: "response_item", payload: { type: "custom_tool_call_output", id: "custom-result-1", call_id: "call-2", output: { result: "done" }, success: true } },
+    { type: "response_item", payload: final },
+    agentMessage("The parser is correct.", "final_answer"),
+    taskComplete("turn-1"),
+  ]);
+  const identity = { sessionId: "session-1", turnId: "turn-1" };
+  const source = codexCodingSessionTurnFromJsonLines(transcript, identity);
+  assert.equal(source.ok, true);
+  const { items, closedAt, sessionTurnIndex, ...qa } = source.turn;
+  assert.deepEqual(qa, codexRolloutTurnFromJsonLines(transcript, identity).turn);
+  assert.equal(qa.userPrompt, "  Inspect the parser.\n\nKeep its text blocks.");
+  assert.equal(qa.assistantReply, "The parser is correct.\n\nIts fields are preserved.  ");
+  assert.equal(sessionTurnIndex, 1);
+  assert.equal(closedAt, "2026-07-16T00:00:05.000Z");
+  assert.deepEqual(items, [
+    { type: "message", role: "user", id: "message-user", content: [
+      { type: "input_text", text: "  Inspect the parser.\n" },
+      { type: "input_text", text: "\n" },
+      { type: "input_text", text: "Keep its text blocks." },
+    ] },
+    { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "Reading the parser." }] },
+    { type: "function_call", id: "function-1", call_id: "call-1", name: "exec_command", namespace: "functions", arguments: argumentsText },
+    { type: "function_call_output", id: "result-1", call_id: "call-1", output: "  workspace\n" },
+    { type: "custom_tool_call", id: "custom-1", call_id: "call-2", name: "exec", input: customInput },
+    { type: "custom_tool_call_output", id: "custom-result-1", call_id: "call-2", output: '{"result":"done"}' },
+    { type: "message", role: "assistant", phase: "final_answer", id: "message-final", content: [
+      { type: "output_text", text: "The parser is correct." },
+      { type: "output_text", text: "" },
+      { type: "output_text", text: "\nIts fields are preserved.  " },
+    ] },
+    { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "The parser is correct." }] },
+  ]);
+
+  const interrupted = transcript + jsonLines([turnAborted("turn-1"), threadRolledBack()]);
+  assert.deepEqual(codexCodingSessionTurnFromJsonLines(interrupted, identity), {
+    ok: false, reason: "turn_not_completed",
+  });
+});
+
+test("Codex archive retains users, final messages, and tools in native record order without changing QA", () => {
+  const transcript = jsonLines([
+    sessionMeta("session-1"), taskStarted("turn-1"), turnContext("turn-1"),
+    responseItemUserMessage("Inspect the initial input.", "turn-1"),
+    completedUserMessage(["Inspect the initial input."], "native-first"),
+    responseMessage("assistant", "Inspecting the input.", "commentary", "turn-1"),
+    { type: "response_item", payload: { type: "function_call", call_id: "call-first", name: "read", arguments: "{}" } },
+    responseItemUserMessage("Include the revised input.", "turn-1"),
+    completedUserMessage(["Include the revised input."], "native-second"),
+    responseItemUserMessage("<skill>Unrelated injected context.</skill>", "turn-1"),
+    { type: "response_item", payload: { type: "function_call_output", call_id: "call-first", output: "Initial result." } },
+    responseMessage("assistant", "Initial final response.", "final_answer", "turn-1"),
+    { type: "response_item", payload: { type: "function_call", call_id: "call-last", name: "read", arguments: "{}" } },
+    responseMessage("assistant", "Revised final response.", "final_answer", "turn-1"),
+    { type: "response_item", payload: { type: "function_call_output", call_id: "call-last", output: "Last result." } },
+    taskComplete("turn-1"),
+  ]);
+  const identity = { sessionId: "session-1", turnId: "turn-1" };
+  const archive = codexCodingSessionTurnFromJsonLines(transcript, identity);
+  assert.equal(archive.ok, true);
+  const { items, closedAt, sessionTurnIndex, ...qa } = archive.turn;
+  assert.deepEqual(qa, codexRolloutTurnFromJsonLines(transcript, identity).turn);
+  assert.equal(qa.userPrompt, "Include the revised input.");
+  assert.equal(qa.assistantReply, "Revised final response.");
+  assert.deepEqual(items.map((item) => item.type === "message"
+    ? `${item.role}/${item.phase ?? "input"}:${item.content.map((block) => block.text).join("\n")}`
+    : `${item.type}:${item.call_id}`), [
+    "user/input:Inspect the initial input.",
+    "assistant/commentary:Inspecting the input.",
+    "function_call:call-first",
+    "user/input:Include the revised input.",
+    "function_call_output:call-first",
+    "assistant/final_answer:Initial final response.",
+    "function_call:call-last",
+    "assistant/final_answer:Revised final response.",
+    "function_call_output:call-last",
+  ]);
+});
+
+test("Codex archive preserves multiple legacy inputs at their original positions", () => {
+  const transcript = jsonLines([
+    sessionMeta("session-1"), taskStarted("turn-1"), turnContext("turn-1"),
+    userMessage("Initial legacy input."),
+    agentMessage("Intermediate legacy update.", "commentary"),
+    userMessage("Additional legacy input."),
+    agentMessage("Completed legacy response.", "final_answer"),
+    taskComplete("turn-1"),
+  ]);
+  const identity = { sessionId: "session-1", turnId: "turn-1" };
+  const archive = codexCodingSessionTurnFromJsonLines(transcript, identity);
+  assert.equal(archive.ok, true);
+  assert.equal(codexRolloutTurnFromJsonLines(transcript, identity).turn.userPrompt, "Additional legacy input.");
+  assert.deepEqual(archive.turn.items.map((item) => item.content[0].text), [
+    "Initial legacy input.", "Intermediate legacy update.", "Additional legacy input.", "Completed legacy response.",
+  ]);
+});
+
+test("Codex archive removes only one matching assistant mirror per response item", () => {
+  const transcript = jsonLines([
+    sessionMeta("session-1"), taskStarted("turn-1"), turnContext("turn-1"),
+    responseItemUserMessage("Inspect mixed native messages.", "turn-1"),
+    responseMessage("assistant", "Mirrored update.", "commentary", "turn-1"),
+    agentMessage("Mirrored update.", "commentary"),
+    agentMessage("Unique legacy update.", "commentary"),
+    agentMessage("Repeated update.", "commentary"),
+    agentMessage("Repeated update.", "commentary"),
+    responseMessage("assistant", "Repeated update.", "commentary", "turn-1"),
+    agentMessage("Legacy repeated update.", "commentary"),
+    agentMessage("Legacy repeated update.", "commentary"),
+    responseMessage("assistant", "Native repeated update.", "commentary", "turn-1"),
+    responseMessage("assistant", "Native repeated update.", "commentary", "turn-1"),
+    agentMessage("Same text, distinct phase.", "commentary"),
+    responseMessage("assistant", "Same text, distinct phase.", "final_answer", "turn-1"),
+    responseMessage("assistant", "Complete mixed messages.", "final_answer", "turn-1"),
+    agentMessage("Complete mixed messages.", "final_answer"),
+    taskComplete("turn-1"),
+  ]);
+  const source = codexCodingSessionTurnFromJsonLines(transcript, { sessionId: "session-1", turnId: "turn-1" });
+  assert.equal(source.ok, true);
+  assert.deepEqual(source.turn.items.filter((item) => item.role === "assistant")
+    .map((item) => [item.phase, item.content[0].text]), [
+    ["commentary", "Mirrored update."],
+    ["commentary", "Unique legacy update."],
+    ["commentary", "Repeated update."],
+    ["commentary", "Repeated update."],
+    ["commentary", "Legacy repeated update."],
+    ["commentary", "Legacy repeated update."],
+    ["commentary", "Native repeated update."],
+    ["commentary", "Native repeated update."],
+    ["commentary", "Same text, distinct phase."],
+    ["final_answer", "Same text, distinct phase."],
+    ["final_answer", "Complete mixed messages."],
+  ]);
+});
+
+test("Codex turn indexes stay aligned across response-item turns and interrupted boundaries", () => {
+  const transcript = jsonLines([
+    sessionMeta("session-1"),
+    taskStarted("turn-1"),
+    turnContext("turn-1"),
+    turnContext("turn-1"),
+    responseItemUserMessage("Interrupted prompt.", "turn-1"),
+    turnAborted("turn-1"),
+    taskStarted("background-task"),
+    customToolCall("Background work."),
+    responseItemUserMessage("Mismatched prompt.", "other-turn"),
+    turnAborted("background-task"),
+    responseItemUserMessage("Outside a turn."),
+    taskStarted("turn-2"),
+    responseItemUserMessage("Second prompt.", "turn-2"),
+    responseMessage("assistant", "Second reply.", "final_answer", "turn-2"),
+    taskComplete("turn-2"),
+    taskStarted("turn-3"),
+    turnContext("turn-3"),
+    responseItemUserMessage("Third prompt.", "turn-3"),
+    responseMessage("assistant", "Third reply.", "final_answer", "turn-3"),
+    taskComplete("turn-3"),
+  ]);
+  for (const [turnId, index] of [["turn-2", 2], ["turn-3", 3]]) {
+    const identity = { sessionId: "session-1", turnId };
+    assert.deepEqual(codexSessionTurnIndexFromJsonLines(transcript, identity), {
+      ok: true, sessionTurnIndex: index,
+    });
+    const result = codexCodingSessionTurnFromJsonLines(transcript, identity);
+    assert.equal(result.ok, true);
+    assert.equal(result.turn.sessionTurnIndex, index);
+  }
 });
 
 test("Codex rollout reader uses task_complete as a completed-turn assistant fallback", () => {
@@ -131,6 +350,24 @@ test("Codex rollout reader keeps local turn boundaries when assistant metadata n
     sessionId: "session-1",
     turnId: "provider-turn",
   }), { ok: false, reason: "turn_not_found" });
+  const coding = codexCodingSessionTurnFromJsonLines(transcript, {
+    sessionId: "session-1", turnId: "turn-target",
+  });
+  assert.equal(coding.ok, true);
+  const { items, sessionTurnIndex, closedAt, ...qa } = coding.turn;
+  assert.deepEqual(qa, codexRolloutTurnFromJsonLines(transcript, {
+    sessionId: "session-1", turnId: "turn-target",
+  }).turn);
+  assert.equal(sessionTurnIndex, 2);
+  assert.equal(closedAt, "2026-07-16T00:00:05.000Z");
+  assert.deepEqual(items, [
+    { type: "message", role: "user", content: [{ type: "input_text", text: "Target prompt." }] },
+    { type: "message", role: "assistant", phase: "commentary", content: [{ type: "output_text", text: "Intermediate update." }] },
+    { type: "message", role: "assistant", phase: "final_answer", content: [{ type: "output_text", text: "Target reply." }] },
+  ]);
+  assert.deepEqual(codexCodingSessionTurnFromJsonLines(transcript, {
+    sessionId: "session-1", turnId: "provider-turn",
+  }), { ok: false, reason: "turn_not_found" });
 });
 
 test("Codex rollout reader prefers response_item messages over legacy event messages", () => {
@@ -161,6 +398,294 @@ test("Codex rollout reader prefers response_item messages over legacy event mess
   });
 });
 
+test("Codex user identity keeps later context injections out of QA and archive", () => {
+  for (const injected of ["<environment_context>Injected workspace.</environment_context>", "<skill>Injected procedure.</skill>"]) {
+    const user = responseItemUserMessage("Explain the native parser.", "turn-1");
+    user.payload.id = "response-user";
+    user.timestamp = "2026-09-01T08:00:00.000Z";
+    const earlierContext = responseItemUserMessage(injected, "turn-1");
+    earlierContext.payload.id = "native-user";
+    const laterContext = responseItemUserMessage(injected, "turn-1");
+    laterContext.timestamp = "2026-09-01T08:01:00.000Z";
+    assertCodexSelectedUser([
+      sessionMeta("session-1"), taskStarted("turn-1"), turnContext("turn-1"),
+      earlierContext, user,
+      completedUserMessage(["Explain the native parser."], "native-user"),
+      laterContext,
+      responseMessage("assistant", "The parser selects native input.", "final_answer", "provider-turn"),
+      taskComplete("turn-1"),
+    ], user, "Explain the native parser.");
+  }
+});
+
+test("Codex user identity preserves literal context tags and native text blocks", () => {
+  for (const text of ["<environment_context>Explain this tag.</environment_context>", "<skill>Explain this tag.</skill>"]) {
+    const user = responseItemUserMessage(text, "turn-1");
+    user.payload.content.push(
+      { type: "input_text", text: "\n" },
+      { type: "input_text", text: "" },
+      { type: "input_text", text: "  Keep this second block.\n" },
+    );
+    assertCodexSelectedUser([
+      sessionMeta("session-1"), taskStarted("turn-1"), turnContext("turn-1"),
+      user,
+      completedUserMessage([text, "\n", "", "  Keep this second block.\n"], "native-user"),
+      responseItemUserMessage("Unrelated injected context.", "turn-1"),
+      responseMessage("assistant", "The tags are literal user text.", "final_answer", "turn-1"),
+      taskComplete("turn-1"),
+    ], user, `${text}\n  Keep this second block.\n`);
+  }
+});
+
+test("Codex user identity matches native images without rewriting response text", () => {
+  const firstText = "Describe the provided image.";
+  const lastText = "Compare its visible labels.";
+  const open = '<image path="synthetic.png">';
+  const image = { type: "input_image", image_url: "data:image/png;base64,AAAA" };
+  for (const nativeType of ["image", "local_image"]) {
+    for (const wrapped of [false, true]) {
+      const user = responseItemUserMessage(firstText, "turn-1");
+      user.payload.content.push(
+        ...(wrapped ? [{ type: "input_text", text: open }, image, { type: "input_text", text: "</image>" }] : [image]),
+        { type: "input_text", text: lastText },
+      );
+      const native = completedUserMessage([], "native-image-user");
+      native.payload.item.content = [
+        { type: "text", text: firstText },
+        nativeType === "image" ? { type: nativeType, image_url: image.image_url } : { type: nativeType, path: "synthetic.png" },
+        { type: "text", text: lastText },
+      ];
+      assertCodexSelectedUser([
+        sessionMeta("session-1"), taskStarted("turn-1"), turnContext("turn-1"), user, native,
+        responseItemUserMessage("Later context is not the user input.", "turn-1"),
+        responseMessage("assistant", "The image contains labels.", "final_answer", "turn-1"), taskComplete("turn-1"),
+      ], user, wrapped ? `${firstText}\n${open}\n</image>\n${lastText}` : `${firstText}\n${lastText}`);
+    }
+  }
+  const literal = responseItemUserMessage(open, "turn-1");
+  literal.payload.content.push({ type: "input_text", text: "</image>" }, { type: "input_text", text: "Explain these literal tags." });
+  assertCodexSelectedUser([
+    sessionMeta("session-1"), taskStarted("turn-1"), turnContext("turn-1"), literal,
+    completedUserMessage([open, "</image>", "Explain these literal tags."], "native-text-user"),
+    responseMessage("assistant", "These are literal tags.", "final_answer", "turn-1"), taskComplete("turn-1"),
+  ], literal, `${open}\n</image>\nExplain these literal tags.`);
+  const literalImage = responseItemUserMessage(open, "turn-1");
+  literalImage.payload.content.push(image, { type: "input_text", text: "</image>" }, { type: "input_text", text: lastText });
+  const nativeLiteralImage = completedUserMessage([], "native-literal-image");
+  nativeLiteralImage.payload.item.content = [
+    { type: "text", text: open }, { type: "local_image", path: "synthetic.png" },
+    { type: "text", text: "</image>" }, { type: "text", text: lastText },
+  ];
+  assertCodexSelectedUser([
+    sessionMeta("session-1"), taskStarted("turn-1"), turnContext("turn-1"), literalImage, nativeLiteralImage,
+    responseMessage("assistant", "Literal tags surround the image.", "final_answer", "turn-1"), taskComplete("turn-1"),
+  ], literalImage, `${open}\n</image>\n${lastText}`);
+});
+
+test("Codex user identity rejects unmatched image structure and extra context", () => {
+  const text = (value) => ({ type: "input_text", text: value });
+  const caption = text("Describe the image.");
+  const open = text('<image path="synthetic.png">');
+  const close = text("</image>");
+  const image = { type: "input_image", image_url: "data:image/png;base64,AAAA" };
+  const cases = [
+    { name: "wrapper without input_image", nativeImage: true, content: [caption, open, close] },
+    { name: "image wrapper without native image", nativeImage: false, content: [caption, open, image, close] },
+    { name: "different image count", nativeImage: true, content: [caption, image, image] },
+    { name: "different image position", nativeImage: true, content: [image, caption] },
+    { name: "unknown content does not identify an image", nativeImage: true, content: [caption, { type: "input_file", file_id: "synthetic-file" }] },
+    { name: "ordinary context before image", nativeImage: true, content: [caption, text("Extra context."), open, image, close] },
+    { name: "ordinary context after image", nativeImage: true, content: [caption, open, image, close, text("Extra context.")] },
+    { name: "opening tag includes unrelated text", nativeImage: true, content: [caption, text('<image path="synthetic.png">Extra context.'), image, close] },
+    { name: "closing tag includes unrelated text", nativeImage: true, content: [caption, open, image, text("</image>Extra context.")] },
+    { name: "opening tag contains prose", nativeImage: true, content: [caption, text("<image arbitrary injected prose>"), image, close] },
+    { name: "opening tag contains a newline", nativeImage: true, content: [caption, text('<image\npath="synthetic.png">'), image, close] },
+    { name: "opening tag path contains a newline", nativeImage: true, content: [caption, text('<image path="synthetic\n.png">'), image, close] },
+  ];
+  for (const { name, nativeImage, content } of cases) {
+    const user = responseItemUserMessage("Describe the image.", "turn-1");
+    user.payload.content = content;
+    const native = completedUserMessage(["Describe the image."], "native-user");
+    if (nativeImage) native.payload.item.content.push({ type: "local_image", path: "synthetic.png" });
+    const transcript = jsonLines([
+      sessionMeta("session-1"), taskStarted("turn-1"), turnContext("turn-1"), user, native,
+      responseMessage("assistant", "An answer cannot repair the input shape.", "final_answer", "turn-1"), taskComplete("turn-1"),
+    ]);
+    const identity = { sessionId: "session-1", turnId: "turn-1" };
+    assert.deepEqual(codexRolloutTurnFromJsonLines(transcript, identity), { ok: false, reason: "user_prompt_missing" }, name);
+    assert.deepEqual(codexCodingSessionTurnFromJsonLines(transcript, identity), { ok: false, reason: "user_prompt_missing" }, name);
+  }
+});
+
+test("Codex QA selects the last real input while its archive retains every identified input", () => {
+  for (const secondText of ["Use the revised input.", "Use the initial input."]) {
+    const first = responseItemUserMessage("Use the initial input.", "turn-1");
+    first.payload.id = "response-first";
+    const last = responseItemUserMessage(secondText, "turn-1");
+    last.payload.id = "response-last";
+    last.timestamp = "2026-09-01T08:02:00.000Z";
+    assertCodexSelectedUser([
+      sessionMeta("session-1"), taskStarted("turn-1"), turnContext("turn-1"),
+      first, completedUserMessage(["Use the initial input."], "native-first"),
+      responseMessage("assistant", "Working on the input.", "commentary", "turn-1"),
+      last, completedUserMessage([secondText], "native-last"),
+      responseItemUserMessage("<skill>Injected after the real input.</skill>", "turn-1"),
+      responseMessage("assistant", "Applied the last input.", "final_answer", "turn-1"),
+      taskComplete("turn-1"),
+    ], last, secondText, [first, last]);
+  }
+});
+
+test("Codex user identity treats repeated native message identities as idempotent", () => {
+  for (const duplicateBeforeLastEvent of [true, false]) {
+    const first = completedUserMessage(["Initial input."], "native-first");
+    const initialResponse = responseItemUserMessage("Initial input.", "turn-1");
+    const last = responseItemUserMessage("Revised input.", "turn-1");
+    last.payload.id = "response-last";
+    assertCodexSelectedUser([
+      sessionMeta("session-1"), taskStarted("turn-1"), turnContext("turn-1"),
+      initialResponse, first,
+      last,
+      ...(duplicateBeforeLastEvent ? [first] : []),
+      completedUserMessage(["Revised input."], "native-last"),
+      ...(!duplicateBeforeLastEvent ? [first] : []),
+      responseItemUserMessage("Later context must not replace native input.", "turn-1"),
+      responseMessage("assistant", "Applied the revised input.", "final_answer", "turn-1"),
+      taskComplete("turn-1"),
+    ], last, "Revised input.", [initialResponse, last]);
+  }
+});
+
+test("Codex user identity rejects a repeated native identity with different image content", () => {
+  for (const nativeType of ["image", "local_image"]) {
+    const user = responseItemUserMessage("Describe the image.", "turn-1");
+    user.payload.content.push({ type: "input_image", image_url: "data:image/png;base64,AAAA" });
+    const first = completedUserMessage(["Describe the image."], "same-native-id");
+    const changed = completedUserMessage(["Describe the image."], "same-native-id");
+    first.payload.item.content.push(nativeType === "image"
+      ? { type: nativeType, image_url: "data:image/png;base64,AAAA" }
+      : { type: nativeType, path: "synthetic-first.png" });
+    changed.payload.item.content.push(nativeType === "image"
+      ? { type: nativeType, image_url: "data:image/png;base64,BBBB" }
+      : { type: nativeType, path: "synthetic-second.png" });
+    const transcript = jsonLines([
+      sessionMeta("session-1"), taskStarted("turn-1"), turnContext("turn-1"), user, first, changed,
+      responseMessage("assistant", "The image has a label.", "final_answer", "turn-1"), taskComplete("turn-1"),
+    ]);
+    const identity = { sessionId: "session-1", turnId: "turn-1" };
+    const failure = { ok: false, reason: "user_prompt_ambiguous" };
+    assert.deepEqual(codexRolloutTurnFromJsonLines(transcript, identity), failure, nativeType);
+    assert.deepEqual(codexCodingSessionTurnFromJsonLines(transcript, identity), failure, nativeType);
+    assert.deepEqual(codexInterruptedRolloutTurnFromJsonLines(
+      transcript + jsonLines([turnAborted("turn-1")]), identity,
+    ), failure, nativeType);
+  }
+});
+
+test("Codex user identity fails closed for missing, conflicting, or ambiguous native association", () => {
+  const missingThread = completedUserMessage(["Actual input."], "native-user");
+  delete missingThread.payload.thread_id;
+  const missingTurn = completedUserMessage(["Actual input."], "native-user");
+  delete missingTurn.payload.turn_id;
+  const otherThread = completedUserMessage(["Actual input."], "native-user");
+  otherThread.payload.thread_id = "other-session";
+  const cases = [
+    { name: "missing matching response", reason: "user_prompt_missing", records: [
+      responseItemUserMessage("Injected context.", "turn-1"),
+      completedUserMessage(["Actual input."], "native-user"),
+    ] },
+    { name: "legacy text cannot repair missing modern association", reason: "user_prompt_missing", records: [
+      responseItemUserMessage("Injected context.", "turn-1"),
+      userMessage("Actual input."),
+      completedUserMessage(["Actual input."], "native-user"),
+    ] },
+    { name: "matching response occurs after the native boundary", reason: "user_prompt_missing", records: [
+      completedUserMessage(["Actual input."], "native-user"),
+      responseItemUserMessage("Actual input.", "turn-1"),
+    ] },
+    { name: "empty native input does not allow response fallback", reason: "user_prompt_missing", records: [
+      responseItemUserMessage("Actual input.", "turn-1"), completedUserMessage([], "native-user"),
+    ] },
+    { name: "missing native thread", reason: "turn_metadata_mismatch", records: [
+      responseItemUserMessage("Actual input.", "turn-1"), missingThread,
+    ] },
+    { name: "missing native turn", reason: "turn_metadata_mismatch", records: [
+      responseItemUserMessage("Actual input.", "turn-1"), missingTurn,
+    ] },
+    { name: "conflicting native thread", reason: "turn_metadata_mismatch", records: [
+      responseItemUserMessage("Actual input.", "turn-1"), otherThread,
+    ] },
+    { name: "conflicting native turn", reason: "turn_metadata_mismatch", records: [
+      responseItemUserMessage("Actual input.", "turn-1"),
+      completedUserMessage(["Actual input."], "native-user", "other-turn"),
+    ] },
+    { name: "indistinguishable earlier candidates", reason: "user_prompt_ambiguous", records: [
+      responseItemUserMessage("Actual input.", "turn-1"),
+      responseItemUserMessage("Actual input.", "turn-1"),
+      completedUserMessage(["Actual input."], "native-user"),
+    ] },
+    { name: "missing native item identity", reason: "user_prompt_ambiguous", records: [
+      responseItemUserMessage("Actual input.", "turn-1"),
+      completedUserMessage(["Actual input."], undefined),
+    ] },
+    { name: "conflicting repeated native identity", reason: "user_prompt_ambiguous", records: [
+      responseItemUserMessage("Initial input.", "turn-1"),
+      completedUserMessage(["Initial input."], "same-native-id"),
+      responseItemUserMessage("Revised input.", "turn-1"),
+      completedUserMessage(["Revised input."], "same-native-id"),
+    ] },
+    { name: "joined text is not identical text blocks", reason: "user_prompt_missing", records: [
+      responseItemUserMessage("First block.\nSecond block.", "turn-1"),
+      completedUserMessage(["First block.", "Second block."], "native-user"),
+    ] },
+    { name: "response-only multiple candidates", reason: "user_prompt_ambiguous", records: [
+      responseItemUserMessage("Initial candidate.", "turn-1"),
+      responseItemUserMessage("Later candidate.", "turn-1"),
+    ] },
+    { name: "legacy text cannot repair multiple response candidates", reason: "user_prompt_ambiguous", records: [
+      responseItemUserMessage("Initial candidate.", "turn-1"),
+      userMessage("Initial candidate."),
+      responseItemUserMessage("Later candidate.", "turn-1"),
+    ] },
+  ];
+  for (const { name, records, reason } of cases) {
+    const transcript = jsonLines([
+      sessionMeta("session-1"), taskStarted("turn-1"), turnContext("turn-1"),
+      ...records,
+      responseMessage("assistant", "A final reply cannot repair user identity.", "final_answer", "turn-1"),
+      taskComplete("turn-1"),
+    ]);
+    const identity = { sessionId: "session-1", turnId: "turn-1" };
+    assert.deepEqual(codexRolloutTurnFromJsonLines(transcript, identity), { ok: false, reason }, name);
+    assert.deepEqual(codexCodingSessionTurnFromJsonLines(transcript, identity), { ok: false, reason }, name);
+    assert.deepEqual(codexInterruptedRolloutTurnFromJsonLines(
+      transcript + jsonLines([turnAborted("turn-1")]), identity,
+    ), { ok: false, reason }, name);
+  }
+});
+
+test("Codex user identity cannot borrow matching response text from another turn", () => {
+  const transcript = jsonLines([
+    sessionMeta("session-1"), taskStarted("earlier-turn"), turnContext("earlier-turn"),
+    responseItemUserMessage("Repeated input.", "earlier-turn"),
+    completedUserMessage(["Repeated input."], "native-earlier", "earlier-turn"),
+    responseMessage("assistant", "Earlier answer.", "final_answer", "earlier-turn"),
+    taskComplete("earlier-turn"),
+    taskStarted("turn-1"), turnContext("turn-1"),
+    responseItemUserMessage("Unrelated injected context.", "turn-1"),
+    completedUserMessage(["Repeated input."], "native-target"),
+    responseMessage("assistant", "Target answer.", "final_answer", "turn-1"),
+    taskComplete("turn-1"),
+  ]);
+  const identity = { sessionId: "session-1", turnId: "turn-1" };
+  assert.deepEqual(codexRolloutTurnFromJsonLines(transcript, identity), {
+    ok: false, reason: "user_prompt_missing",
+  });
+  assert.deepEqual(codexCodingSessionTurnFromJsonLines(transcript, identity), {
+    ok: false, reason: "user_prompt_missing",
+  });
+});
+
 test("Codex rollout reader fails closed for conflicting user response_item turn metadata", () => {
   const transcript = jsonLines([
     sessionMeta("session-1"),
@@ -174,6 +699,11 @@ test("Codex rollout reader fails closed for conflicting user response_item turn 
   ]);
 
   assert.deepEqual(codexRolloutTurnFromJsonLines(transcript, {
+    sessionId: "session-1",
+    turnId: "turn-1",
+  }), { ok: false, reason: "turn_metadata_mismatch" });
+
+  assert.deepEqual(codexCodingSessionTurnFromJsonLines(transcript, {
     sessionId: "session-1",
     turnId: "turn-1",
   }), { ok: false, reason: "turn_metadata_mismatch" });
@@ -739,6 +1269,36 @@ test("Codex interrupted rollout reader reports an unavailable transcript without
   assert.equal(result.reason, "transcript_unavailable");
   assert.equal(typeof result.error, "string");
 });
+
+function assertCodexSelectedUser(records, expectedResponse, expectedPrompt, expectedArchiveUsers = [expectedResponse]) {
+  const transcript = jsonLines(records);
+  const identity = { sessionId: "session-1", turnId: "turn-1" };
+  const qa = codexRolloutTurnFromJsonLines(transcript, identity);
+  const archive = codexCodingSessionTurnFromJsonLines(transcript, identity);
+  assert.equal(qa.ok, true);
+  assert.equal(archive.ok, true);
+  const { items, closedAt, sessionTurnIndex, ...archiveQa } = archive.turn;
+  assert.deepEqual(archiveQa, qa.turn);
+  assert.equal(qa.turn.userPrompt, expectedPrompt);
+  assert.equal(qa.turn.userTimestamp, Date.parse(expectedResponse.timestamp));
+  assert.deepEqual(items.filter((item) => item.type === "message" && item.role === "user"), expectedArchiveUsers.map((response) => ({
+    type: "message", role: "user",
+    ...(response.payload.id ? { id: response.payload.id } : {}),
+    content: response.payload.content.filter((part) => part.type === "input_text")
+      .map(({ text }) => ({ type: "input_text", text })),
+  })));
+}
+
+function completedUserMessage(texts, id, turnId = "turn-1") {
+  return {
+    timestamp: "2026-09-01T08:00:00.100Z",
+    type: "event_msg",
+    payload: {
+      type: "item_completed", thread_id: "session-1", turn_id: turnId,
+      item: { type: "UserMessage", id, content: texts.map((text) => ({ type: "text", text })) },
+    },
+  };
+}
 
 function jsonLines(records) {
   return `${records.map((record) => JSON.stringify(record)).join("\n")}\n`;
