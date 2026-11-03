@@ -28,11 +28,16 @@ listed.
     or a client installer download.
   - `cleanup`: teardown after the suite's checks.
   - `functional`: a stage of a functional suite.
-  - `client-release`: a cell on a client's official latest release.
+  - `client-release`: a cell on a client's official latest release that is not
+    its accepted version, with a signature not already registered.
   - `product`: a MemoraX Code defect that the evidence shows.
 - **First seen**: the run ID, attempt, job name, and UTC date of the first
   failure. It stays on record when a later recheck passes.
-- **Later sightings**: runs in which the same signature recurred.
+- **Later sightings**: runs in which the same signature recurred. A recurrence
+  on another channel of the same client, OS, and Node.js major, such as an
+  `accepted` signature on a `latest` cell, is recorded under the original
+  signature with that cell's channel and version, as S1 records its `latest`
+  sightings, and restarts the closing-rule count like any other sighting.
 - **Rechecks**: job-level rechecks of the failure and their results.
 - **Status**: one of
   - `open`: registered, with nothing in place for it;

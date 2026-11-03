@@ -414,7 +414,10 @@ client's `deferred` list in the
 version back for that cell, and `client-release-new` otherwise: register its
 signature in the
 [native CI failure register](docs/native-ci-failure-register.md) first, then
-defer the version or fix it. A `deferred` entry that lists `platforms` applies
+defer the version or fix it. When its signature is already registered, record
+the failure as a later sighting of that entry instead of a new entry, and defer
+the version only as the [register rules](#native-ci-failure-register) allow. A
+`deferred` entry that lists `platforms` applies
 only to WorkBuddy cells on those release platforms; one without `platforms`
 applies to every cell of its version. On the compatibility monitor, in place of
 the entire-matrix requirement that each client section describes, a client's
@@ -867,9 +870,19 @@ and artifacts only. Maintain it in rounds:
 - A skipped, todo, or cancelled result is not a pass.
 - Do not merge while `PR acceptance` fails: return the pull request to Draft
   and keep its evidence.
-- A failing cell on a client's latest release is recorded as `client-release`.
-  Hold that version back through the manifest's `deferred` list, as described
-  in [Updating Accepted Versions](#updating-accepted-versions).
+- Compare a failing `latest` or WorkBuddy `fallback` cell with the register
+  first. When its signature is already registered, add the failure to that
+  entry's later sightings with the cell's channel and version, and defer the
+  version only for a `client-release` signature. A sighting of a `cleanup`,
+  `environment`, `functional`, or `product` signature is registered, not
+  deferred.
+- When the signature of a failing `latest` or `fallback` cell is not
+  registered, record it as a new `client-release` signature and hold that
+  version back through the manifest's `deferred` list, as described in
+  [Updating Accepted Versions](#updating-accepted-versions).
+- A `latest` version that equals the `accepted` version is never deferred,
+  whether or not its signature is registered: handle its failure as a failure
+  of the `accepted` version, not as a `client-release` signature.
 - Close a signature only under the closing rule in the register's
   [Status](docs/native-ci-failure-register.md#columns) column: 10 counted runs
   of its cell after its last sighting. A closed signature that recurs reopens
