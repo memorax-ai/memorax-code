@@ -1618,6 +1618,49 @@ test("interactive setup after reinstall automatically reuses a complete MemoraX 
 });
 
 
+test("setup reuses legacy endpoint configuration without reprovisioning or rewriting it", async (t) => {
+  const existingConfig = [
+    "[clients]",
+    "codex = false",
+    "claude = false",
+    "dsh = false",
+    "",
+    "[memorax]",
+    'endpoint = "https://platform.memorax.net"',
+    'api_key = "existing-secret"',
+    'user_id = "existing-user"',
+    "",
+    "[memory.add]",
+    'output_language = "en"',
+    "",
+  ].join("\n");
+  for (const updateMode of [false, true]) {
+    await t.test(updateMode ? "automatic update" : "ordinary setup", async () => {
+      const run = await runSetup({
+        codexAvailable: false,
+        claudeAvailable: false,
+        memoraxCodeConfig: existingConfig,
+        trialProvisionFailure: true,
+        updateMode,
+        interactive: !updateMode,
+        memoraxEnv: updateMode ? { MEMORAX_CODE_SETUP_AUTOMATIC_UPDATE: "1" } : {},
+      });
+      try {
+        assert.equal(run.result.code, 0, run.result.stderr);
+        assert.doesNotMatch(run.log, /^trial-provision$/m);
+        assert.doesNotMatch(run.result.stderr, /Username|Preferred language|MemoraX API key/);
+        const updated = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
+        assertConfiguredValuesPreserved(parse(existingConfig), parse(updated));
+        assert.equal(tomlSectionText(updated, "memorax"), tomlSectionText(existingConfig, "memorax"));
+        await assertSetupComplete(run);
+      } finally {
+        await rm(run.root, { recursive: true, force: true });
+      }
+    });
+  }
+});
+
+
 test("reconfigure mode replaces a reusable MemoraX configuration", async () => {
   const existingConfig = [
     "[clients]",
@@ -1681,7 +1724,7 @@ test("setup writes the platform endpoint when no override is supplied", async ()
     assert.equal(run.result.code, 0, run.result.stderr);
     assert.match(run.result.stderr, /Secure MemoraX credential is ready/);
     const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
-    assert.match(config, /endpoint = "https:\/\/platform\.memorax\.net" # MemoraX service URL\./);
+    assert.match(config, /endpoint = "https:\/\/platform\.memoraxai\.com" # MemoraX service URL\./);
     assert.match(config, /output_language = "zh" # Language for newly generated MemoraX memories\./);
   } finally {
     await rm(run.root, { recursive: true, force: true });

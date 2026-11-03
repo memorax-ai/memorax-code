@@ -162,11 +162,12 @@ test("trial setup credentials authorize repository-scoped MemoraX writeback", as
 
     assert.equal(result.ok, true);
     assert.equal(memoryRequests.length, 1);
-    assert.equal(memoryRequests[0].url, "https://platform.memorax.net/v1/memories/add");
+    assert.equal(memoryRequests[0].url, "https://platform.memoraxai.com/v1/memories/add");
     assert.equal(memoryRequests[0].authorization, `Token ${credential.api_key}`);
     assert.equal(memoryRequests[0].body.user_id, `${MEMORY_ID}@${REPOSITORY_SLUG}`);
     assert.equal(memoryRequests[0].body.memory_output_language, "en");
     assert.notEqual(memoryRequests[0].body.user_id, `${ACCOUNT_ID}@${REPOSITORY_SLUG}`);
+    assert.equal(await readFile(configPath, "utf8"), configText);
   } finally {
     await rm(memoraxCodeHome, { recursive: true, force: true });
   }
