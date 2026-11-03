@@ -15,9 +15,14 @@ CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, Trae, Cursor, and Qoder.
 npm install -g @memorax/memorax-code
 ```
 
+The official endpoint is `https://platform.memoraxai.com`. Upgrades automatically
+support saved configurations using the legacy official endpoint; rerunning
+setup or replacing saved account settings is unnecessary. See the MemoraX
+connection section in `docs/configuration.md`.
+
 ### Connect a MemoraX Account (Recommended)
 
-[Create a MemoraX account](https://platform.memorax.net/) or use an existing
+[Create a MemoraX account](https://platform.memoraxai.com/) or use an existing
 one, then run:
 
 ```bash

@@ -1,4 +1,5 @@
-const DEFAULT_SERVICE_BASE_URL = "https://platform.memorax.net";
+const DEFAULT_SERVICE_BASE_URL = "https://platform.memoraxai.com";
+const LEGACY_SERVICE_BASE_URL_PATTERN = /^https:\/\/platform\.memorax\.net(?::443)?\/?$/i;
 const PROVISION_PATH = "/account/api/v1/trial/provision";
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 16_384;
@@ -269,7 +270,7 @@ function validateServiceBaseUrl(value) {
       || !["", "/"].includes(url.pathname)) {
       throw new Error();
     }
-    return url.origin;
+    return LEGACY_SERVICE_BASE_URL_PATTERN.test(value) ? DEFAULT_SERVICE_BASE_URL : url.origin;
   } catch {
     throw clientError("invalid_service_url");
   }

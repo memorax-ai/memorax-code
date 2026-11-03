@@ -82,7 +82,7 @@ running managed Backend during package replacement.
 
 #### 2. Connect a MemoraX Account (Recommended)
 
-[Create a MemoraX account](https://platform.memorax.net/) or use an existing
+[Create a MemoraX account](https://platform.memoraxai.com/) or use an existing
 one, then run from a normal interactive terminal:
 
 ```bash
@@ -141,7 +141,7 @@ memorax-code account --show-mark-id
 
 > [!IMPORTANT]
 > Obtain the Mark ID before registering, then use it to activate your guest
-> account on [MemoraX](https://platform.memorax.net/). The platform does not
+> account on [MemoraX](https://platform.memoraxai.com/). The platform does not
 > currently support attaching a Mark ID to an account that has already been
 > registered.
 
@@ -355,7 +355,7 @@ path.
 QA writeback preserves available native timestamps and labels observation-time
 fallbacks; see [message timestamps](docs/configuration.md#automatic-writeback-timestamps).
 
-Sign in to [MemoraX Console](https://platform.memorax.net/) at any time to view,
+Sign in to [MemoraX Console](https://platform.memoraxai.com/) at any time to view,
 edit, or delete saved memories. MemoraX Cloud does not receive model-provider
 credentials or local Backend tokens.
 
@@ -381,6 +381,11 @@ and disabling background checks. Restart or refresh a client after an update
 changes integration assets it has already loaded.
 If package replacement fails, follow the [update recovery steps](docs/troubleshooting.md#npm-package-transition-fails)
 for `memorax-code update --recover`.
+
+The official endpoint is now `https://platform.memoraxai.com`. After updating,
+existing configurations using the legacy official endpoint work automatically;
+you do not need to rerun setup or replace your saved account settings. See
+[endpoint compatibility](docs/configuration.md#memorax-connection).
 
 ### Windows Upgrade Note
 

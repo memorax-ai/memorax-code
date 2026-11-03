@@ -64,7 +64,7 @@ test("anonymous quota reminders include the matching local Mark ID without raw c
   assert.match(searchNotice, /^额度提醒：您的 MemoraX Code 记忆搜索额度剩余不超过 10%。/);
   for (const notice of [writeNotice, searchNotice]) {
     assert.match(notice, /游客模式有效期为 90 天。/);
-    assert.match(notice, /请访问 https:\/\/platform\.memorax\.net\/ 查看额度、注册或管理账户。/);
+    assert.match(notice, /请访问 https:\/\/platform\.memoraxai\.com\/ 查看额度、注册或管理账户。/);
     assert.match(notice, new RegExp(MARK_ID));
     assert.doesNotMatch(notice, /memorax-code account --show-mark-id/);
     assert.match(notice, /请妥善保管。/);
@@ -137,9 +137,9 @@ test("registered-account quota reminders omit anonymous claim guidance", async (
     options,
   );
 
-  assert.match(zhNotice, /请访问 https:\/\/platform\.memorax\.net\/ 查看额度或管理账户。/);
+  assert.match(zhNotice, /请访问 https:\/\/platform\.memoraxai\.com\/ 查看额度或管理账户。/);
   assert.doesNotMatch(zhNotice, /注册|匿名身份|Mark ID|show-mark-id|聊天中分享|90 天|90 days/i);
-  assert.match(enNotice, /to view your quota or manage your account\./);
+  assert.match(enNotice, /Visit https:\/\/platform\.memoraxai\.com\/ to view your quota or manage your account\./);
   assert.doesNotMatch(enNotice, /register|anonymous identity|Mark ID|show-mark-id|share it in chat|90 天|90 days/i);
   assert.equal(credentialLoads, 0);
 });
@@ -190,7 +190,7 @@ test("pending write quota notices keep the lowest snapshot for the originating c
 
 function accountConfig(memoryOutputLanguage = "en") {
   return {
-    baseUrl: "https://platform.memorax.net",
+    baseUrl: "https://platform.memoraxai.com",
     apiKey: API_KEY,
     memoryOutputLanguage,
   };

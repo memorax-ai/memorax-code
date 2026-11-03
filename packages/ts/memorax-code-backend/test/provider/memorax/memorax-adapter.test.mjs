@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -187,12 +187,68 @@ test("MemoraX adapter sends fallback requests to the platform endpoint", async (
 
     assert.equal(result.ok, true);
     assert.deepEqual(requests, [{
-      url: "https://platform.memorax.net/v1/memories/search",
+      url: "https://platform.memoraxai.com/v1/memories/search",
       method: "POST",
     }]);
   } finally {
     await rm(memoraxCodeHome, { recursive: true, force: true });
   }
+});
+
+test("legacy saved endpoints send authenticated Search and Add directly to the current platform", async (t) => {
+  const memoraxCodeHome = await mkdtemp(join(tmpdir(), "memorax-code-legacy-memory-endpoint-"));
+  t.after(() => rm(memoraxCodeHome, { recursive: true, force: true }));
+  await writeFile(join(memoraxCodeHome, "config.toml"), [
+    "[memorax]",
+    'endpoint = "https://platform.memorax.net"',
+    'api_key = "fixture-secret"',
+    'user_id = "user-1"',
+  ].join("\n"));
+
+  const requests = [];
+  for (const operation of ["query", "writeback"]) {
+    const result = await invokeMemoraxMemoryProvider(
+      { sessionId: "legacy-session", prompt: "legacy fixture" },
+      operation === "query"
+        ? { operation, query: "legacy search fixture" }
+        : { operation, context: {
+          idempotencyKey: "legacy-session:turn-1",
+          messages: [{ role: "user", content: "legacy writeback fixture" }],
+        } },
+      {
+        env: { MEMORAX_CODE_HOME: memoraxCodeHome },
+        repositoryScope: testRepositoryScope(),
+        fetchImpl: async (url, init) => {
+          requests.push({
+            url: String(url),
+            method: init.method,
+            authorization: init.headers.Authorization,
+            body: JSON.parse(init.body),
+          });
+          return new Response(JSON.stringify({ success: true, data: {
+            task_id: "legacy-migration-task",
+            status: operation === "query" ? "completed" : "accepted",
+            ...(operation === "query" ? { data: [] } : {}),
+          } }), { status: 200, headers: { "content-type": "application/json" } });
+        },
+      },
+    );
+    assert.equal(result.ok, true, result.error);
+  }
+
+  assert.equal(requests.length, 2);
+  assert.deepEqual(requests.map(({ url }) => url), [
+    "https://platform.memoraxai.com/v1/memories/search",
+    "https://platform.memoraxai.com/v1/memories/add",
+  ]);
+  for (const request of requests) {
+    assert.equal(request.method, "POST");
+    assert.equal(request.authorization, "Token fixture-secret");
+    assert.equal(request.body.user_id, "user-1@memorax-code");
+  }
+  assert.equal(requests[0].body.query, "legacy search fixture");
+  assert.equal(requests[1].body.messages[0].content, "legacy writeback fixture");
+  assert.equal(requests[1].body.metadata.idempotency_key, "legacy-session:turn-1");
 });
 
 test("MemoraX adapter maps query to /v1/memories/search and separates items from escaped contextBlocks", async () => {
