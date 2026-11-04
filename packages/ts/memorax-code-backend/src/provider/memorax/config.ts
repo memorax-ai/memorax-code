@@ -45,7 +45,7 @@ export type MemoraxAdapterConfig = Readonly<{
 }>;
 
 export type MemoraxAddOptions = Readonly<{
-  contentType?: "dialogue" | "code";
+  contentType?: "dialogue" | "code" | "auto" | "work";
   mode?: "default" | "raw" | "pre_summarized";
 }>;
 
@@ -87,7 +87,7 @@ export type MemoraxConfigStatus = Readonly<{
     writebackChunk: MemoryWritebackChunkConfig;
   }>;
   add: Readonly<{
-    contentType?: "dialogue" | "code";
+    contentType?: "dialogue" | "code" | "auto" | "work";
     mode?: "default" | "raw" | "pre_summarized";
     outputLanguage?: MemoraxMemoryOutputLanguage;
   }>;
@@ -141,11 +141,11 @@ function memoraxSearchConfig(
   | "memoryTypeOrder"
   | "renderByMemoryType"
 > {
-  const topK = clampInteger(env.MEMORAX_CODE_MEMORAX_TOP_K ?? config.memory?.retrieval?.top_k, 1, 100, config.memory?.retrieval?.top_k ?? 6);
+  const topK = clampInteger(env.MEMORAX_CODE_MEMORAX_TOP_K ?? config.memory?.retrieval?.top_k, 1, 50, config.memory?.retrieval?.top_k ?? 6);
   return {
     topK,
-    kDense: clampInteger(env.MEMORAX_CODE_MEMORAX_K_DENSE ?? config.memory?.retrieval?.k_dense, 0, 100, config.memory?.retrieval?.k_dense ?? topK),
-    kSparse: clampInteger(env.MEMORAX_CODE_MEMORAX_K_SPARSE ?? config.memory?.retrieval?.k_sparse, 0, 100, config.memory?.retrieval?.k_sparse ?? topK),
+    kDense: clampInteger(env.MEMORAX_CODE_MEMORAX_K_DENSE ?? config.memory?.retrieval?.k_dense, 0, 50, config.memory?.retrieval?.k_dense ?? topK),
+    kSparse: clampInteger(env.MEMORAX_CODE_MEMORAX_K_SPARSE ?? config.memory?.retrieval?.k_sparse, 0, 50, config.memory?.retrieval?.k_sparse ?? topK),
     timeoutMs: clampInteger(env.MEMORAX_CODE_MEMORAX_TIMEOUT_MS ?? config.memorax?.timeout_ms, 1000, 120_000, config.memorax?.timeout_ms ?? 5000),
     maxContextChars: clampInteger(env.MEMORAX_CODE_MEMORAX_MAX_CONTEXT_CHARS ?? config.memory?.retrieval?.max_context_chars, 256, 200_000, config.memory?.retrieval?.max_context_chars ?? 4000),
     maxItemChars: clampInteger(env.MEMORAX_CODE_MEMORAX_MAX_ITEM_CHARS ?? config.memory?.retrieval?.max_item_chars, 64, 50_000, config.memory?.retrieval?.max_item_chars ?? 1000),
@@ -264,6 +264,9 @@ export function memoraxAddOptionsFromContext(
 
   const contentType = contentTypeResult.value;
   const mode = modeResult.value ?? (contentType ? "default" : undefined);
+  if ((contentType === "auto" || contentType === "work") && mode !== "default") {
+    return { ok: false, error: "auto/work content requires default mode" };
+  }
   return {
     ok: true,
     options: {
@@ -356,10 +359,10 @@ function memoraxMemoryOutputLanguage(
     : { ok: false, error: "memory output language must be zh or en" };
 }
 
-function parseAddContentType(value: string | undefined, label: string): { ok: true; value?: "dialogue" | "code" } | { ok: false; error: string } {
+function parseAddContentType(value: string | undefined, label: string): { ok: true; value?: MemoraxAddOptions["contentType"] } | { ok: false; error: string } {
   if (!value) return { ok: true };
-  if (value === "dialogue" || value === "code") return { ok: true, value };
-  return { ok: false, error: `${label} must be dialogue or code` };
+  if (value === "dialogue" || value === "code" || value === "auto" || value === "work") return { ok: true, value };
+  return { ok: false, error: `${label} must be dialogue, code, auto, or work` };
 }
 
 function parseAddMode(value: string | undefined, label: string): { ok: true; value?: MemoraxAddOptions["mode"] } | { ok: false; error: string } {

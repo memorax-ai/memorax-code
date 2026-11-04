@@ -871,6 +871,33 @@ fields, and their former `MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED` and
 `MEMORAX_CODE_MEMORAX_STARTUP_TIMEOUT_MS` environment overrides, are ignored.
 They cannot enable Hook Search or change the timeout for explicit Search.
 
+### Document evidence retrieval
+
+`memorax-cli search --query 'question' --sources document --limit 4 --json`
+requests original document chunks. Add `--document-ids 'doc-1,doc-2'` to restrict
+it to known document IDs; this option requires `--sources document`.
+`--sources dialogue` selects conversation memory, while
+`--sources dialogue,document` requests both. Omitting sources retains the
+existing server search behavior. Source-scoped requests use `mode=fast` and
+`output_mode=facts`; top-k and each recall count are capped at the server's 50.
+The current document service chooses its internal candidate budget separately.
+
+The remote service owns embedding, hybrid retrieval, RRF, and reranking. The
+plugin keeps its order and returns complete evidence in JSON `items`, including
+document/chunk IDs and score details. Text output preserves Markdown and whole
+document chunks under `max_context_chars`; `max_item_chars` remains a fact
+rendering limit, not a document slicing rule. An explicit notice marks omitted
+evidence. JSON output preserves all returned items even if text rendering omits
+some. The client agent uses this result as reference material and generates
+the answer; no second answer model is invoked by the plugin.
+
+Search and Add retain the same workspace-scoped user ID. Documents uploaded
+under another scope are not automatically available here. `memorax.timeout_ms`
+also bounds remote reranking; its 5000 ms default may be too short for a model
+with retries, so configure it from measured latency for the target deployment.
+The plugin does not poll an asynchronous Add task or promise immediate Search
+visibility after acceptance.
+
 ## Writeback and explicit add
 
 New configurations explicitly set automatic completed-turn writeback to enabled.
@@ -908,6 +935,46 @@ the resolved value to MemoraX. Invalid values fail closed instead of silently
 selecting another language. The setting affects newly generated content;
 `raw` input and client-supplied `pre_summarized` text are not translated.
 Command arguments override the other add defaults.
+
+Explicit Add also accepts `--content-type auto` or `--content-type work`, both
+with `--mode default`. Auto delegates code/work classification to the server;
+work resolves to dialogue. Ordinary `--memory` Add keeps code/pre_summarized
+defaults, and automatic native-turn writeback keeps code/default with its
+existing chunk identity contract.
+
+`memorax-cli add --messages-file /path/to/messages.json --type semantic
+--reason 'User requested storing the report.'` reads an explicit JSON array of
+messages. Do not combine it with `--memory` or `--memory-file`. It defaults to
+auto/default and accepts strings or the backend's text/input_text, input_image,
+and file parts. This is message-shape compatibility, not a complete OpenAI API:
+the endpoint remains MemoraX Add and requires its user/session/metadata fields.
+For example, the file can contain:
+
+```json
+[
+  {
+    "role": "user",
+    "content": [
+      {"type": "text", "text": "Remember this report."},
+      {"type": "file", "file": {"filename": "report.pdf", "file_data": "JVBERi0xLjQ="}}
+    ]
+  }
+]
+```
+
+The Base64 above is illustrative; use real authorized file bytes. Alternatively,
+use a UUID `file_id` from the same server/project/user scope. File parts require
+user messages and dialogue/work/auto with default mode; they go through the
+document parser. An `input_image` part retains the separate image-understanding
+route. Internal media IDs and unknown part types are rejected. The plugin does
+not automatically acquire attachments from native clients.
+
+The JSON file must be a regular file of at most 32 MiB and contain 1–100
+messages. The configured `memory.cli.max_memory_chars` still limits text and
+captions; encoded attachment bytes do not count as text. Server format and
+decoded attachment limits apply independently. This CLI cap is not ParseX's
+file-size limit. Attachments are omitted from provider request observability;
+accepted Add means submitted for processing, not completed indexing.
 
 ### Disabling memory writes
 

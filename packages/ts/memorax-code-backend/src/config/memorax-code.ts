@@ -56,7 +56,7 @@ export type MemoraxCodeConfig = Readonly<{
       chunk_overlap_ratio?: number;
     }>;
     add?: Readonly<{
-      content_type?: "dialogue" | "code";
+      content_type?: "dialogue" | "code" | "auto" | "work";
       mode?: "default" | "raw" | "pre_summarized";
       output_language?: MemoraxMemoryOutputLanguage;
     }>;

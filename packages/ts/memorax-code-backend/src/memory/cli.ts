@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { open, readFile } from "node:fs/promises";
 import { backendDebug } from "../shared/debug-log.js";
 import { diagnoseMemoryCliFailure, fileErrorFields, memoryCliUnexpectedFailure, type MemoryCliFailureDetails } from "./cli-diagnostics.js";
 import { invokeMemoraxMemoryProvider } from "../provider/memorax/adapter.js";
@@ -143,6 +143,8 @@ async function memoryStatus(options: MemoryCliOptions, configOnly = false): Prom
 }
 
 async function memorySearch(args: string[], options: MemoryCliOptions): Promise<MemoryCliResult> {
+  const searchOptions = memorySearchOptions(args);
+  if (!searchOptions.ok) return { ...searchOptions, action: "memory.search" };
   const queryResult = await readTextArg(args, "--query", "--query-file", "query");
   if (!queryResult.ok) return { ...queryResult, action: "memory.search" };
   const query = queryResult.text;
@@ -163,6 +165,7 @@ async function memorySearch(args: string[], options: MemoryCliOptions): Promise<
       query,
       context: {
         ...(limitFromArgs(args) === undefined ? {} : { limit: limitFromArgs(args) }),
+        ...searchOptions.context,
       },
     },
     {
@@ -206,18 +209,14 @@ async function memoryAdd(args: string[], options: MemoryCliOptions): Promise<Mem
   if (!memoryCliAddEnabled(env)) {
     return { ok: false, action: "memory.add", errorCode: "MEMORY_ADD_DISABLED", stage: "configuration", error: "memory add is disabled by MEMORAX_CODE_MEMORY_CLI_ADD_ENABLED=false or [memory.cli].add_enabled=false" };
   }
-  const memoryResult = await readTextArg(args, "--memory", "--memory-file", "memory");
+  const memoryResult = await readAddInput(args, memoryCliMaxMemoryChars(env));
   if (!memoryResult.ok) return { ...memoryResult, action: "memory.add" };
   const memory = memoryResult.text;
-  const maxChars = memoryCliMaxMemoryChars(env);
-  if (memory.length > maxChars) {
-    return { ok: false, action: "memory.add", error: `memory is too long: ${memory.length} chars > ${maxChars}` };
-  }
   const memoryType = requiredArg(args, "--type");
   if (!memoryType.ok) return { ok: false, action: "memory.add", error: memoryType.error };
   const reason = requiredArg(args, "--reason");
   if (!reason.ok) return { ok: false, action: "memory.add", error: reason.error };
-  const contentOptions = memoryAddContentOptions(args);
+  const contentOptions = memoryAddContentOptions(args, memoryResult.structured);
   if (!contentOptions.ok) return { ok: false, action: "memory.add", error: contentOptions.error };
   const repositoryMemory = await resolveMemoryCliRepositoryMemory(options);
   if (!repositoryMemory.ok) return memoryCliRepositoryFailure("memory.add", repositoryMemory);
@@ -235,8 +234,8 @@ async function memoryAdd(args: string[], options: MemoryCliOptions): Promise<Mem
       operation: "writeback",
       dispatch: "async_best_effort",
       context: {
-        idempotencyKey: `memory-cli:${sessionId}:${hashText(`${memoryType.value}\n${reason.value}\n${memory}`)}`,
-        messages: [{ role: "user", content: memory }],
+        idempotencyKey: `memory-cli:${sessionId}:${hashText(`${memoryType.value}\n${reason.value}\n${memoryResult.identity}`)}`,
+        messages: memoryResult.messages,
         ...contentOptions.context,
         metadata: {
           source_detail: "memorax_code_memory_cli",
@@ -494,17 +493,114 @@ function traceClientLabel(client: TraceClient | undefined): string {
 
 function memoryAddContentOptions(
   args: string[],
+  structured = false,
 ):
   | { ok: true; context: Record<string, string> }
   | { ok: false; error: string } {
   const contentType = argValue(args, "--content-type")?.trim();
   const mode = argValue(args, "--mode")?.trim();
   const context: Record<string, string> = {};
-  const effectiveContentType = contentType || "code";
+  const effectiveContentType = contentType || (structured ? "auto" : "code");
   const effectiveMode = mode || (effectiveContentType === "code" ? "pre_summarized" : "default");
   context.contentType = effectiveContentType;
   context.mode = effectiveMode;
   return { ok: true, context };
+}
+
+function memorySearchOptions(args: string[]):
+  | { ok: true; context: Record<string, string[]> }
+  | { ok: false; error: string } {
+  const context: Record<string, string[]> = {};
+  for (const [flag, key] of [["--sources", "sources"], ["--document-ids", "document_ids"]]) {
+    const option = singleOption(args, flag);
+    if (!option.ok) return option;
+    if (option.value !== undefined) {
+      const values = option.value.split(",").map((value) => value.trim());
+      if (values.some((value) => !value)) return { ok: false, error: `${flag} requires nonempty comma-separated values` };
+      context[key] = values;
+    }
+  }
+  if (context.document_ids && (context.sources?.length !== 1 || context.sources[0] !== "document")) {
+    return { ok: false, error: "--document-ids requires --sources document" };
+  }
+  return { ok: true, context };
+}
+
+function singleOption(args: string[], flag: string):
+  | { ok: true; value?: string }
+  | { ok: false; error: string } {
+  const positions = args.flatMap((value, index) => value === flag ? [index] : []);
+  if (positions.length === 0) return { ok: true };
+  const value = args[positions[0] + 1];
+  if (positions.length !== 1 || !value?.trim() || value.startsWith("--")) {
+    return { ok: false, error: `${flag} requires exactly one value` };
+  }
+  return { ok: true, value };
+}
+
+// Explicit file input is isolated from native transcript acquisition. Bound the
+// bytes read, including a file that grows after the initial stat.
+const MAX_MESSAGES_FILE_BYTES = 32 * 1024 * 1024;
+
+async function readAddInput(args: string[], maxChars: number): Promise<
+  | { ok: true; text: string; identity: string; messages: unknown[]; structured: boolean }
+  | ({ ok: false; error: string } & MemoryCliFailureDetails)
+> {
+  const option = singleOption(args, "--messages-file");
+  if (!option.ok) return option;
+  if (option.value === undefined) {
+    const result = await readTextArg(args, "--memory", "--memory-file", "memory");
+    if (!result.ok) return result;
+    if (result.text.length > maxChars) return { ok: false, error: `memory is too long: ${result.text.length} chars > ${maxChars}` };
+    return { ok: true, text: result.text, identity: result.text, messages: [{ role: "user", content: result.text }], structured: false };
+  }
+  if (args.includes("--memory") || args.includes("--memory-file")) {
+    return { ok: false, error: "use --messages-file or --memory/--memory-file, not both" };
+  }
+  let raw: string;
+  try {
+    const handle = await open(option.value, "r");
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile() || stat.size > MAX_MESSAGES_FILE_BYTES) {
+        return { ok: false, error: "--messages-file must be a regular JSON file of at most 32 MiB" };
+      }
+      const buffers: Buffer[] = [];
+      let total = 0;
+      while (true) {
+        const buffer = Buffer.alloc(Math.min(64 * 1024, MAX_MESSAGES_FILE_BYTES + 1 - total));
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+        if (bytesRead === 0) break;
+        total += bytesRead;
+        if (total > MAX_MESSAGES_FILE_BYTES) return { ok: false, error: "--messages-file exceeds 32 MiB" };
+        buffers.push(buffer.subarray(0, bytesRead));
+      }
+      raw = Buffer.concat(buffers, total).toString("utf8");
+    } finally {
+      await handle.close();
+    }
+  } catch (error) {
+    return { ok: false, error: "failed to read --messages-file", errorCode: "MEMORY_INPUT_UNREADABLE", stage: "input", ...fileErrorFields(error) };
+  }
+  let messages: unknown;
+  try { messages = JSON.parse(raw); }
+  catch { return { ok: false, error: "--messages-file must contain valid JSON" }; }
+  if (!Array.isArray(messages) || messages.length < 1 || messages.length > 100) {
+    return { ok: false, error: "--messages-file must contain an array of 1-100 messages" };
+  }
+  // Provider validation owns content-part semantics; this layer enforces the
+  // explicit CLI text budget without counting Base64 as prose.
+  const text = messages.flatMap((message) => {
+    if (!isRecord(message)) return [];
+    if (typeof message.content === "string") return [message.content];
+    if (!Array.isArray(message.content)) return [];
+    return message.content.flatMap((part: unknown) => {
+      if (!isRecord(part)) return [];
+      return typeof part.text === "string" ? [part.text] : typeof part.caption === "string" ? [part.caption] : [];
+    });
+  }).join("\n");
+  if (text.length > maxChars) return { ok: false, error: `memory is too long: ${text.length} chars > ${maxChars}` };
+  return { ok: true, text, identity: JSON.stringify(messages), messages, structured: true };
 }
 
 async function readTextArg(
