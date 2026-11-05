@@ -4,7 +4,7 @@
     {
       "id": "S1",
       "signature": "codex|windows-2025|codex-install-smoke|cleanup:directory_removal|CLEANUP_DIRECTORY_REMOVAL_FAILED:EBUSY",
-      "status": "mitigated #251"
+      "status": "mitigated #265"
     },
     {
       "id": "S7",
