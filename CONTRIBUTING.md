@@ -162,7 +162,7 @@ Current source and executable tests remain authoritative for behavior.
 | [Architecture](ARCHITECTURE.md) | Package and capability ownership, runtime flows, authority, dependencies, packaging boundaries, and test placement | A documented boundary changes; use its [maintenance criteria](ARCHITECTURE.md#9-maintaining-this-document) |
 | [Agent guide](AGENTS.md) | Mandatory agent constraints, runtime and data invariants, and Git permissions | An agent working rule or invariant changes |
 | [Contributor guide](CONTRIBUTING.md) | Shared developer entrypoint: source setup, isolation, running/debugging, verification profiles, harness onboarding, documentation routing, and PR workflow | A development or verification procedure changes |
-| [Native CI failure register](docs/native-ci-failure-register.md) | Native CI failure signatures with their first and later sightings, rechecks, and status | A native CI cell fails, a registered signature recurs or is rechecked, or an entry's status changes; follow the [register rules](#native-ci-failure-register) |
+| [Native CI failure register](docs/native-ci-failure-register.md) and its machine-readable mirror, [registered-signatures.json](scripts/ci/shared/registered-signatures.json) | Native CI failure signatures with their first and later sightings, rechecks, and status; the mirror lists the evidence signature and status of each `open`, `observing #PR`, or `mitigated #PR` entry for the native auto recheck | A native CI cell fails, a registered signature recurs or is rechecked, or an entry's status changes; follow the [register rules](#native-ci-failure-register) and update the mirror in the same change |
 | [Security policy](SECURITY.md) | Vulnerability reporting, trust policy, and data-protection guarantees | A security or trust boundary changes; implementation maps link to this policy |
 | [Changelog](CHANGELOG.md) | Notable user-facing release changes | Recording a release or its pending notes; internal-only refactors and tests normally do not need an entry |
 | [Canonical shared Skill](packages/ts/memorax-code-codex-adapter/skills/memorax-code/SKILL.md) and its references | Product instructions consumed by coding clients | Agent-facing product behavior changes; preserve shared materialization and keep maintainer runbooks out of the Skill |
@@ -363,6 +363,13 @@ malformed selection, or a failed scope, which selects no client. Its summary
 reports each unselected client as `not selected: this pull request does not
 validate it`; not running a client's matrix is never reported as passing it.
 
+When attempt 1 of a pull request run fails only in cells whose signatures are
+registered and in the jobs that report them, the
+[native auto recheck](.github/workflows/native-auto-recheck.yml) workflow
+rechecks its failed jobs once under the
+[register rules](#native-ci-failure-register), and `PR acceptance` reports
+again in attempt 2.
+
 `PR acceptance` and each selected client's result job also run after a
 dependency fails; failed, cancelled, or skipped dependencies fail them. Push,
 scheduled, manual, and release acceptance runs reuse only the `Tests` and
@@ -446,8 +453,9 @@ setting is managed separately from the workflows. The `Tests` check runs
 `scripts/ci/shared/workflow-scenarios.test.mjs`,
 `scripts/ci/shared/native-scope.test.mjs`,
 `scripts/ci/shared/client-acceptance.test.mjs`,
-`scripts/ci/shared/client-result.test.mjs`, and
-`scripts/ci/shared/client-acceptance-refresh.test.mjs`. The first evaluates the
+`scripts/ci/shared/client-result.test.mjs`,
+`scripts/ci/shared/client-acceptance-refresh.test.mjs`, and
+`scripts/ci/shared/native-auto-recheck.test.mjs`. The first evaluates the
 expressions these workflows use for triggers, job conditions, the package job's
 pinned and latest version lookups, check names, and concurrency groups in each
 event, manual selection, and client selection, and runs each result script,
@@ -459,8 +467,11 @@ fourth classifies the job listings of recorded monitor and pull request runs
 with their matrices and checks each client's cell names against the workflow.
 The fifth decides the acceptance refresh from the trimmed artifacts of a
 recorded monitor run and checks that pull requests read the proposed manifest.
-All five are source contracts, not a complete model of GitHub Actions
-execution.
+The sixth decides the native auto recheck from the job listing and failed-cell
+evidence of a recorded pull request run, checks the registered signatures
+against the register, and checks the recheck workflow's triggers, permissions,
+and single recheck request. All six are source contracts, not a complete model
+of GitHub Actions execution.
 
 ### Client Acceptance Versions
 
@@ -861,10 +872,18 @@ and artifacts only. Maintain it in rounds:
 - Save the evidence before classifying a failure. The same signature does not
   mean the same root cause: record "same signature recurred" or "not reproduced
   this run", not a cause.
-- A cell gets at most one explicitly authorized job-level recheck per run. Do
-  not use `gh run rerun --failed`, a whole-run rerun, or a dispatch to get
-  green. A passing recheck is recorded as "first failure, single recheck
-  passed, root cause undetermined", and the first failure stays on record.
+- A cell gets at most one job-level recheck per run. When every failure in
+  attempt 1 of a pull request run is a cell whose signature is registered as
+  `open`, `observing #PR`, or `mitigated #PR`, or a result job or
+  `PR acceptance` reporting such cells, the
+  [native auto recheck](.github/workflows/native-auto-recheck.yml) workflow
+  rechecks the failed jobs once, and that is the run's one recheck of those
+  cells. Every other recheck needs explicit authorization. Do not use
+  `gh run rerun --failed`, a whole-run rerun, or a dispatch by hand to get
+  green. The first failure stays on record with attempt 1's artifacts and logs
+  and, for an automatic recheck, the run's
+  `auto-recheck-decision-<run>-attempt1` artifact. A passing recheck is
+  recorded as "first failure, single recheck passed, root cause undetermined".
 - Do not relax assertions, add sleeps, or extend timeouts to make a failure
   pass.
 - A skipped, todo, or cancelled result is not a pass.

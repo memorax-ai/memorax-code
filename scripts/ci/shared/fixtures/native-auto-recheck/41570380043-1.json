@@ -1,0 +1,83 @@
+{
+  "run": {"id":41570380043,"path":".github/workflows/macos-codex-install.yml","event":"pull_request","status":"completed","conclusion":"failure","run_attempt":1,"run_number":296,"workflow_id":367511855,"head_sha":"7c0a49d892149d4b0f2b972ae38e76aa22109d67","head_branch":"fix/memorax-endpoint-migration","head_repository":{"full_name":"memorax-ai/memorax-code"},"pull_requests":[{"number":260}]},
+  "listing": [
+    {
+      "total_count": 58,
+      "jobs": [
+        {"id":125701617128,"name":"Native client scope","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125701618796,"name":"Basic checks","conclusion":"skipped","run_attempt":1,"run_id":41570380043},
+        {"id":125701618803,"name":"Release candidate","conclusion":"skipped","run_attempt":1,"run_id":41570380043},
+        {"id":125701619018,"name":"provider","conclusion":"skipped","run_attempt":1,"run_id":41570380043},
+        {"id":125701672295,"name":"WorkBuddy releases","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125701672319,"name":"package","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702378885,"name":"WorkBuddy native (macos-15, Node 24, accepted, 5.8.3.41334564)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702378908,"name":"WorkBuddy native (ubuntu-24.04, Node 24, baseline, 5.5.6.38337834)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702378911,"name":"WorkBuddy native (macos-15, Node 24, baseline, 5.6.2.39298511)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702378915,"name":"CodeBuddy functional accepted 2.179.1 (ubuntu-24.04, Node 24)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702378923,"name":"WorkBuddy native (ubuntu-24.04, Node 24, accepted, 5.6.2.40046327)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702378924,"name":"WorkBuddy native (windows-2025, Node 24, baseline, 5.6.2.39298511)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702378944,"name":"CodeBuddy functional baseline 2.159.0 (macos-15, Node 24)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702378951,"name":"Cursor App accepted 3.27.22 (windows-2025, Node 24)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702378952,"name":"CodeBuddy functional accepted 2.179.1 (windows-2025, Node 24)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702378985,"name":"CodeBuddy functional baseline 2.159.0 (ubuntu-24.04, Node 24)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702378986,"name":"OpenCode baseline 1.18.18 (ubuntu-24.04, Node 20)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702378990,"name":"CodeBuddy functional baseline 2.159.0 (windows-2025, Node 24)","conclusion":"failure","run_attempt":1,"run_id":41570380043},
+        {"id":125702378994,"name":"WorkBuddy native (windows-2025, Node 24, accepted, 5.8.3.41334564)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702379000,"name":"Codex baseline 0.147.0 (windows-2025, Node 24)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702379008,"name":"Codex accepted 0.166.0 (ubuntu-24.04, Node 24)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702379013,"name":"Cursor App accepted 3.27.22 (ubuntu-24.04, Node 24)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702379014,"name":"Cursor App baseline 3.21.18 (windows-2025, Node 24)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702379016,"name":"Cursor App baseline 3.21.18 (macos-15, Node 24)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702379021,"name":"OpenCode baseline 1.18.18 (ubuntu-24.04, Node 24)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702379023,"name":"CodeBuddy functional baseline 2.159.0 (ubuntu-24.04, Node 20)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702379024,"name":"Cursor App accepted 3.27.22 (macos-15, Node 24)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702379030,"name":"Codex baseline 0.147.0 (ubuntu-24.04, Node 24)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702379031,"name":"Codex accepted 0.166.0 (windows-2025, Node 24)","conclusion":"failure","run_attempt":1,"run_id":41570380043},
+        {"id":125702379036,"name":"OpenCode baseline 1.18.18 (windows-2025, Node 24)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702379037,"name":"Claude smoke accepted 2.1.316 (windows-2025, Node 24)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702379038,"name":"WorkBuddy native (ubuntu-24.04, Node 20, baseline, 5.5.6.38337834)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702379041,"name":"Cursor App baseline 3.21.18 (ubuntu-24.04, Node 22)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702379050,"name":"Claude smoke accepted 2.1.316 (ubuntu-24.04, Node 24)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702379052,"name":"Codex accepted 0.166.0 (macos-15, Node 24)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702379055,"name":"Claude smoke baseline 2.1.277 (windows-2025, Node 24)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702379066,"name":"Claude smoke accepted 2.1.316 (macos-15, Node 24)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702379069,"name":"Claude smoke baseline 2.1.277 (ubuntu-24.04, Node 22)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702379070,"name":"Cursor App baseline 3.21.18 (ubuntu-24.04, Node 24)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702379072,"name":"Claude smoke baseline 2.1.277 (ubuntu-24.04, Node 24)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702379085,"name":"Codex baseline 0.147.0 (macos-15, Node 24)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702379091,"name":"Codex baseline 0.147.0 (ubuntu-24.04, Node 20)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702379094,"name":"OpenCode accepted 1.19.5 (ubuntu-24.04, Node 24)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702379117,"name":"CodeBuddy functional accepted 2.179.1 (macos-15, Node 24)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702379133,"name":"OpenCode baseline 1.18.18 (macos-15, Node 24)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702379139,"name":"Claude smoke baseline 2.1.277 (macos-15, Node 24)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702379184,"name":"OpenCode accepted 1.19.5 (windows-2025, Node 24)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702379185,"name":"OpenCode accepted 1.19.5 (macos-15, Node 24)","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125702381142,"name":"OpenCode Windows initialization diagnostic (not functional acceptance)","conclusion":"skipped","run_attempt":1,"run_id":41570380043},
+        {"id":125704618569,"name":"CodeBuddy functional result","conclusion":"failure","run_attempt":1,"run_id":41570380043},
+        {"id":125704858060,"name":"Claude native smoke result","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125705185183,"name":"Codex functional result","conclusion":"failure","run_attempt":1,"run_id":41570380043},
+        {"id":125705780449,"name":"OpenCode functional result","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125706432342,"name":"Cursor App canary result","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125706525888,"name":"WorkBuddy functional result","conclusion":"success","run_attempt":1,"run_id":41570380043},
+        {"id":125706587340,"name":"PR acceptance","conclusion":"failure","run_attempt":1,"run_id":41570380043},
+        {"id":125706589365,"name":"Release acceptance result","conclusion":"skipped","run_attempt":1,"run_id":41570380043},
+        {"id":125706589713,"name":"Client acceptance refresh (compatibility monitor)","conclusion":"skipped","run_attempt":1,"run_id":41570380043}
+      ]
+    }
+  ],
+  "evidence": {
+    "native-evidence-codebuddy-windows-2025-baseline-node-24-attempt1": {
+      "id": 13200239836,
+      "inputs": {"schemaVersion":1,"source":{"repository":"memorax-ai/memorax-code","sha":"f297ee4b5dd1d5f6420c1e371ce88fbcacf0a263","ref":"refs/pull/260/merge","event":"pull_request","runId":"41570380043","runAttempt":"1","job":"codebuddy"},"client":{"name":"codebuddy","channel":"baseline","version":"2.159.0"}},
+      "summary": {"schemaVersion":1,"client":"codebuddy","os":"windows-2025","channel":"baseline","clientVersion":"2.159.0","node":"24","runAttempt":1,"testOutcome":"FAIL","category":"unclassified","signature":"codebuddy|windows-2025|codebuddy-install-interruption-check|unknown|EXIT_1"}
+    },
+    "native-evidence-codex-windows-2025-accepted-node-24-attempt1": {
+      "id": 13200888593,
+      "inputs": {"schemaVersion":1,"source":{"repository":"memorax-ai/memorax-code","sha":"f297ee4b5dd1d5f6420c1e371ce88fbcacf0a263","ref":"refs/pull/260/merge","event":"pull_request","runId":"41570380043","runAttempt":"1","job":"install"},"client":{"name":"codex","channel":"accepted","version":"0.166.0"}},
+      "summary": {"schemaVersion":1,"client":"codex","os":"windows-2025","channel":"accepted","clientVersion":"0.166.0","node":"24","runAttempt":1,"testOutcome":"FAIL","category":"cleanup","signature":"codex|windows-2025|codex-install-smoke|cleanup:directory_removal|CLEANUP_DIRECTORY_REMOVAL_FAILED:EBUSY"}
+    }
+  },
+  "pull": {"number":260,"state":"open","head":{"sha":"7c0a49d892149d4b0f2b972ae38e76aa22109d67","repo":{"full_name":"memorax-ai/memorax-code"}}},
+  "runs": {"total_count":1,"workflow_runs":[{"id":41570380043,"run_number":296,"run_attempt":1,"status":"completed","conclusion":"failure"}]},
+  "newerRun": {"id":41585762475,"run_number":299,"run_attempt":1,"status":"in_progress","conclusion":null}
+}

@@ -554,11 +554,12 @@ test("the scope job selects clients only for a pull request, from its merge comm
   assert.deepEqual([...new Set(gates)].sort(), [...CLIENTS].sort());
 });
 
-test("the Tests job runs these workflow contracts, the scope selection, the pinned acceptance manifest, the result classification and the acceptance refresh tests", () => {
+test("the Tests job runs these workflow contracts, the scope selection, the pinned acceptance manifest, the result classification, the acceptance refresh and the native auto recheck tests", () => {
   const tests = jobs(workflows.ci).find((job) => job.id === "tests").text;
   assert.match(tests, /^        run: node --test scripts\/ci\/shared\/workflow-scenarios\.test\.mjs$/m);
   assert.match(tests, /^        run: node --test scripts\/ci\/shared\/native-scope\.test\.mjs$/m);
   assert.match(tests, /^        run: node --test scripts\/ci\/shared\/client-acceptance\.test\.mjs$/m);
   assert.match(tests, /^        run: node --test scripts\/ci\/shared\/client-result\.test\.mjs$/m);
   assert.match(tests, /^        run: node --test scripts\/ci\/shared\/client-acceptance-refresh\.test\.mjs$/m);
+  assert.match(tests, /^        run: node --test scripts\/ci\/shared\/native-auto-recheck\.test\.mjs$/m);
 });
