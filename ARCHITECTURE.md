@@ -768,6 +768,12 @@ that recover do not produce terminal failure records.
   flush; turn or size limits can trigger that flush during enqueue.
 - Buffering and chunking belong to the memory capability; rollout, transcript,
   DSH event-interval, and SDK message parsing remains client-specific.
+- Automatic writeback defaults to server-classified `auto/default`. It freezes
+  the configured content route at enqueue and isolates buffers and deduplication
+  by route. Auto buffers complete turns within provider budgets; explicit work
+  dispatches each turn immediately. Only explicit code uses code chunk evidence
+  packs, preserving their existing identity and retry contracts. See
+  [writeback configuration](docs/configuration.md#writeback-and-explicit-add).
 - Native materializers pass the selected QA timestamps through the shared
   completion contract. The coordinator supplies explicitly labelled observations
   when native times are absent; automatic enqueue freezes any remaining fallback

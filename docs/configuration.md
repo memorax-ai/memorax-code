@@ -939,8 +939,19 @@ Command arguments override the other add defaults.
 Explicit Add also accepts `--content-type auto` or `--content-type work`, both
 with `--mode default`. Auto delegates code/work classification to the server;
 work resolves to dialogue. Ordinary `--memory` Add keeps code/pre_summarized
-defaults, and automatic native-turn writeback keeps code/default with its
-existing chunk identity contract.
+defaults. Automatic native-turn writeback defaults to auto/default and honors
+the configured `memory.add.content_type` or its environment override. The route
+is frozen when a completed turn is accepted; different routes never share a
+buffer or deduplication key.
+
+Auto keeps complete turns and uses the configured buffer, including the default
+eight-turn limit. Its batches stay within 128000 text characters and 100 messages,
+even when configured buffer limits are higher. Explicit work sends each completed
+turn immediately. Auto/work reject turns exceeding `max_message_chars` instead
+of clipping them; auto also rejects a turn exceeding its total text budget before
+accepting it. Neither route emits code chunks. Explicit code retains the existing
+buffering, clipping, chunk identities, and retry behavior. Automatic writeback
+always uses default mode, independently of explicit Add's configured mode.
 
 `memorax-cli add --messages-file /path/to/messages.json --type semantic
 --reason 'User requested storing the report.'` reads an explicit JSON array of
@@ -1054,10 +1065,11 @@ from previously uploaded data.
 
 ### Automatic writeback redaction
 
-Automatic writeback first bounds each user or assistant message with
-`max_message_chars`, discarding an incomplete token at the cutoff, and then
-runs a local best-effort detector before hashing, buffering, chunking, or
-sending the content. The detector replaces these categories with typed
+Automatic writeback first enforces `max_message_chars`. Auto/work reject
+oversized messages; code/dialogue clip them, discarding an incomplete token at
+the cutoff. It then runs a local best-effort detector before hashing, buffering,
+chunking, or sending the content. Auto/work also reject messages expanded beyond
+the limit by redaction. The detector replaces these categories with typed
 placeholders:
 
 | Category | Placeholder |

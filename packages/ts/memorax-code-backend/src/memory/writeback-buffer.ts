@@ -12,6 +12,7 @@ import {
 import type { TraceContext } from "../trace/context.js";
 
 export type MemoryWritebackBufferDecision = {
+  contentType?: "auto" | "code" | "dialogue";
   client: "codex" | "claude-code" | "opencode" | "dsh" | "codebuddy" | "workbuddy" | "trae" | "cursor" | "qoder";
   sessionKey: string;
   idempotencyKey: string;
@@ -84,6 +85,7 @@ type MemoryWritebackBufferedTurn = {
 };
 
 type MemoryWritebackBuffer = {
+  contentType?: "auto" | "code" | "dialogue";
   bufferKey: string;
   client: MemoryWritebackBufferDecision["client"];
   sessionKey: string;
@@ -150,6 +152,9 @@ function enqueueMemoryWritebackBufferForRuntime(
 ): void {
   const env = options.env ?? process.env;
   const config = memoryWritebackBufferConfig(env);
+  // Non-code batches are dispatched whole; code retains its chunking path.
+  const maxChars = decision.contentType === "auto" ? Math.min(config.maxChars, 128_000) : config.maxChars;
+  const maxMessages = decision.contentType && decision.contentType !== "code" ? 100 : Infinity;
   if (!options.repositoryScope) return;
   discardDegradedGitBuffersForUpgrade(
     writebackBuffers,
@@ -159,11 +164,7 @@ function enqueueMemoryWritebackBufferForRuntime(
       currentScope: options.repositoryScope,
     },
   );
-  const bufferKey = memoryWritebackBufferKey(
-    decision.client,
-    decision.sessionKey,
-    options.repositoryScope,
-  );
+  const bufferKey = `${memoryWritebackBufferKey(decision.client, decision.sessionKey, options.repositoryScope)}:${decision.contentType ?? "code"}`;
   let buffer = writebackBuffers.get(bufferKey);
   if (buffer?.turnKeys.has(decision.idempotencyKey)) {
     deps.debug("memory.automatic_writeback", {
@@ -175,8 +176,9 @@ function enqueueMemoryWritebackBufferForRuntime(
   }
 
   const turnContentChars = writebackMessagesContentChars(decision.messages);
-  if (buffer && buffer.contentChars + turnContentChars > config.maxChars) {
-    flushMemoryWritebackBuffer(writebackBuffers, bufferKey, "char_limit", deps);
+  const messageLimitReached = buffer && bufferedMessages(buffer).length + decision.messages.length > maxMessages;
+  if (buffer && (buffer.contentChars + turnContentChars > maxChars || messageLimitReached)) {
+    flushMemoryWritebackBuffer(writebackBuffers, bufferKey, messageLimitReached ? "message_limit" : "char_limit", deps);
     buffer = undefined;
   }
   if (!buffer) {
@@ -190,6 +192,7 @@ function enqueueMemoryWritebackBufferForRuntime(
       deps.clock ?? SYSTEM_CLOCK,
       deps,
     );
+    buffer.contentType = decision.contentType;
     writebackBuffers.set(bufferKey, buffer);
   }
 
@@ -218,8 +221,10 @@ function enqueueMemoryWritebackBufferForRuntime(
 
   if (buffer.turns.length >= config.maxTurns) {
     flushMemoryWritebackBuffer(writebackBuffers, bufferKey, "turn_limit", deps);
-  } else if (buffer.contentChars > config.maxChars) {
+  } else if (buffer.contentChars > maxChars) {
     flushMemoryWritebackBuffer(writebackBuffers, bufferKey, "char_limit", deps);
+  } else if (bufferedMessages(buffer).length >= maxMessages) {
+    flushMemoryWritebackBuffer(writebackBuffers, bufferKey, "message_limit", deps);
   } else {
     resetMemoryWritebackIdleTimer(writebackBuffers, buffer, config.maxAgeMs, deps);
   }
@@ -317,7 +322,7 @@ function flushMemoryWritebackBuffer(
   const sessionKey = buffer.sessionKey;
   const messages = bufferedMessages(buffer);
   const scopeHash = deps.hashText(buffer.repositoryScope.effectiveUserId);
-  const idempotencyKey = `automatic-buffer:v1:${buffer.client}:${scopeHash}:${sessionKey}:${deps.hashText(messages.map((message) => `${message.role}:${message.content}`).join("\n"))}`;
+  const idempotencyKey = `automatic-buffer:v1:${buffer.client}:${scopeHash}:${sessionKey}:${deps.hashText(messages.map((message) => `${message.role}:${message.content}`).join("\n"))}${buffer.contentType && buffer.contentType !== "code" ? `:${buffer.contentType}` : ""}`;
   const dedupeKeys = [idempotencyKey, ...buffer.turns.map((turn) => turn.idempotencyKey)];
   if (dedupeKeys.some((key) => deps.hasPendingWriteback(key))) return false;
   deps.reservePendingWritebacks(dedupeKeys);
@@ -332,6 +337,7 @@ function flushMemoryWritebackBuffer(
     contentChars: buffer.contentChars,
   });
   deps.flush({
+    ...(buffer.contentType ? { contentType: buffer.contentType } : {}),
     client: buffer.client,
     sessionKey,
     idempotencyKey,
