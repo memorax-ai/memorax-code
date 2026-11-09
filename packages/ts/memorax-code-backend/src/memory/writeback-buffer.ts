@@ -5,6 +5,7 @@ import type {
   MemoryObservabilitySource,
 } from "./observability.js";
 import { memoryWritebackBufferConfig } from "../provider/memorax/config.js";
+import { countAddTextChars, MEMORAX_AUTO_MAX_TEXT_CHARS } from "../provider/memorax/add-limits.js";
 import {
   repositoryMemoryScopeCanUpgradeFromDegradedGit,
   type RepositoryMemoryScope,
@@ -153,7 +154,7 @@ function enqueueMemoryWritebackBufferForRuntime(
   const env = options.env ?? process.env;
   const config = memoryWritebackBufferConfig(env);
   // Non-code batches are dispatched whole; code retains its chunking path.
-  const maxChars = decision.contentType === "auto" ? Math.min(config.maxChars, 128_000) : config.maxChars;
+  const maxChars = decision.contentType === "auto" ? Math.min(config.maxChars, MEMORAX_AUTO_MAX_TEXT_CHARS) : config.maxChars;
   const maxMessages = decision.contentType && decision.contentType !== "code" ? 100 : Infinity;
   if (!options.repositoryScope) return;
   discardDegradedGitBuffersForUpgrade(
@@ -175,7 +176,9 @@ function enqueueMemoryWritebackBufferForRuntime(
     return;
   }
 
-  const turnContentChars = writebackMessagesContentChars(decision.messages);
+  const turnContentChars = decision.contentType === "auto"
+    ? decision.messages.reduce((total, message) => total + countAddTextChars(message.content), 0)
+    : writebackMessagesContentChars(decision.messages);
   const messageLimitReached = buffer && bufferedMessages(buffer).length + decision.messages.length > maxMessages;
   if (buffer && (buffer.contentChars + turnContentChars > maxChars || messageLimitReached)) {
     flushMemoryWritebackBuffer(writebackBuffers, bufferKey, messageLimitReached ? "message_limit" : "char_limit", deps);

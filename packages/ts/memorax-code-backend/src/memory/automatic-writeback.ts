@@ -41,6 +41,7 @@ import {
 } from "./payload-redaction.js";
 import type { MemoraxQuotaSnapshot } from "../provider/memorax/quota.js";
 import { parseNativeMessageTimestamp } from "../shared/message-time.js";
+import { countAddTextChars, MEMORAX_DIALOGUE_MAX_MESSAGE_CHARS } from "../provider/memorax/add-limits.js";
 
 export type AutomaticMemoryWritebackClient = "codex" | "claude-code" | "opencode" | "dsh" | "codebuddy" | "workbuddy" | "trae" | "cursor" | "qoder";
 
@@ -274,6 +275,13 @@ function automaticMemoryWritebackDecision(
   const preserveTurn = contentType === "auto" || contentType === "work";
   const sessionKey = options.sessionKey.trim();
   const maxMessageChars = memoryWritebackMaxMessageChars(env);
+  const boundMessage = (text: string, role: WritebackMessage["role"]): string | undefined => {
+    if (!preserveTurn) return limitMessageContent(text, maxMessageChars, { role, sessionKey }, state.diagnosticLogger);
+    const limit = Math.min(maxMessageChars, MEMORAX_DIALOGUE_MAX_MESSAGE_CHARS);
+    if (text.length <= limit) return text;
+    // A code point occupies at most two UTF-16 units. Skip scanning oversized native turns.
+    return text.length <= 2 * limit && countAddTextChars(text) <= limit ? text : undefined;
+  };
   const rawUserText = options.userText?.trim() ?? "";
   const assistantOutput = options.assistantText ?? "";
   const assistantImpact = stripLeadingMemoryImpactParagraph(assistantOutput);
@@ -288,40 +296,24 @@ function automaticMemoryWritebackDecision(
   }
   if (!rawUserText) return { write: false, skipReason: "user_prompt_empty" };
   if (!rawAssistantText) return { write: false, skipReason: "assistant_text_empty" };
-  if (preserveTurn && (rawUserText.length > maxMessageChars || rawAssistantText.length > maxMessageChars)) {
+  const boundedUserText = boundMessage(rawUserText, "user");
+  const boundedAssistantText = boundMessage(rawAssistantText, "assistant");
+  if (boundedUserText === undefined || boundedAssistantText === undefined) {
     return { write: false, skipReason: "message_too_long" };
   }
-  const boundedUserText = limitMessageContent(rawUserText, maxMessageChars, {
-    role: "user",
-    sessionKey,
-  }, state.diagnosticLogger);
-  const boundedAssistantText = limitMessageContent(rawAssistantText, maxMessageChars, {
-    role: "assistant",
-    sessionKey,
-  }, state.diagnosticLogger);
   // Hashes and buffers must use the redacted text, before chunking can split
   // sensitive patterns. Dispatch rechecks this invariant on full messages.
   const userRedaction = redactMemoryPayloadText(boundedUserText);
   const assistantRedaction = redactMemoryPayloadText(boundedAssistantText);
   logAutomaticMemoryPayloadRedaction(state, sessionKey, "user", rawUserText, userRedaction);
   logAutomaticMemoryPayloadRedaction(state, sessionKey, "assistant", rawAssistantText, assistantRedaction);
-  if (preserveTurn && (userRedaction.text.length > maxMessageChars || assistantRedaction.text.length > maxMessageChars)) {
+  const userText = boundMessage(userRedaction.text, "user");
+  const assistantText = boundMessage(assistantRedaction.text, "assistant");
+  if (userText === undefined || assistantText === undefined) {
     return { write: false, skipReason: "message_too_long" };
   }
-  const userText = limitMessageContent(userRedaction.text, maxMessageChars, {
-    role: "user",
-    sessionKey,
-  }, state.diagnosticLogger);
-  const assistantText = limitMessageContent(assistantRedaction.text, maxMessageChars, {
-    role: "assistant",
-    sessionKey,
-  }, state.diagnosticLogger);
   if (!hasMeaningfulMemoryPayloadText(userText)) return { write: false, skipReason: "user_prompt_empty" };
   if (!hasMeaningfulMemoryPayloadText(assistantText)) return { write: false, skipReason: "assistant_text_empty" };
-  // Auto classification needs the complete turn within the provider budget.
-  if (contentType === "auto" && userText.length + assistantText.length > 128_000) {
-    return { write: false, skipReason: "message_too_long" };
-  }
 
   const idempotencyKey = `automatic:${options.client}:${hashText(options.repositoryScope.effectiveUserId)}:${sessionKey}:${hashText(userText)}:${hashText(assistantText)}${contentType === "code" ? "" : `:${contentType}`}`;
   if (hasPendingWriteback(state, idempotencyKey)) return { write: false, skipReason: "duplicate_pending" };

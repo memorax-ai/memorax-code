@@ -911,7 +911,7 @@ belong in the `[memory.writeback]` TOML table.
 | `buffer_max_turns` | `MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_TURNS` | `8`; `-1` disables automatic writeback |
 | `buffer_max_age_ms` | `MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_AGE_MS` | `600000` |
 | `buffer_max_chars` | `MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_CHARS` | `128000` |
-| `max_message_chars` | `MEMORAX_CODE_MEMORY_WRITEBACK_MAX_MESSAGE_CHARS` | `64000` |
+| `max_message_chars` | `MEMORAX_CODE_MEMORY_WRITEBACK_MAX_MESSAGE_CHARS` | `64000`; effective maximum `12000` for auto/work |
 | `chunk_enabled` | `MEMORAX_CODE_MEMORY_WRITEBACK_CHUNK_ENABLED` | `true` |
 | `chunk_max_chars` | `MEMORAX_CODE_MEMORY_WRITEBACK_CHUNK_MAX_CHARS` | `8000` |
 | `chunk_overlap_ratio` | `MEMORAX_CODE_MEMORY_WRITEBACK_CHUNK_OVERLAP_RATIO` | `0.05`; range `0 <= x < 1` |
@@ -947,9 +947,11 @@ buffer or deduplication key.
 Auto keeps complete turns and uses the configured buffer, including the default
 eight-turn limit. Its batches stay within 128000 text characters and 100 messages,
 even when configured buffer limits are higher. Explicit work sends each completed
-turn immediately. Auto/work reject turns exceeding `max_message_chars` instead
-of clipping them; auto also rejects a turn exceeding its total text budget before
-accepting it. Neither route emits code chunks. Explicit code retains the existing
+turn immediately. Both routes can resolve to dialogue. If either message in a
+turn exceeds the smaller of `max_message_chars` and 12000 Unicode code points,
+the plugin rejects the whole turn before enqueue. The 12000 ceiling matches the
+server's default `MEMORY.INPUT_MAX_LENGTH`. Set `max_message_chars` lower if your
+server uses a lower limit. Neither route emits code chunks. Explicit code retains the existing
 buffering, clipping, chunk identities, and retry behavior. Automatic writeback
 always uses default mode, independently of explicit Add's configured mode.
 
@@ -1065,7 +1067,7 @@ from previously uploaded data.
 
 ### Automatic writeback redaction
 
-Automatic writeback first enforces `max_message_chars`. Auto/work reject
+Automatic writeback first enforces the route's per-message limit. Auto/work reject
 oversized messages; code/dialogue clip them, discarding an incomplete token at
 the cutoff. It then runs a local best-effort detector before hashing, buffering,
 chunking, or sending the content. Auto/work also reject messages expanded beyond

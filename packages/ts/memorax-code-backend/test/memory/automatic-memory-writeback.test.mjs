@@ -1097,32 +1097,43 @@ test("auto and work reject oversized completed turns before clipping or dispatch
   }
 });
 
-test("auto rejects a turn above the provider text budget before accepting ownership", async () => {
-  const requests = [];
-  const runtime = createAutomaticMemoryWritebackRuntime();
-  try {
-    assert.deepEqual(runtime.enqueue({
-      client: "codex", sessionKey: "auto-large-turn", repositoryScope: REPOSITORY_SCOPE,
-      userText: "u".repeat(70_000), assistantText: "a".repeat(60_000),
-      env: { ...WRITEBACK_ENV, MEMORAX_CODE_MEMORY_WRITEBACK_MAX_MESSAGE_CHARS: "100000" },
-      fetchImpl: memoraxFetch(requests),
-    }), { accepted: false, reason: "message_too_long" });
+for (const route of ["auto", "work"]) {
+  test(`${route} enforces the 12000-code-point limit on each complete message before enqueue`, async (t) => {
+    const requests = [];
+    const runtime = createAutomaticMemoryWritebackRuntime();
+    t.after(() => runtime.close());
+    const ascii = "u".repeat(12_000);
+    const supplementary = "\u{20000}".repeat(12_000);
+    const turn = {
+      client: "codex", sessionKey: "message-limit", repositoryScope: REPOSITORY_SCOPE,
+      userText: ascii, assistantText: supplementary, fetchImpl: memoraxFetch(requests),
+      env: { ...WRITEBACK_ENV, MEMORAX_CODE_MEMORAX_ADD_CONTENT_TYPE: route,
+        MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "true", MEMORAX_CODE_MEMORY_WRITEBACK_MAX_MESSAGE_CHARS: "100000" },
+    };
+    const tooLong = { accepted: false, reason: "message_too_long" };
+    assert.deepEqual(runtime.enqueue({ ...turn, userText: ascii + "u" }), tooLong);
+    assert.deepEqual(runtime.enqueue({ ...turn, assistantText: supplementary + "\u{20000}" }), tooLong);
+    // Redacting the short address expands a message that initially fits the limit.
+    const contact = " a@b.co";
+    assert.deepEqual(runtime.enqueue({ ...turn, userText: ascii.slice(0, -contact.length) + contact }), tooLong);
+    assert.deepEqual(runtime.enqueue(turn), { accepted: true });
     await runtime.drain();
-    assert.equal(requests.length, 0);
-  } finally { runtime.close(); }
-});
+    assert.deepEqual(requests.map(({ body }) => body.messages.map(({ content }) => content)), [[ascii, supplementary]]);
+  });
+}
 
 test("auto buffer rolls over at provider budgets even when configured limits are higher", async (t) => {
   for (const [name, count, textSize, expectedCounts] of [
-    ["text budget", 3, 32_000, [4, 2]],
+    ["text budget", 9, 8_000, [16, 2]],
     ["message budget", 51, 1, [100, 2]],
   ]) {
     await t.test(name, async () => {
       const requests = [];
       const runtime = createAutomaticMemoryWritebackRuntime();
+      const texts = Array.from({ length: count }, (_, index) =>
+        textSize === 1 ? `Turn ${index}` : String.fromCodePoint(0x20000 + index).repeat(textSize));
       try {
-        for (let index = 0; index < count; index += 1) {
-          const text = textSize === 1 ? `Turn ${index}` : String.fromCharCode(65 + index).repeat(textSize);
+        for (const text of texts) {
           assert.deepEqual(runtime.enqueue({
             client: "codex", sessionKey: "auto-provider-budget", repositoryScope: REPOSITORY_SCOPE,
             userText: text, assistantText: text,
@@ -1134,10 +1145,12 @@ test("auto buffer rolls over at provider budgets even when configured limits are
         }
         await runtime.drain();
         assert.deepEqual(requests.map(({ body }) => body.messages.length), expectedCounts);
+        assert.deepEqual(requests.flatMap(({ body }) => body.messages.map(({ content }) => content)),
+          texts.flatMap((text) => [text, text]));
         for (const { body } of requests) {
           assert.equal(body.content_type, "auto");
           assert.equal(body.chunk, undefined);
-          assert.ok(body.messages.reduce((total, message) => total + message.content.length, 0) <= 128_000);
+          assert.ok(body.messages.reduce((total, message) => total + [...message.content].length, 0) <= 128_000);
         }
       } finally { runtime.close(); }
     });

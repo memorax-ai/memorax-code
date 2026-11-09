@@ -29,6 +29,7 @@ import type { TraceContext } from "../../trace/context.js";
 import { isRecord } from "../../shared/record.js";
 import { parseNativeMessageTimestamp } from "../../shared/message-time.js";
 import { normalizeContentParts, observedMessageContent, type MemoraxMessageContent } from "./content-parts.js";
+import { countAddTextChars, MEMORAX_AUTO_MAX_TEXT_CHARS } from "./add-limits.js";
 
 const SLOT_RESULT_SCHEMA_VERSION = "slot-invocation-result.preview.v1";
 const FORWARDED_WRITEBACK_METADATA_KEYS = [
@@ -282,12 +283,14 @@ function validateMessageAttachments(
   let textChars = 0;
   for (const message of messages) {
     if (typeof message.content === "string") {
-      textChars += message.content.length;
+      if (options.contentType === "auto") textChars += countAddTextChars(message.content);
       continue;
     }
     for (const part of message.content) {
-      if (part.type === "text") textChars += part.text.length;
-      if (part.type === "input_image") textChars += part.caption?.length ?? 0;
+      if (options.contentType === "auto") {
+        if (part.type === "text") textChars += countAddTextChars(part.text);
+        if (part.type === "input_image" && part.caption) textChars += countAddTextChars(part.caption);
+      }
       if (part.type === "file") {
         files++;
         if (message.role !== "user" || options.contentType === "code" || context.chunk !== undefined) {
@@ -300,8 +303,8 @@ function validateMessageAttachments(
     }
   }
   if (files > 10) throw new Error("writeback supports at most 10 files");
-  if (options.contentType === "auto" && textChars > 128_000) {
-    throw new Error("auto writeback exceeds the 128000 character budget");
+  if (textChars > MEMORAX_AUTO_MAX_TEXT_CHARS) {
+    throw new Error(`auto writeback exceeds the ${MEMORAX_AUTO_MAX_TEXT_CHARS} character budget`);
   }
 }
 
