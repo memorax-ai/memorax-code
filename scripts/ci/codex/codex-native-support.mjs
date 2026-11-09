@@ -249,6 +249,8 @@ async function stopTree(child, env) {
       if (isAlive(child.pid)) child.kill();
     }
   }
+  await waitFor(() => !isAlive(child.pid)
+    && (process.platform === "win32" || !isAlive(-child.pid)), "NATIVE_CHILD_PROCESS_REMAINS", 10_000);
 }
 export { stopTree as stopNativeProcessTree };
 function isolatedEnv({ root, home, stateHome, codexHome, codexCommand, packageRoot, backendPort, memoryUrl, writeback }) {

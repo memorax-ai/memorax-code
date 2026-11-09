@@ -123,3 +123,33 @@ for (const [name, implementation] of helpers) {
     });
   }
 }
+
+test("Codex cleanup cannot complete merely because its termination signal was sent", async () => {
+  let processAlive = true, signalObserved, allowExit, waited = false, settled = false;
+  const sent = new Promise((done) => { signalObserved = done; });
+  const exit = new Promise((done) => { allowExit = done; });
+  const stop = runInNewContext(`(${stopCodex.toString()})`, {
+    process: { platform: "linux", kill(target, signal) {
+      assert.equal(target, -pid);
+      assert.equal(signal, "SIGKILL");
+      signalObserved();
+    } },
+    isAlive: () => processAlive,
+    async waitFor(predicate, code, timeout) {
+      waited = true;
+      assert.equal(code, "NATIVE_CHILD_PROCESS_REMAINS");
+      assert.equal(timeout, 10_000);
+      assert.equal(predicate(), false);
+      await exit;
+      assert.equal(predicate(), true);
+    },
+  });
+  const closing = stop({ pid }, {}).then(() => { settled = true; });
+  await sent;
+  assert.equal(waited, true);
+  assert.equal(settled, false);
+  processAlive = false;
+  allowExit();
+  await closing;
+  assert.equal(settled, true);
+});
