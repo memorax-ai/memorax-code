@@ -275,10 +275,17 @@ async function runAutomaticUpdateCommand({ pkg, memoraxCodeHome }) {
       packageRoot: packageRoot(),
       packageName: pkg.name,
       packageVersion: pkg.version,
+      discoverClients: async (deferredClients) => {
+        const { discoverNewClients } = await import("../lib/client-discovery.mjs");
+        return discoverNewClients({ memoraxCodeHome, deferredClients });
+      },
     });
     if (!result.ok) reportUpdateFailure(result.error, {
       home: memoraxCodeHome, version: pkg.version, operation: "update.automatic",
     });
+    for (const failure of result.clientActivationFailures ?? []) {
+      reportUpdateFailure(failure, { home: memoraxCodeHome, version: pkg.version, operation: "update.automatic" });
+    }
     return result.ok ? 0 : 1;
   } catch (error) {
     reportUpdateFailure(error, { home: memoraxCodeHome, version: pkg.version, operation: "update.automatic" });

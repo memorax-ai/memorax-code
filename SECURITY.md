@@ -52,6 +52,11 @@ Please allow time for triage and remediation before public disclosure.
   package review. A changed target is installed by exact version and
   reconciliation preserves explicit client choices. Selection of newly
   detected clients is described in [Configuration](docs/configuration.md#client-selection).
+- While the managed Backend runs, a supported client installed after setup is
+  enabled without a prompt when `[clients]` has no recorded choice for it. Its
+  Hooks and automatic writeback then follow the same rules as any enabled
+  client. Set `[clients].<client> = false` to keep a client out, or
+  `MEMORAX_CODE_AUTO_UPDATE=false` to stop this discovery.
 - Codex update reconciliation may trust new or changed Hooks without a prompt
   only after the current marketplace identity and exact Hook selection are
   validated. The selection is checked again before and after the config write;

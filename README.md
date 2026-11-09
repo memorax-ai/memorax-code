@@ -148,7 +148,10 @@ memorax-code account --show-mark-id
 #### 3. Activate and Verify
 
 Both setup paths automatically detect supported coding agents. Restart or
-refresh every detected coding agent after setup.
+refresh every detected coding agent after setup. While the managed Backend is
+running, an agent you install later is enabled within about 15 minutes; see
+[Clients installed after setup](docs/configuration.md#clients-installed-after-setup)
+to exclude one.
 
 | Client | Complete activation |
 | --- | --- |
@@ -374,7 +377,9 @@ Setup also enables background updates while the managed Backend is running.
 An update briefly stops a running managed Backend and restores it with the
 retained client selection.
 Setup after reinstall and updates preserve explicit client choices even when
-older configuration omits `codex` or `claude`.
+older configuration omits `codex` or `claude`. The first setup after upgrading
+removes `false` for agents that are still not installed, so they can be enabled
+when they appear.
 See [update settings](docs/configuration.md#setup-automatic-update-and-package-transition-state)
 for release channels, custom state roots, client selection, Backend restoration,
 and disabling background checks. Restart or refresh a client after an update

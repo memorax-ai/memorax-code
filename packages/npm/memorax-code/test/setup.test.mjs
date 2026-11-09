@@ -133,6 +133,10 @@ function setupCompletionPath(memoraxCodeHome) {
   return join(memoraxCodeHome, "runtime", "setup", "setup-completion.json");
 }
 
+function clientSelectionMigrationPath(memoraxCodeHome) {
+  return join(memoraxCodeHome, "runtime", "setup", "client-selection-migration.json");
+}
+
 async function readSetupDiagnostics(run) {
   const directory = join(run.memoraxCodeHome, "runtime", "diagnostics");
   const files = (await readdir(directory)).filter((name) => /^mc-.*\.json$/.test(name));
@@ -181,7 +185,7 @@ async function startMockMemorax({ status = 200, body = { success: true, data: { 
   };
 }
 
-async function runSetup({ existingCache = false, explicitCache = false, codexRegistered, hookRuntimeFailure, failStartOnce = false, adapterStartFailure = false, connectionAuthorityFailure = false, runtimeAuthorityFailureCode, officialMode = false, codexConfig, memoraxCodeConfig, memoraxCodeConfigMode, activeManagedClients, emptyClaudeSettings = false, claudeAvailable = true, claudeVersionFails = false, claudeSettingsText, codexAvailable = true, codexAppOnly = false, vscodeOnly = false, dshProfiles = [], opencodeAvailable = false, opencodeXdgAvailable = false, opencodeCliAvailable = false, codebuddyAvailable = false, codebuddyNativeConfig = false, workbuddyAvailable = false, legacyWorkBuddyInstallation = false, failingBuddyVersion, missingBuddyStatus, traeAvailable = false, cursorAvailable = false, qoderAvailable = false, skipCodexPluginInstall = false, skipClaudeAdapterInstall = false, skipOpenCodeAdapterInstall = false, skipCodeBuddyAdapterInstall = false, skipWorkBuddyAdapterInstall = false, skipTraeAdapterInstall = false, skipCursorAdapterInstall = false, skipQoderAdapterInstall = false, unavailableStatus = false, prefixedStatus = false, input = "", nativeSetupArgs = [], interactive = true, npmCommand = "install", updateMode = false, setupMode = "automatic", memoraxVerify, memoraxEnv = {}, memoryStatusFixture, tamperApiKeyAfterStart = false, trialProvisionFailure = false, hookSnapshot = [], hookUpdatePlan = [], hookFullReview = false, hookFullReviewMissing = false, hookSnapshotFails = false, hookCheckFails = false, hookTrustFails = false, detectedUserId = "memory-user", detectedLanguage = "zh", ttyOverride } = {}) {
+async function runSetup({ existingCache = false, explicitCache = false, codexRegistered, hookRuntimeFailure, failStartOnce = false, adapterStartFailure = false, connectionAuthorityFailure = false, runtimeAuthorityFailureCode, officialMode = false, codexConfig, memoraxCodeConfig, memoraxCodeConfigMode, activeManagedClients, emptyClaudeSettings = false, claudeAvailable = true, claudeVersionFails = false, claudeSettingsText, codexAvailable = true, codexAppOnly = false, vscodeOnly = false, dshProfiles = [], opencodeAvailable = false, opencodeXdgAvailable = false, opencodeCliAvailable = false, codebuddyAvailable = false, codebuddyNativeConfig = false, workbuddyAvailable = false, legacyWorkBuddyInstallation = false, failingBuddyVersion, missingBuddyStatus, traeAvailable = false, cursorAvailable = false, qoderAvailable = false, skipCodexPluginInstall = false, skipClaudeAdapterInstall = false, skipOpenCodeAdapterInstall = false, skipCodeBuddyAdapterInstall = false, skipWorkBuddyAdapterInstall = false, skipTraeAdapterInstall = false, skipCursorAdapterInstall = false, skipQoderAdapterInstall = false, unavailableStatus = false, prefixedStatus = false, input = "", nativeSetupArgs = [], interactive = true, npmCommand = "install", updateMode = false, setupMode = "automatic", memoraxVerify, memoraxEnv = {}, memoryStatusFixture, tamperApiKeyAfterStart = false, trialProvisionFailure = false, hookSnapshot = [], hookUpdatePlan = [], hookFullReview = false, hookFullReviewMissing = false, hookSnapshotFails = false, hookCheckFails = false, hookTrustFails = false, detectedUserId = "memory-user", detectedLanguage = "zh", ttyOverride, clientSelectionMigrated = true, earlierSetupCompleted = false } = {}) {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-setup-"));
   const binDir = join(root, "bin");
   const codexHome = join(root, "codex-home");
@@ -683,6 +687,19 @@ async function runSetup({ existingCache = false, explicitCache = false, codexReg
     await mkdir(memoraxCodeHome, { recursive: true });
     await writeFile(join(memoraxCodeHome, "config.toml"), initialMemoraxCodeConfig, "utf8");
     if (memoraxCodeConfigMode !== undefined) await chmod(join(memoraxCodeHome, "config.toml"), memoraxCodeConfigMode);
+    if (clientSelectionMigrated) {
+      await mkdir(dirname(clientSelectionMigrationPath(memoraxCodeHome)), { recursive: true });
+      await writeFile(clientSelectionMigrationPath(memoraxCodeHome), '{ "version": 1 }\n');
+    }
+    if (earlierSetupCompleted) {
+      await mkdir(dirname(setupCompletionPath(memoraxCodeHome)), { recursive: true });
+      await writeFile(setupCompletionPath(memoraxCodeHome), `${JSON.stringify({
+        version: 1,
+        state: "complete",
+        completedAt: "2026-10-01T00:00:00.000Z",
+        completedByVersion: "0.1.22",
+      })}\n`);
+    }
   }
   if (activeManagedClients !== undefined) {
     await mkdir(join(memoraxCodeHome, "runtime", "backend"), { recursive: true });
@@ -1130,7 +1147,8 @@ test("setup fresh install auto-detects Codex and skips an unavailable Claude run
     assert.match(run.log, /^dsh-adapter-optional status$/m);
     assert.match(run.result.stderr, /Backend and selected adapters: .*Enabled/);
     const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
-    assert.match(config, /\[clients\][^\r\n]*\r?\ncodex = true[^\r\n]*\r?\nclaude = false[^\r\n]*\r?\ndsh = true[^\r\n]*\r?\nopencode = false/m);
+    assert.deepEqual(parse(config).clients, { codex: true, dsh: true });
+    assert.deepEqual(JSON.parse(await readFile(clientSelectionMigrationPath(run.memoraxCodeHome), "utf8")), { version: 1 });
   } finally {
     await rm(run.root, { recursive: true, force: true });
   }
@@ -1159,8 +1177,9 @@ test("setup detects CodeBuddy CLI and WorkBuddy independently and together", asy
       assert.ok(run.log.includes(`memorax-code start --clients ${selected} --json\n`));
       assert.ok(run.log.includes(`memorax-code status --clients ${selected}\n`));
       const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
-      assert.match(config, new RegExp(`codebuddy = ${clients.includes("codebuddy")}`));
-      assert.match(config, new RegExp(`workbuddy = ${clients.includes("workbuddy")}`));
+      for (const client of ["codebuddy", "workbuddy"]) {
+        assert.equal(parse(config).clients[client], clients.includes(client) ? true : undefined);
+      }
       assert.match(config, /\[trace\.codebuddy\]/);
       assert.match(config, /\[trace\.workbuddy\]/);
       if (clients.includes("workbuddy")) assert.match(run.result.stderr, /`memorax-code status --clients workbuddy`/);
@@ -2036,6 +2055,188 @@ test("automatic update setup leaves an unavailable unconfigured client undecided
       await assertSetupComplete(detectedLater);
     } finally {
       await rm(detectedLater.root, { recursive: true, force: true });
+    }
+  });
+});
+
+test("a first setup that finds no client stays recognizable for later activation", async () => {
+  const run = await runSetup({ codexAvailable: false, claudeAvailable: false });
+  try {
+    assert.equal(run.result.code, 0, run.result.stderr);
+    const config = parse(await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8"));
+    assert.deepEqual(config.clients, { dsh: true });
+  } finally {
+    await rm(run.root, { recursive: true, force: true });
+  }
+});
+
+test("the first setup after an upgrade clears false only for clients that are not installed", async (t) => {
+  const existingConfig = [
+    "[clients]", "codex = true", "claude = false", "opencode = false",
+    "codebuddy = false", "workbuddy = true", "trae = false", "",
+  ].join("\n");
+  for (const automatic of [false, true]) await t.test(automatic ? "automatic update" : "ordinary setup", async () => {
+    const run = await runSetup({
+      codebuddyAvailable: true,
+      failingBuddyVersion: "codebuddy",
+      workbuddyAvailable: true,
+      memoraxCodeConfig: existingConfig,
+      clientSelectionMigrated: false,
+      earlierSetupCompleted: true,
+      existingCache: true,
+      updateMode: true,
+      ...(automatic ? { interactive: false, memoraxEnv: { MEMORAX_CODE_SETUP_AUTOMATIC_UPDATE: "1" } } : {}),
+    });
+    try {
+      assert.equal(run.result.code, 0, run.result.stderr);
+      const config = parse(await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8"));
+      // Claude is installed and CodeBuddy was found but cannot run: both keep their opt-out.
+      assert.deepEqual(config.clients, { codex: true, claude: false, codebuddy: false, workbuddy: true });
+      assert.deepEqual(JSON.parse(await readFile(clientSelectionMigrationPath(run.memoraxCodeHome), "utf8")), { version: 1 });
+      const disclosure = /Supported coding agents installed later are enabled automatically/;
+      if (automatic) assert.doesNotMatch(run.result.stderr, disclosure);
+      else assert.match(run.result.stderr, disclosure);
+      await assertSetupComplete(run);
+    } finally {
+      await rm(run.root, { recursive: true, force: true });
+    }
+  });
+});
+
+test("a configuration that never completed setup keeps its false entries and is still marked migrated", async () => {
+  const run = await runSetup({
+    memoraxCodeConfig: ["[clients]", "codex = true", "claude = true", "opencode = false", "qoder = false", ""].join("\n"),
+    clientSelectionMigrated: false,
+    earlierSetupCompleted: false,
+    existingCache: true,
+  });
+  try {
+    assert.equal(run.result.code, 0, run.result.stderr);
+    const config = parse(await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8"));
+    assert.equal(config.clients.opencode, false);
+    assert.equal(config.clients.qoder, false);
+    assert.deepEqual(JSON.parse(await readFile(clientSelectionMigrationPath(run.memoraxCodeHome), "utf8")), { version: 1 });
+    await assertSetupComplete(run);
+  } finally {
+    await rm(run.root, { recursive: true, force: true });
+  }
+});
+
+test("a false recorded after the one-time cleanup is kept by later setups", async () => {
+  const run = await runSetup({
+    memoraxCodeConfig: ["[clients]", "codex = true", "claude = true", "opencode = false", ""].join("\n"),
+    earlierSetupCompleted: true,
+    existingCache: true,
+    updateMode: true,
+  });
+  try {
+    assert.equal(run.result.code, 0, run.result.stderr);
+    const config = parse(await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8"));
+    assert.equal(config.clients.opencode, false);
+    await assertSetupComplete(run);
+  } finally {
+    await rm(run.root, { recursive: true, force: true });
+  }
+});
+
+const clientActivationOptions = (clients) => ({
+  existingCache: true,
+  interactive: false,
+  memoraxEnv: { MEMORAX_CODE_SETUP_AUTOMATIC_UPDATE: "1", MEMORAX_CODE_SETUP_NEW_CLIENTS: clients },
+  updateMode: true,
+});
+
+test("client activation enables only the requested client and leaves Codex registration alone", async (t) => {
+  for (const { client, available, detected } of laterClientFixtures) await t.test(client, async () => {
+    const existingConfig = legacyClientConfig([client, "claude"]);
+    const run = await runSetup({
+      ...available,
+      ...clientActivationOptions(client),
+      hookUpdatePlan: [codexHook("activation", "sha256:activation")],
+      memoraxCodeConfig: existingConfig,
+    });
+    try {
+      assert.equal(run.result.code, 0, run.result.stderr);
+      assert.match(run.result.stderr, detected);
+      assert.ok(run.log.includes(`memorax-code start --clients codex,${client} --json\n`), run.log);
+      assert.doesNotMatch(run.log, /^memorax-code codex-plugin (?:install|activate|hooks|trust-hooks)\b/m);
+      const config = parse(await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8"));
+      assertConfiguredValuesPreserved(parse(existingConfig), config);
+      assert.equal(config.clients[client], true);
+      assert.equal(Object.hasOwn(config.clients, "claude"), false, "A client outside this run stays undecided");
+      await assertSetupComplete(run);
+    } finally {
+      await rm(run.root, { recursive: true, force: true });
+    }
+  });
+});
+
+test("client activation registers Codex when Codex is the requested client", async () => {
+  const run = await runSetup({
+    ...clientActivationOptions("codex"),
+    memoraxCodeConfig: legacyClientConfig("codex", "claude"),
+  });
+  try {
+    assert.equal(run.result.code, 0, run.result.stderr);
+    assert.match(run.log, /^memorax-code codex-plugin install --json$/m);
+    assert.ok(run.log.includes("memorax-code start --clients codex,claude --json\n"), run.log);
+    const config = parse(await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8"));
+    assert.equal(config.clients.codex, true);
+    await assertSetupComplete(run);
+  } finally {
+    await rm(run.root, { recursive: true, force: true });
+  }
+});
+
+test("a failed client activation stays undecided so it can be retried", async () => {
+  const run = await runSetup({
+    ...clientActivationOptions("trae"),
+    adapterStartFailure: true,
+    memoraxCodeConfig: legacyClientConfig("trae"),
+    traeAvailable: true,
+  });
+  try {
+    assert.equal(run.result.code, 1, run.result.stderr);
+    assert.ok(run.log.includes("memorax-code start --clients codex,trae --json\n"), run.log);
+    const config = parse(await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8"));
+    assert.equal(Object.hasOwn(config.clients, "trae"), false);
+  } finally {
+    await rm(run.root, { recursive: true, force: true });
+  }
+});
+
+test("a version reconcile from the current updater leaves new clients to client activation", async () => {
+  const run = await runSetup({
+    ...clientActivationOptions(""),
+    memoraxCodeConfig: legacyClientConfig("trae"),
+    traeAvailable: true,
+  });
+  try {
+    assert.equal(run.result.code, 0, run.result.stderr);
+    assert.match(run.log, /^memorax-code start --clients codex --json$/m);
+    const config = parse(await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8"));
+    assert.equal(Object.hasOwn(config.clients, "trae"), false);
+    await assertSetupComplete(run);
+  } finally {
+    await rm(run.root, { recursive: true, force: true });
+  }
+});
+
+test("client activation does not restart the Backend when the client no longer needs it", async (t) => {
+  for (const [name, existingConfig, available] of [
+    ["opted out", legacyClientConfig([]), { traeAvailable: true }],
+    ["already enabled", legacyClientConfig([], "trae"), { traeAvailable: true }],
+    ["no longer installed", legacyClientConfig("trae"), {}],
+  ]) await t.test(name, async () => {
+    const run = await runSetup({ ...available, ...clientActivationOptions("trae"), memoraxCodeConfig: existingConfig });
+    try {
+      assert.equal(run.result.code, 0, run.result.stderr);
+      assert.match(run.result.stderr, /No requested client still needs activation/);
+      assert.doesNotMatch(run.log, /^memorax-code (?:start|stop)\b/m);
+      const config = parse(await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8"));
+      assert.deepEqual(config.clients, parse(existingConfig).clients);
+    } finally {
+      await rm(run.root, { recursive: true, force: true });
     }
   });
 });

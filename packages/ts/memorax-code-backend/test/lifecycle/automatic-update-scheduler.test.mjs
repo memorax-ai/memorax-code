@@ -85,9 +85,45 @@ test("local scheduling checks notice a transition created during the registry th
 
   context.controls.pending = false;
   context.children[0].emit("close", 0, null);
+  assert.equal(context.timers.pending[0].delay, RETRY_INTERVAL_MS);
+  assert.equal(context.spawns.length, 1);
+  context.scheduler.close();
+});
+
+test("local wakes start the updater for client discovery inside the registry window", () => {
+  const context = fixture({
+    state: updateState("0.1.9", STARTED_AT + 8 * 60 * 60 * 1_000),
+  });
+  assert.equal(context.spawns.length, 0);
+
+  for (const expectedSpawns of [1, 2]) {
+    assert.equal(context.timers.pending[0].delay, RETRY_INTERVAL_MS);
+    context.controls.now += RETRY_INTERVAL_MS;
+    context.timers.runNext();
+    assert.equal(context.spawns.length, expectedSpawns);
+    assert.equal(context.timers.pending.length, 0, "only one updater may run at a time");
+    context.children[expectedSpawns - 1].emit("close", 0, null);
+  }
+  context.scheduler.close();
+});
+
+test("a Backend restarted by an activation run waits a full interval before discovery", () => {
+  const context = fixture({
+    env: { MEMORAX_CODE_AUTOMATIC_UPDATE_PROCESS: "1" },
+    state: updateState("0.1.9", STARTED_AT + 8 * 60 * 60 * 1_000),
+  });
+  assert.equal(context.spawns.length, 0);
+  assert.equal(context.timers.pending[0].delay, RETRY_INTERVAL_MS);
+
   context.controls.now += RETRY_INTERVAL_MS;
   context.timers.runNext();
-  assert.equal(context.spawns.length, 1, "local checks do not query the registry before its deadline");
+  assert.equal(context.spawns.length, 1);
+  context.scheduler.close();
+});
+
+test("the registry deadline still wakes the updater before the next discovery interval", () => {
+  const context = fixture({ state: updateState("0.1.9", STARTED_AT + 5 * 60 * 1_000) });
+  assert.equal(context.timers.pending[0].delay, 5 * 60 * 1_000);
   context.scheduler.close();
 });
 
