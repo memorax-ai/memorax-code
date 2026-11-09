@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { assertCompleteText, assertNoForeignContent, assertSearchResult, assertSkillReferenceContract,
+import { assertCompleteText, assertNoForeignContent, assertSearchResult, assertSkillReferenceContract, assertSkillWritebackText,
   assertWritebackMessages, expectedSearchAnswer, redactExpectedFixtureText, selectNativeTurnContent } from "./codex-native-content-check.mjs";
 
 const paragraphs = ["第一段：完整保留 Unicode 🧪 与开头。", "第二段：中间内容不能被遗漏，café。", "第三段：末尾仍必须存在。"];
@@ -32,6 +32,65 @@ test("expected redaction only normalizes the known API canary and fixture path U
     assert.throws(() => assertCompleteText(actual, expected), /NATIVE_CONTENT_INCOMPLETE/);
   }
 });
+
+const skillPathId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+const skillFixture = { apiKey: "sk_SkillFixtureCanaryAbcdefghijklmnop", paths: [`/fixture/${skillPathId}/skill`] };
+
+test("in-limit Skill writeback requires the entire redacted source without extra context or redactions", () => {
+  const otherId = "12345678-abcd-1234-abcd-1234567890ab";
+  const source = `Use ${skillFixture.paths[0]}.\n\nCheck ${skillFixture.apiKey}.\n\nKeep ${otherId}.`;
+  const expected = `Use /fixture/[REDACTED:OPAQUE_ID]/skill.\n\nCheck [REDACTED:API_KEY].\n\nKeep ${otherId}.`;
+  assertSkillWritebackText(expected, ` \n${source}\r\n`, skillFixture);
+  for (const actual of [source, expected.slice(0, -1), `${expected} extra`, expected.replace("\n\n", "\n\nExtra.\n\n"),
+    expected.replace(otherId, "[REDACTED:OPAQUE_ID]")]) {
+    assert.throws(() => assertSkillWritebackText(actual, source, skillFixture), /NATIVE_/);
+  }
+});
+
+test("Skill writeback preserves the 12,000th Unicode code point and excludes the next one", () => {
+  const expected = "甲".repeat(11_999) + "🧪";
+  for (const source of [expected, expected + "界"]) {
+    assertSkillWritebackText(expected, source, skillFixture);
+    for (const actual of [expected.slice(0, -2), expected.slice(0, -1), expected + "界", expected.replace("甲", "乙")]) {
+      assert.throws(() => assertSkillWritebackText(actual, source, skillFixture), /NATIVE_/);
+    }
+  }
+});
+
+test("redacting a fixture path and canary inside the raw Skill prefix does not admit text beyond it", () => {
+  const header = `${skillFixture.paths[0]}\n${skillFixture.apiKey}\n`;
+  const body = "甲".repeat(12_000 - header.length - 1) + "🧪";
+  const source = header + body + "后文";
+  const expected = "/fixture/[REDACTED:OPAQUE_ID]/skill\n[REDACTED:API_KEY]\n" + body;
+  assertSkillWritebackText(expected, source, skillFixture);
+  assert.throws(() => assertSkillWritebackText(expected + "后文", source, skillFixture), /NATIVE_/);
+  assert.throws(() => assertSkillWritebackText(expected.replace("[REDACTED:API_KEY]", skillFixture.apiKey), source, skillFixture), /NATIVE_/);
+});
+
+test("a canary or path UUID crossing the raw cutoff contributes only a complete placeholder that fits", () => {
+  for (const [label, value, marker] of [
+    ["Test key ", skillFixture.apiKey, "[REDACTED:API_KEY]"],
+    ["/fixture/", skillPathId, "[REDACTED:OPAQUE_ID]"],
+  ]) {
+    const prefix = "甲".repeat(12_000 - label.length - marker.length) + label;
+    const source = prefix + value + "/rest";
+    assertSkillWritebackText(prefix + marker, source, skillFixture);
+    assert.throws(() => assertSkillWritebackText(prefix + value.slice(0, marker.length), source, skillFixture), /NATIVE_/);
+    const lessRoom = "乙" + prefix;
+    assertSkillWritebackText(lessRoom.trimEnd(), "乙" + source, skillFixture);
+    assert.throws(() => assertSkillWritebackText(lessRoom + marker.slice(0, -1), "乙" + source, skillFixture), /NATIVE_/);
+  }
+});
+
+test("Skill writeback does not transmit a partial placeholder already present in selected text", () => {
+  const marker = "[REDACTED:EMAIL]";
+  const before = "界".repeat(12_000 - marker.length);
+  assertSkillWritebackText(before + marker, before + marker + "后", skillFixture);
+  const source = before + " " + marker + "后";
+  assertSkillWritebackText(before, source, skillFixture);
+  assert.throws(() => assertSkillWritebackText(before + " " + marker.slice(0, -1), source, skillFixture), /NATIVE_/);
+});
+
 test("writeback structure rejects missing messages, wrong roles and non-text content", () => {
   const valid = [{ role: "user", content, timestamp: 1 }, { role: "assistant", content: "Answer", timestamp: 2 }];
   assertWritebackMessages(valid);

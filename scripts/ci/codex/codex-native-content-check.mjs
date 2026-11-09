@@ -4,12 +4,39 @@ function check(condition, code) {
   if (!condition) throw Object.assign(new Error(code), { nativeCode: code });
 }
 
-export function redactExpectedFixtureText(text, { apiKey, paths }) {
+export function redactExpectedFixtureText(text, { apiKey, paths }, end = text.length) {
   // Only normalize known synthetic inputs, never arbitrary missing content.
   const uuid = /(?<![A-Za-z0-9])[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}(?![A-Za-z0-9])/gi;
   const pathIds = new Set(paths.flatMap((path) => path.match(uuid) ?? []).map((id) => id.toLowerCase()));
-  return text.replaceAll(apiKey, "[REDACTED:API_KEY]")
-    .replace(uuid, (id) => pathIds.has(id.toLowerCase()) ? "[REDACTED:OPAQUE_ID]" : id);
+  const escapedKey = apiKey.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const tokens = new RegExp(`${escapedKey}|${uuid.source}`, "gi");
+  let expected = "", offset = 0;
+  for (const match of text.matchAll(tokens)) {
+    if (match.index >= end) break;
+    const [value] = match;
+    if (value !== apiKey && !pathIds.has(value.toLowerCase())) continue;
+    // Match against the original text so even a credential crossing the cutoff is replaced in full.
+    expected += text.slice(offset, match.index) + (value === apiKey ? "[REDACTED:API_KEY]" : "[REDACTED:OPAQUE_ID]");
+    offset = match.index + value.length;
+  }
+  return expected + text.slice(offset, end);
+}
+
+function skillWritebackPrefix(text) {
+  const prefix = Array.from(text).slice(0, 12_000).join("");
+  if (prefix.length === text.length) return prefix;
+  const start = prefix.lastIndexOf("[");
+  const marker = start >= 0 && /^\[REDACTED:[A-Z_]+\]/.exec(text.slice(start));
+  return marker && start + marker[0].length > prefix.length ? prefix.slice(0, start) : prefix;
+}
+
+export function assertSkillWritebackText(actual, selected, fixture) {
+  const source = selected.trim();
+  const rawPrefix = skillWritebackPrefix(source);
+  const redacted = redactExpectedFixtureText(source, fixture, rawPrefix.length);
+  const expected = skillWritebackPrefix(redacted).trimEnd();
+  check(actual === expected, "NATIVE_SELECTED_USER_CONTENT_INCOMPLETE");
+  return { ...assertCompleteText(actual, expected), truncated: rawPrefix.length < source.length };
 }
 
 export function assertCompleteText(actual, required, code = "NATIVE_CONTENT_INCOMPLETE") {

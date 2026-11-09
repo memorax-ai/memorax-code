@@ -283,7 +283,8 @@ export async function runNativeMemoryCheck({ client, args }) {
       "NATIVE_WRITEBACK_SESSION_MISMATCH");
     check(body.user_id === `${fixtureUser}@${basename(cwd)}` && body.metadata.memorax_code_workspace === basename(cwd)
       && body.metadata.memorax_code_memory_scope === "workspace-name.v1", "NATIVE_WRITEBACK_SCOPE_MISMATCH");
-    check(body.metadata.idempotency_key === `automatic:${client}:${shortHash(body.user_id)}:${output.sessionId}:${shortHash(body.messages[0].content)}:${shortHash(body.messages[1].content)}`,
+    check(body.content_type === "auto" && body.mode === "default", "NATIVE_WRITEBACK_ROUTE_MISMATCH");
+    check(body.metadata.idempotency_key === `automatic:${client}:${shortHash(body.user_id)}:${output.sessionId}:${shortHash(body.messages[0].content)}:${shortHash(body.messages[1].content)}:auto`,
       "NATIVE_WRITEBACK_IDEMPOTENCY_MISMATCH");
     const expected = { prompt, answer, expectedPrompt, sessionId: output.sessionId, cwd, body, kind, tools };
     if (workbuddy) await verifyNativeTranscript(expected, { record: false });

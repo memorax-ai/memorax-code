@@ -129,9 +129,9 @@ test("MemoraX config resolver centralizes defaults and clamps env values", () =>
 
   assert.equal(result.ok, true);
   assert.equal(result.config.baseUrl, "http://memorax.test");
-  assert.equal(result.config.topK, 100);
-  assert.equal(result.config.kDense, 100);
-  assert.equal(result.config.kSparse, 100);
+  assert.equal(result.config.topK, 50);
+  assert.equal(result.config.kDense, 50);
+  assert.equal(result.config.kSparse, 50);
   assert.equal(result.config.timeoutMs, 1000);
   assert.equal(result.config.maxContextChars, 256);
   assert.equal(result.config.maxItemChars, 64);

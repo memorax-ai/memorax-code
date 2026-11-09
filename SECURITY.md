@@ -233,10 +233,12 @@ or explicitly labelled local observation times. An aligned source-label array
 in Add metadata distinguishes them; it contains no transcript paths or trace
 identifiers. See [timestamp semantics](docs/configuration.md#automatic-writeback-timestamps).
 
-Automatic writeback bounds each selected message to its configured Add limit,
-then applies a local best-effort detector before hashing, buffering, chunking,
-observability, or network dispatch. Recognized private keys, authorization
-tokens, cookies, API keys, structured credentials, email addresses, long
+Automatic writeback bounds and redacts each selected message before hashing,
+buffering, chunking, observability, or network dispatch. For auto, work, and
+dialogue, the local detector may inspect text beyond the cutoff to identify a
+sensitive value that crosses it. Only the redacted prefix is eligible for Add.
+Recognized private keys, authorization tokens, cookies, API keys, structured
+credentials, email addresses, long
 numbers, UUIDs, fixed-length hexadecimal strings, and high-entropy opaque
 identifiers are replaced with typed placeholders such as
 `[REDACTED:PRIVATE_KEY]`, `[REDACTED:AUTH_TOKEN]`,

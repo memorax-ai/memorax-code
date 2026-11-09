@@ -871,6 +871,34 @@ fields, and their former `MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED` and
 `MEMORAX_CODE_MEMORAX_STARTUP_TIMEOUT_MS` environment overrides, are ignored.
 They cannot enable Hook Search or change the timeout for explicit Search.
 
+### Document evidence retrieval
+
+`memorax-cli search --query 'question' --sources document --limit 4 --json`
+requests original document chunks. Add `--document-ids 'doc-1,doc-2'` to restrict
+it to known document IDs; this option requires `--sources document`.
+`--sources dialogue` selects conversation memory, while
+`--sources dialogue,document` requests both. Omitting sources retains the
+existing server search behavior. Source-scoped requests use `mode=fast` and
+`output_mode=facts`; top-k and each recall count are capped at the server's 50.
+The current document service chooses its internal candidate budget separately.
+
+The remote service owns embedding, hybrid retrieval, RRF, and reranking. The
+plugin keeps its order and returns complete evidence in JSON `items`, including
+document/chunk IDs and score details. Text output preserves Markdown and whole
+document chunks. The `max_context_chars` budget includes the escaped evidence
+and its XML tags. When a whole chunk cannot fit, the plugin appends one
+truncation notice outside that budget. `max_item_chars` applies to facts.
+JSON output preserves all returned items even if text rendering omits
+some. The client agent uses this result as reference material and generates
+the answer; no second answer model is invoked by the plugin.
+
+Search and Add retain the same workspace-scoped user ID. Documents uploaded
+under another scope are not automatically available here. `memorax.timeout_ms`
+also bounds remote reranking; its 5000 ms default may be too short for a model
+with retries, so configure it from measured latency for the target deployment.
+The plugin does not poll an asynchronous Add task or promise immediate Search
+visibility after acceptance.
+
 ## Writeback and explicit add
 
 New configurations explicitly set automatic completed-turn writeback to enabled.
@@ -884,7 +912,7 @@ belong in the `[memory.writeback]` TOML table.
 | `buffer_max_turns` | `MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_TURNS` | `8`; `-1` disables automatic writeback |
 | `buffer_max_age_ms` | `MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_AGE_MS` | `600000` |
 | `buffer_max_chars` | `MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_CHARS` | `128000` |
-| `max_message_chars` | `MEMORAX_CODE_MEMORY_WRITEBACK_MAX_MESSAGE_CHARS` | `64000` |
+| `max_message_chars` | `MEMORAX_CODE_MEMORY_WRITEBACK_MAX_MESSAGE_CHARS` | `64000` (effective maximum `12000` for auto, work, and dialogue) |
 | `chunk_enabled` | `MEMORAX_CODE_MEMORY_WRITEBACK_CHUNK_ENABLED` | `true` |
 | `chunk_max_chars` | `MEMORAX_CODE_MEMORY_WRITEBACK_CHUNK_MAX_CHARS` | `8000` |
 | `chunk_overlap_ratio` | `MEMORAX_CODE_MEMORY_WRITEBACK_CHUNK_OVERLAP_RATIO` | `0.05`; range `0 <= x < 1` |
@@ -908,6 +936,58 @@ the resolved value to MemoraX. Invalid values fail closed instead of silently
 selecting another language. The setting affects newly generated content;
 `raw` input and client-supplied `pre_summarized` text are not translated.
 Command arguments override the other add defaults.
+
+Explicit Add also accepts `--content-type auto` or `--content-type work`, both
+with `--mode default`. Auto delegates code/work classification to the server;
+work resolves to dialogue. Ordinary `--memory` Add keeps code/pre_summarized
+defaults. Automatic native-turn writeback defaults to auto/default and honors
+the configured `memory.add.content_type` or its environment override. The route
+is frozen when a completed turn is accepted; different routes never share a
+buffer or deduplication key.
+
+Auto and dialogue buffer user/assistant pairs, by default up to eight turns.
+Auto batches stay within 128000 text characters and 100 messages. Explicit work sends each
+completed turn immediately. For auto, work, and dialogue, the plugin keeps the
+beginning of each message, up to the smaller of `max_message_chars` and 12000
+Unicode code points. A long reply can therefore be saved alongside the user's full question.
+The 12000 ceiling matches the server's default `MEMORY.INPUT_MAX_LENGTH`. Set
+`max_message_chars` lower if your server uses a lower limit. Only explicit code
+uses code chunks and their existing retry behavior. Automatic writeback always
+uses default mode, independently of explicit Add's configured mode.
+
+`memorax-cli add --messages-file /path/to/messages.json --type semantic
+--reason 'User requested storing the report.'` reads an explicit JSON array of
+messages. Do not combine it with `--memory` or `--memory-file`. It defaults to
+auto/default and accepts strings or the backend's text/input_text, input_image,
+and file parts. This is message-shape compatibility, not a complete OpenAI API:
+the endpoint remains MemoraX Add and requires its user/session/metadata fields.
+For example, the file can contain:
+
+```json
+[
+  {
+    "role": "user",
+    "content": [
+      {"type": "text", "text": "Remember this report."},
+      {"type": "file", "file": {"filename": "report.pdf", "file_data": "JVBERi0xLjQ="}}
+    ]
+  }
+]
+```
+
+The Base64 above is illustrative; use real authorized file bytes. Alternatively,
+use a UUID `file_id` from the same server/project/user scope. File parts require
+user messages and dialogue/work/auto with default mode; they go through the
+document parser. An `input_image` part retains the separate image-understanding
+route. Internal media IDs and unknown part types are rejected. The plugin does
+not automatically acquire attachments from native clients.
+
+The JSON file must be a regular file of at most 32 MiB and contain 1–100
+messages. The configured `memory.cli.max_memory_chars` still limits text and
+captions; encoded attachment bytes do not count as text. Server format and
+decoded attachment limits apply independently. This CLI cap is not ParseX's
+file-size limit. Attachments are omitted from provider request observability;
+accepted Add means submitted for processing, not completed indexing.
 
 ### Disabling memory writes
 
@@ -987,11 +1067,12 @@ from previously uploaded data.
 
 ### Automatic writeback redaction
 
-Automatic writeback first bounds each user or assistant message with
-`max_message_chars`, discarding an incomplete token at the cutoff, and then
-runs a local best-effort detector before hashing, buffering, chunking, or
-sending the content. The detector replaces these categories with typed
-placeholders:
+For auto, work, and dialogue, the local detector can look beyond the cutoff to
+recognize a secret crossing it. The outgoing prefix stays within the message limit after
+redaction, and a replacement that does not fit is omitted in full. Code
+clips at its configured limit and discards an incomplete token at the cutoff.
+Hashing, buffering, chunking, and dispatch use the redacted text. The detector
+replaces these categories with typed placeholders:
 
 | Category | Placeholder |
 | --- | --- |

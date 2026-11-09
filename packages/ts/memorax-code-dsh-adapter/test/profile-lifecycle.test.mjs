@@ -1341,12 +1341,18 @@ test("uses the DSH runtime already linked by Profiles and refreshes it on reconc
     "backend-command.mjs",
   )), true);
   assert.deepEqual(packedFiles, ["package.json", ...adapterManifest.files].sort());
+  const workMemoryReference = "skills/memorax-code/references/work-memory.md";
+  assert.ok(packedFiles.includes(workMemoryReference));
   const installedRoot = join(
     profilesRoot,
     "headless",
     "node_modules",
     "@memorax-code",
     "dsh-memorax-code",
+  );
+  assert.deepEqual(
+    readFileSync(join(installedRoot, workMemoryReference)),
+    readFileSync(join(adapterRoot, "..", "memorax-code-codex-adapter", workMemoryReference)),
   );
   const installed = await import(pathToFileURL(join(installedRoot, "src", "index.mjs")).href);
   assert.equal(installed.name, "memorax-code");
