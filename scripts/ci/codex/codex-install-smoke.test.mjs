@@ -684,6 +684,20 @@ const busyRecord = (code) => ({ status: "failed", attempt: 1, elapsedMs: 0, erro
 const remainingEntries = { exists: true, directory: true, total: 2, names: ["log", "log/codex-tui.log"] };
 const wmi = holderRow(300, "WmiPrvSE.exe", 4_000, 4, "C:\\Windows\\System32\\wbem\\WmiPrvSE.exe");
 const wmiRecord = { name: "WmiPrvSE.exe", pid: 300, parentPid: 4, createdAt: new Date(4_000).toISOString(), inRoot: false, inNpmPrefix: false };
+// Processes alive in recorded sightings, none naming the isolated root or the npm prefix, in the order a query keeps them.
+const unrelated = [
+  holderRow(310, "TrustedInstaller.exe", 3_000, 4, "C:\\Windows\\servicing\\TrustedInstaller.exe"),
+  holderRow(311, "TiWorker.exe", 3_100, 4, "C:\\Windows\\WinSxS\\amd64_tiworker\\TiWorker.exe"),
+  holderRow(312, "MoUsoCoreWorker.exe", 3_200, 4, "C:\\Windows\\System32\\MoUsoCoreWorker.exe"),
+  wmi,
+  holderRow(320, "git.exe", 5_000, 20, "C:\\Program Files\\Git\\cmd\\git.exe", "git fetch origin"),
+  holderRow(321, "conhost.exe", 5_001, 320, "C:\\Windows\\System32\\conhost.exe"),
+  holderRow(322, "git-remote-https.exe", 5_002, 320, "C:\\Program Files\\Git\\mingw64\\libexec\\git-core\\git-remote-https.exe",
+    "git-remote-https origin https://example.com/repo.git"),
+];
+const unrelatedRecord = ({ ProcessId, Name, CreationDate, ParentProcessId }) => ({ name: Name, pid: ProcessId, parentPid: ParentProcessId,
+  createdAt: new Date(CreationDate).toISOString(), inRoot: false, inNpmPrefix: false });
+const unrelatedNames = "MoUsoCoreWorker.exe, TiWorker.exe, TrustedInstaller.exe, WmiPrvSE.exe, conhost.exe, git-remote-https.exe, git.exe";
 // Neither a path nor any part of a command line may reach the report, the journal or the job log.
 function assertHolderPrivate(fx) {
   const text = JSON.stringify([fx.context.report, fx.observations, fx.warnings]);
@@ -736,7 +750,8 @@ test("a busy Windows removal records what remains, the processes alive, when rem
     assert.deepEqual(fx.observations, [{ status: "started", attempt: 1 }, busyRecord("EBUSY"), fx.record()], label);
     assert.deepEqual(fx.warnings, [`::warning title=Codex cleanup::Directory removal failed with EBUSY; removal ${warning}, and the cleanup `
       + "still fails. Processes created since the smoke started and alive after the failure: "
-      + "WmiPrvSE.exe, codex.exe, node.exe, unrecognized."], label);
+      + "WmiPrvSE.exe, codex.exe, node.exe, unrecognized. "
+      + "Processes naming the isolated root or the npm prefix: codex.exe, node.exe, unrecognized."], label);
     // Each query stops on its first error, keeps progress records off stderr, runs outside the isolated tree and ends with its budget.
     assert.deepEqual(fx.queries.map(({ file, args, options, at }) => [file, args.slice(0, 3), args[3].split("; ").slice(0, 2), options, at]),
       [0, end, end].map((at) => [["C:", "Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe"],
@@ -777,10 +792,11 @@ test("a failed, silent-error or unfinished query records only why it has no valu
   }
 });
 
-test("a busy Windows removal passes on a retry that removed it when neither process query found a live process", { timeout: 10_000 }, async (t) => {
+test("a busy Windows removal passes on a retry that removed it when neither process query found a live process naming the isolated root or the npm prefix", { timeout: 10_000 }, async (t) => {
   const removedAt1 = [{ second: 1, afterMs: 1_000, removed: true }];
-  // Defender's status is recorded but never a condition: an answer that is not a boolean, or none, passes the same way.
-  for (const [label, code, probes, probeRecords, defender, defenderRecord] of [
+  // Defender's status is recorded but never a condition: an answer that is not a boolean, or none, passes the same way. Live
+  // processes naming neither path are not a condition either: both queries record them and the warning names them.
+  for (const [label, code, probes, probeRecords, defender, defenderRecord, [firstRows, laterRows] = [[], []], names = "none"] of [
     ["EBUSY, removable at 1 s", "EBUSY", [], removedAt1, defenderAnswer(true), { realTimeProtectionEnabled: true }],
     ["EPERM, removable at 4 s", "EPERM", ["EPERM", "EBUSY"], [{ second: 1, afterMs: 1_000, code: "EPERM" },
       { second: 2, afterMs: 2_000, code: "EBUSY" }, { second: 4, afterMs: 4_000, removed: true }], defenderAnswer(false),
@@ -788,23 +804,29 @@ test("a busy Windows removal passes on a retry that removed it when neither proc
     ["ENOTEMPTY, Defender status not a boolean", "ENOTEMPTY", [], removedAt1, { stdout: '{"realTimeProtectionEnabled":"True"}', stderr: "" },
       { status: "observation_failed" }],
     ["EBUSY, Defender status never returns", "EBUSY", [], removedAt1, never, { status: "timed_out" }],
+    ["EBUSY, removable at 2 s while only processes naming neither path are alive", "EBUSY", ["EBUSY"],
+      [{ second: 1, afterMs: 1_000, code: "EBUSY" }, { second: 2, afterMs: 2_000, removed: true }], defenderAnswer(true),
+      { realTimeProtectionEnabled: true }, [unrelated, unrelated.slice(0, 2)], unrelatedNames],
   ]) {
-    const fx = await holderFixture(t, { code, probes, answers: [holderAnswer(700), holderAnswer(701), defender],
+    const fx = await holderFixture(t, { code, probes, answers: [holderAnswer(700, ...firstRows), holderAnswer(701, ...laterRows), defender],
       budgets: { total: 60_000, entries: 2_000, processes: 2_000, defender: 50 } });
     assert.equal(await fx.context.removeIsolatedDirectory(), undefined, label);
     assert.deepEqual(fx.calls, Array(probeRecords.length + 1).fill([fx.root, { recursive: true, force: true }]), label);
     const { second, afterMs } = probeRecords.at(-1);
     // The first failure stays on record next to the retry that removed the directory.
     const record = { ...busyRecord(code), status: "removed_on_retry", retry: { second, afterMs }, holders: { entries: remainingEntries,
-      processes: { afterMs: [0, 0], total: 0, processes: [] }, probes: probeRecords,
-      processesAfterProbes: { afterMs: [afterMs, afterMs], total: 0, processes: [] }, defender: defenderRecord } };
+      processes: { afterMs: [0, 0], total: firstRows.length, processes: firstRows.map(unrelatedRecord) }, probes: probeRecords,
+      processesAfterProbes: { afterMs: [afterMs, afterMs], total: laterRows.length, processes: laterRows.map(unrelatedRecord) },
+      defender: defenderRecord } };
     assert.deepEqual(fx.record(), record, label);
     assert.deepEqual(fx.observations, [{ status: "started", attempt: 1 }, busyRecord(code), record], label);
     assert.deepEqual(fx.warnings, [`::warning title=Codex cleanup::Directory removal failed with ${code} and succeeded on a retry `
       + `${(afterMs / 1_000).toFixed(1)} s after the failure, so the cleanup passes. Neither process query found a live process `
-      + "created since the smoke started."], label);
+      + "created since the smoke started that names the isolated root or the npm prefix. Processes created since the smoke "
+      + `started and alive after the failure: ${names}.`], label);
     assert.deepEqual(plain(fx.context.report.checks), [`isolated directory removed on a retry after the first removal failed with ${code}; `
-      + "neither process query found a live process created since the smoke started"], label);
+      + "both process queries completed, and neither found a live process created since the smoke started that names the "
+      + "isolated root or the npm prefix"], label);
     assertHolderPrivate(fx);
     // The evidence guard journals the whole passing record.
     const directory = await mkdtemp(join(tmpdir(), "codex-holder-evidence-"));
@@ -817,20 +839,29 @@ test("a busy Windows removal passes on a retry that removed it when neither proc
   }
 });
 
-test("a busy Windows removal keeps its first failure unless a probe removed it and both queries returned no live process", { timeout: 10_000 }, async (t) => {
-  const none = (at) => ({ afterMs: [at, at], total: 0, processes: [] }), wmiAt = (at) => ({ afterMs: [at, at], total: 1, processes: [wmiRecord] });
+test("a busy Windows removal keeps its first failure unless a probe removed it and both queries completed without a process naming either path", { timeout: 10_000 }, async (t) => {
+  const none = (at) => ({ afterMs: [at, at], total: 0, processes: [] });
   const removedAt1 = [{ second: 1, afterMs: 1_000, removed: true }], defender = { realTimeProtectionEnabled: true };
-  for (const [label, options, processes, probes, processesAfterProbes] of [
-    ["the first query finds a live process", { answers: [holderAnswer(700, wmi), holderAnswer(701), defenderAnswer(true)] },
-      wmiAt(0), removedAt1, none(1_000)],
-    ["the query after the probes finds a live process", { answers: [holderAnswer(700), holderAnswer(701, wmi), defenderAnswer(true)] },
-      none(0), removedAt1, wmiAt(1_000)],
+  // codex.exe runs from the npm prefix and node.exe names the isolated root in its long form; each is listed first.
+  const codex = holderRow(201, "codex.exe", 2_000, 100, "/long/npm/node_modules/@openai/codex/vendor/codex.exe");
+  const codexRecord = { name: "codex.exe", pid: 201, parentPid: 100, createdAt: new Date(2_000).toISOString(), inRoot: false, inNpmPrefix: true };
+  const node = holderRow(202, "node.exe", 6_000, 100, "C:\\node.exe", "node.exe \\long\\root\\workspace\\task.mjs");
+  const nodeRecord = { name: "node.exe", pid: 202, parentPid: 100, createdAt: new Date(6_000).toISOString(), inRoot: true, inNpmPrefix: false };
+  const unrelatedAt = (at) => ({ afterMs: [at, at], total: unrelated.length, processes: unrelated.map(unrelatedRecord) });
+  for (const [label, options, processes, probes, processesAfterProbes, named] of [
+    ["the first query finds a live process naming the npm prefix among others", { answers: [holderAnswer(700, ...unrelated, codex),
+      holderAnswer(701, wmi), defenderAnswer(true)] }, { afterMs: [0, 0], total: 8, processes: [codexRecord, ...unrelated.map(unrelatedRecord)] },
+      removedAt1, { afterMs: [1_000, 1_000], total: 1, processes: [wmiRecord] }, "codex.exe"],
+    ["the query after the probes finds a live process naming the isolated root", { answers: [holderAnswer(700, wmi),
+      holderAnswer(701, wmi, node), defenderAnswer(true)] }, { afterMs: [0, 0], total: 1, processes: [wmiRecord] }, removedAt1,
+      { afterMs: [1_000, 1_000], total: 2, processes: [nodeRecord, wmiRecord] }, "node.exe"],
     ["the first query writes to stderr", { answers: [{ ...holderAnswer(700), stderr: "Get-CimInstance : " + privateText }, holderAnswer(701),
       defenderAnswer(true)] }, { status: "observation_failed" }, removedAt1, none(1_000)],
     ["the query after the probes never returns", { answers: [holderAnswer(700), never, defenderAnswer(true)],
       budgets: { total: 60_000, entries: 2_000, processes: 50, defender: 2_000 } }, none(0), removedAt1, { status: "timed_out" }],
-    ["every probe stays busy", { probes: Array(5).fill("EBUSY"), answers: [holderAnswer(700), holderAnswer(701), defenderAnswer(true)] },
-      none(0), [1, 2, 4, 8, 15].map((second) => ({ second, afterMs: second * 1_000, code: "EBUSY" })), none(15_000)],
+    ["every probe stays busy while only processes naming neither path are alive", { probes: Array(5).fill("EBUSY"),
+      answers: [holderAnswer(700, ...unrelated), holderAnswer(701, ...unrelated), defenderAnswer(true)] }, unrelatedAt(0),
+      [1, 2, 4, 8, 15].map((second) => ({ second, afterMs: second * 1_000, code: "EBUSY" })), unrelatedAt(15_000)],
   ]) {
     const fx = await holderFixture(t, options);
     await assert.rejects(fx.context.removeIsolatedDirectory(), (actual) => actual === fx.failure, label);
@@ -838,6 +869,8 @@ test("a busy Windows removal keeps its first failure unless a probe removed it a
       defender } }, label);
     assert.deepEqual([plain(fx.context.report.checks), fx.warnings.length], [[], 1], label);
     assert.match(fx.warnings[0], /, and the cleanup still fails\. /, label);
+    // Only a listed process naming either path is named as one.
+    assert.equal(fx.warnings[0].split(" Processes naming the isolated root or the npm prefix: ")[1], named && `${named}.`, label);
     assertHolderPrivate(fx);
   }
   // The first query takes what remains of the total budget after the probe removed the directory, so the second never starts.
