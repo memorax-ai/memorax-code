@@ -289,7 +289,7 @@ function automaticMemoryWritebackDecision(
   if (!rawUserText) return { write: false, skipReason: "user_prompt_empty" };
   if (!rawAssistantText) return { write: false, skipReason: "assistant_text_empty" };
   const prepareMessage = (text: string, role: WritebackMessage["role"]): string => {
-    if (contentType === "auto" || contentType === "work") {
+    if (contentType !== "code") {
       const limit = Math.min(maxMessageChars, MEMORAX_DIALOGUE_MAX_MESSAGE_CHARS);
       const result = redactBoundedMemoryPayloadText(text, limit);
       logAutomaticMemoryPayloadRedaction(state, sessionKey, role, text, result);

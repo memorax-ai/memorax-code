@@ -111,6 +111,30 @@ test("document evidence uses bounded escaped output with explicit truncation and
   assert.deepEqual(result.result.tool_result_payload.items, [item]);
 });
 
+test("document Search uses the full default budget for evidence and reports omissions outside it", async () => {
+  const first = { id: "a", content_type: "document", memory: "First & best" };
+  const firstBlock = '<memories>\n<chunk chunk_id="a">\nFirst &amp; best\n</chunk>\n';
+  const leading = `${firstBlock}<chunk chunk_id="b">\n&lt;plan&gt;`;
+  const chunkEnd = "\n</chunk>\n";
+  const closing = "</memories>";
+  const padding = "x".repeat(4000 - leading.length - chunkEnd.length - closing.length);
+  const selected = leading + padding + chunkEnd;
+  const second = { id: "b", content_type: "document", memory: "<plan>" + padding };
+  const { result: exact } = await invoke("query", { sources: ["document"] }, [first, second]);
+  const full = exact.result.tool_result_payload;
+  assert.equal(full.answer, selected + closing);
+  assert.equal(full.contextBlocks[0].itemCount, 2);
+  assert.deepEqual(full.items, [first, second]);
+
+  const items = [first, second, { id: "c", content_type: "document", memory: "Extra" }];
+  const { result: over } = await invoke("query", { sources: ["document"] }, items);
+  const clipped = over.result.tool_result_payload;
+  const notice = "<notice>Evidence truncated by context budget; use --json for complete returned chunks.</notice>\n";
+  assert.equal(clipped.answer, selected + notice + closing);
+  assert.equal(clipped.contextBlocks[0].itemCount, 2);
+  assert.deepEqual(clipped.items, items);
+});
+
 test("structured messages are atomic and bounded before sending to MemoraX", async () => {
   for (const messages of [
     [{ role: "user", content: "valid" }, { role: "tool", content: "unsupported" }],

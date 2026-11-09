@@ -234,9 +234,9 @@ in Add metadata distinguishes them; it contains no transcript paths or trace
 identifiers. See [timestamp semantics](docs/configuration.md#automatic-writeback-timestamps).
 
 Automatic writeback bounds and redacts each selected message before hashing,
-buffering, chunking, observability, or network dispatch. For auto/work the
-local detector may inspect text beyond the cutoff to identify a sensitive
-value that crosses it. Only the redacted prefix is eligible for Add.
+buffering, chunking, observability, or network dispatch. For auto, work, and
+dialogue, the local detector may inspect text beyond the cutoff to identify a
+sensitive value that crosses it. Only the redacted prefix is eligible for Add.
 Recognized private keys, authorization tokens, cookies, API keys, structured
 credentials, email addresses, long
 numbers, UUIDs, fixed-length hexadecimal strings, and high-entropy opaque

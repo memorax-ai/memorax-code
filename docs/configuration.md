@@ -885,9 +885,10 @@ The current document service chooses its internal candidate budget separately.
 The remote service owns embedding, hybrid retrieval, RRF, and reranking. The
 plugin keeps its order and returns complete evidence in JSON `items`, including
 document/chunk IDs and score details. Text output preserves Markdown and whole
-document chunks under `max_context_chars`; `max_item_chars` remains a fact
-rendering limit, not a document slicing rule. An explicit notice marks omitted
-evidence. JSON output preserves all returned items even if text rendering omits
+document chunks. The `max_context_chars` budget includes the escaped evidence
+and its XML tags. When a whole chunk cannot fit, the plugin appends one
+truncation notice outside that budget. `max_item_chars` applies to facts.
+JSON output preserves all returned items even if text rendering omits
 some. The client agent uses this result as reference material and generates
 the answer; no second answer model is invoked by the plugin.
 
@@ -911,7 +912,7 @@ belong in the `[memory.writeback]` TOML table.
 | `buffer_max_turns` | `MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_TURNS` | `8`; `-1` disables automatic writeback |
 | `buffer_max_age_ms` | `MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_AGE_MS` | `600000` |
 | `buffer_max_chars` | `MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_CHARS` | `128000` |
-| `max_message_chars` | `MEMORAX_CODE_MEMORY_WRITEBACK_MAX_MESSAGE_CHARS` | `64000`; effective maximum `12000` for auto/work |
+| `max_message_chars` | `MEMORAX_CODE_MEMORY_WRITEBACK_MAX_MESSAGE_CHARS` | `64000` (effective maximum `12000` for auto, work, and dialogue) |
 | `chunk_enabled` | `MEMORAX_CODE_MEMORY_WRITEBACK_CHUNK_ENABLED` | `true` |
 | `chunk_max_chars` | `MEMORAX_CODE_MEMORY_WRITEBACK_CHUNK_MAX_CHARS` | `8000` |
 | `chunk_overlap_ratio` | `MEMORAX_CODE_MEMORY_WRITEBACK_CHUNK_OVERLAP_RATIO` | `0.05`; range `0 <= x < 1` |
@@ -944,11 +945,11 @@ the configured `memory.add.content_type` or its environment override. The route
 is frozen when a completed turn is accepted; different routes never share a
 buffer or deduplication key.
 
-Auto buffers user/assistant pairs, by default up to eight turns. Its batches
-stay within 128000 text characters and 100 messages. Explicit work sends each
-completed turn immediately. For both routes the plugin keeps the beginning of
-each message, up to the smaller of `max_message_chars` and 12000 Unicode code
-points. A long reply can therefore be saved alongside the user's full question.
+Auto and dialogue buffer user/assistant pairs, by default up to eight turns.
+Auto batches stay within 128000 text characters and 100 messages. Explicit work sends each
+completed turn immediately. For auto, work, and dialogue, the plugin keeps the
+beginning of each message, up to the smaller of `max_message_chars` and 12000
+Unicode code points. A long reply can therefore be saved alongside the user's full question.
 The 12000 ceiling matches the server's default `MEMORY.INPUT_MAX_LENGTH`. Set
 `max_message_chars` lower if your server uses a lower limit. Only explicit code
 uses code chunks and their existing retry behavior. Automatic writeback always
@@ -1066,10 +1067,10 @@ from previously uploaded data.
 
 ### Automatic writeback redaction
 
-For auto/work, the local detector can look beyond the cutoff to recognize a
-secret crossing it. The outgoing prefix stays within the message limit after
-redaction, and a replacement that does not fit is omitted in full. Code/dialogue
-clip at their configured limit and discard an incomplete token at the cutoff.
+For auto, work, and dialogue, the local detector can look beyond the cutoff to
+recognize a secret crossing it. The outgoing prefix stays within the message limit after
+redaction, and a replacement that does not fit is omitted in full. Code
+clips at its configured limit and discards an incomplete token at the cutoff.
 Hashing, buffering, chunking, and dispatch use the redacted text. The detector
 replaces these categories with typed placeholders:
 

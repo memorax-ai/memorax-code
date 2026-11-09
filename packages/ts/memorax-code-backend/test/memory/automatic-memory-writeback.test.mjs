@@ -1085,7 +1085,7 @@ test("buffered auto, code, and dialogue keep identical turns in separate batches
   } finally { runtime.close(); }
 });
 
-for (const route of ["auto", "work"]) {
+for (const route of ["auto", "work", "dialogue"]) {
   test(`${route} clips each message to the smaller limit in Unicode code points and redacts safely`, async (t) => {
     const requests = [];
     const runtime = createAutomaticMemoryWritebackRuntime();
@@ -1117,6 +1117,7 @@ for (const route of ["auto", "work"]) {
     assert.deepEqual(enqueue(key, "Done", 16), { accepted: false, reason: "user_prompt_empty" });
     assert.deepEqual(enqueue("Keep", "a@b.co", 32), { accepted: false, reason: "assistant_text_empty" });
     await runtime.drain();
+    for (const { body } of requests) assert.equal(body.content_type, route);
     assert.deepEqual(requests.flatMap(({ body }) => body.messages.map(({ content }) => content)), [
       ascii, supplementary, "Full prompt", supplementary, localPrefix, "Done", "Keep plan.", "Use",
       "Keep [REDACTED:API_KEY]", "Done",

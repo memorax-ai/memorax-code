@@ -644,9 +644,8 @@ function renderDocumentContext(items: unknown[], config: MemoraxAdapterConfig): 
     } else {
       rendered = `${formatMemoryItemLine(item, config.maxItemChars)}\n`;
     }
-    // Reserve the complete notice and closing tag; never cut source evidence or
-    // escaped markup halfway through a table, code block, or XML entity.
-    if (length + rendered.length + notice.length > config.maxContextChars) {
+    // The notice is added outside the evidence budget when a whole fragment cannot fit.
+    if (length + rendered.length > config.maxContextChars) {
       omitted = true;
       break;
     }
