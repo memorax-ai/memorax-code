@@ -1,3 +1,4 @@
+import { projectNativeCommandFailure } from "../shared/ci-evidence-projections.mjs";
 import { execFile, spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -33,7 +34,7 @@ export async function createNativeHarness({ packageRoot, codexCommand, label = "
   const memoryEntrypoint = join(packageRoot, "bin", "memorax-cli.mjs");
   const modelRequests = [], memoryRequests = [], serverErrors = [];
   const children = new Set(), backendPids = new Set();
-  let modelHandler, codexVersion, setupStarted = false, closed = false;
+  let modelHandler, codexVersion, commandFailure, setupStarted = false, closePromise;
   let memoryServer, modelServer, backendPort, env;
   try {
     await Promise.all([workspace, stateHome, codexHome, join(root, "tmp")].map((path) => mkdir(path, { recursive: true })));
@@ -94,11 +95,14 @@ export async function createNativeHarness({ packageRoot, codexCommand, label = "
 
   function track(child) { children.add(child); child.once("exit", () => children.delete(child)); return child; }
   function spawnCodex(args, options = {}) {
+    check(!closePromise, "NATIVE_HARNESS_IS_CLOSING");
     const invocation = resolveWindowsCliInvocation(codexCommand, args, { env });
     return track(spawn(invocation.command, invocation.args, { cwd: options.cwd ?? workspace, env,
       stdio: ["pipe", "pipe", "pipe"], windowsHide: true, detached: process.platform !== "win32" }));
   }
   async function run(command, args, options = {}) {
+    check(!closePromise || options.cleanup === true, "NATIVE_HARNESS_IS_CLOSING");
+    if (!options.cleanup) commandFailure = undefined;
     const invocation = resolveWindowsCliInvocation(command, args, { env });
     const pending = execFileAsync(invocation.command, invocation.args, {
       cwd: options.cwd ?? workspace, env, encoding: "utf8", maxBuffer: 8 * 1024 * 1024,
@@ -110,7 +114,12 @@ export async function createNativeHarness({ packageRoot, codexCommand, label = "
     let timedOut = false, stopping;
     const timer = setTimeout(() => { timedOut = true; stopping = stopTree(pending.child, env); }, options.timeout ?? 90_000);
     try { const result = await pending; check(!timedOut, "NATIVE_COMMAND_TIMEOUT"); return result; }
-    catch (error) { stopping ??= stopTree(pending.child, env); check(!timedOut, "NATIVE_COMMAND_TIMEOUT"); throw error; }
+    catch (error) {
+      stopping ??= stopTree(pending.child, env);
+      if (!options.cleanup || !commandFailure) commandFailure = projectNativeCommandFailure(error);
+      check(!timedOut, "NATIVE_COMMAND_TIMEOUT");
+      throw error;
+    }
     finally { clearTimeout(timer); if (stopping) await stopping; }
   }
   const runProduct = (args, options) => run(process.execPath, [productEntrypoint, ...args], options);
@@ -129,9 +138,8 @@ export async function createNativeHarness({ packageRoot, codexCommand, label = "
     backendPids.add(pid);
     return status;
   }
-  async function close() {
-    if (closed) return;
-    closed = true;
+  function close({ preserveState = false } = {}) { return closePromise ??= closeResources(preserveState); }
+  async function closeResources(preserveState) {
     let cleanupError;
     let cleanupStage = "CHILD_PROCESSES";
     const describeCleanup = (error) => {
@@ -142,12 +150,14 @@ export async function createNativeHarness({ packageRoot, codexCommand, label = "
     };
     try {
       await Promise.all([...children].map((child) => stopTree(child, env)));
-      if (setupStarted) {
-        const pidPath = join(stateHome, "runtime", "backend", "backend.pid.json");
-        const current = await readFile(pidPath, "utf8").then(JSON.parse).catch(() => undefined);
-        if (Number.isInteger(current?.pid) && current.pid > 0) backendPids.add(current.pid);
+      const pidPath = join(stateHome, "runtime", "backend", "backend.pid.json");
+      const current = await readFile(pidPath, "utf8").then(JSON.parse).catch((error) => {
+        if (error.code === "ENOENT") return undefined; throw error;
+      });
+      if (Number.isInteger(current?.pid) && current.pid > 0) backendPids.add(current.pid);
+      if (setupStarted || backendPids.size) {
         cleanupStage = "BACKEND_STOP";
-        const stopped = JSON.parse((await runProduct(["stop", "--clients", "codex", "--json"])).stdout);
+        const stopped = JSON.parse((await runProduct(["stop", "--clients", "codex", "--json"], { cleanup: true })).stdout);
         check(stopped.ok === true, "NATIVE_BACKEND_STOP_FAILED");
         for (const pid of backendPids) check(!isAlive(pid), "NATIVE_BACKEND_PROCESS_REMAINS");
         check(await stat(pidPath).then(() => false, (error) => error.code === "ENOENT"), "NATIVE_BACKEND_RECORD_REMAINS");
@@ -166,13 +176,14 @@ export async function createNativeHarness({ packageRoot, codexCommand, label = "
         cleanupStage = "TEMPORARY_STATE";
         // Filesystem handles can finish closing after the observed processes exit.
         // A bounded retry must still remove the entire owned directory to pass.
-        await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+        if (!cleanupError && !preserveState) await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
       } catch (error) { cleanupError ??= describeCleanup(error); }
     }
     if (cleanupError) throw cleanupError;
   }
   return { root, home, workspace, stateHome, codexHome, env, packageRoot, codexCommand,
     get codexVersion() { return codexVersion; },
+    get commandFailure() { return commandFailure && { ...commandFailure }; },
     memoryEntrypoint, modelUrl: modelServer.url, memoryUrl: memoryServer.url,
     modelRequests, memoryRequests, serverErrors, setup, close, spawnCodex, runProduct,
     runCodex: (args, options) => run(codexCommand, args, options),

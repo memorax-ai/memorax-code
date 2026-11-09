@@ -45,6 +45,30 @@ export function projectError(error) {
   });
 }
 
+// Command output remains private. Only bounded counts and fixed native error observations escape.
+export function projectNativeCommandFailure(error, { stdout = error?.stdout, stderr = error?.stderr } = {}) {
+  const text = (value) => typeof value === "string" ? value : Buffer.isBuffer(value) ? value.toString("utf8") : undefined;
+  const out = text(stdout), err = text(stderr), sample = out?.slice(-64 * 1024);
+  let nativeErrorObserved = false, streamIdleTimeoutObserved = false;
+  for (const line of sample?.split(/\r?\n/) ?? []) {
+    let event;
+    try { event = JSON.parse(line); } catch { continue; }
+    if (!["error", "turn.failed"].includes(event?.type) && event?.item?.type !== "error") continue;
+    nativeErrorObserved = true;
+    const message = event.message ?? event.error?.message ?? event.item?.message;
+    if (typeof message === "string" && /stream[^\n]*(?:idle|inactivity)[^\n]*tim(?:e|ed)[^\n]*out/i.test(message)) {
+      streamIdleTimeoutObserved = true;
+    }
+  }
+  return {
+    ...projectError(error),
+    stdoutBytes: out === undefined ? null : Buffer.byteLength(out),
+    stderrBytes: err === undefined ? null : Buffer.byteLength(err),
+    stdoutSampleTruncated: out === undefined ? null : out.length > 64 * 1024,
+    nativeErrorObserved, streamIdleTimeoutObserved,
+  };
+}
+
 // Returns "<label>/relative/segments" for a path inside one of the named test roots.
 export function projectPathAlias(path, roots) {
   if (typeof path !== "string" || !isAbsolute(path)) return undefined;

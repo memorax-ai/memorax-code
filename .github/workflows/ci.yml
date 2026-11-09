@@ -58,6 +58,8 @@ jobs:
         run: node --test scripts/ci/shared/client-acceptance-refresh.test.mjs
       - name: Verify the native auto recheck decision
         run: node --test scripts/ci/shared/native-auto-recheck.test.mjs
+      - name: Verify native failure evidence and state cleanup
+        run: node --test scripts/ci/shared/native-failure-state.test.mjs scripts/ci/shared/ci-evidence.test.mjs scripts/ci/claude/claude-native-support.test.mjs
       - name: Run the existing regression suite
         shell: bash
         run: |

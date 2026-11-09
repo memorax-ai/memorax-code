@@ -11,7 +11,7 @@ import {
   readLedger, recordInputs, recordManifest, renderSummary, summarizeEvidence,
 } from "./ci-evidence.mjs";
 import {
-  inventoryRepoMemoryJobs, projectError, projectPathAlias, projectProcessRoles, projectProductDiagnostics, projectRepoMemoryJobs,
+  inventoryRepoMemoryJobs, projectNativeCommandFailure, projectError, projectPathAlias, projectProcessRoles, projectProductDiagnostics, projectRepoMemoryJobs,
   projectTraceEvents,
 } from "./ci-evidence-projections.mjs";
 
@@ -725,3 +725,36 @@ for (const [client, suite] of [["codex", "codex-install-interruption-check"], ["
     assert.ok(recorded.signature.endsWith("|recovery|PRIMARY_FAILURE"));
   });
 }
+
+test("native command failures expose bounded observations without copying private output", () => {
+  const stdout = JSON.stringify({ type: "error", message: "stream disconnected before completion: stream idle timeout " + secret }) + "\n";
+  const stderr = "/private/fixture " + secret + " 中文";
+  const result = projectNativeCommandFailure({ code: 17, signal: "SIGTERM", message: secret, stdout, stderr });
+  assert.equal(result.code, 17);
+  assert.equal(result.signal, "SIGTERM");
+  assert.equal(result.stdoutBytes, Buffer.byteLength(stdout));
+  assert.equal(result.stderrBytes, Buffer.byteLength(stderr));
+  assert.equal(result.nativeErrorObserved, true);
+  assert.equal(result.streamIdleTimeoutObserved, true);
+  assert.equal(JSON.stringify(result).includes(secret), false);
+  assert.equal(JSON.stringify(result).includes("/private/fixture"), false);
+  assert.equal(Object.hasOwn(result, "stdout"), false);
+  assert.equal(Object.hasOwn(result, "stderr"), false);
+});
+
+test("native failure observations distinguish unavailable output, bounded samples and ordinary content", () => {
+  const absent = projectNativeCommandFailure({ message: secret });
+  assert.equal(absent.stdoutBytes, null);
+  assert.equal(absent.stderrBytes, null);
+  assert.equal(absent.stdoutSampleTruncated, null);
+  const ordinary = projectNativeCommandFailure({}, { stdout: JSON.stringify({ type: "item.completed", item: {
+    type: "agent_message", text: "stream idle timeout " + secret } }), stderr: "" });
+  assert.equal(ordinary.nativeErrorObserved, false);
+  assert.equal(ordinary.streamIdleTimeoutObserved, false);
+  const truncated = projectNativeCommandFailure({}, { stdout: "x".repeat(70_000) + "\n" + JSON.stringify({
+    type: "turn.failed", error: { message: "stream inactivity timed out" } }), stderr: Buffer.from("中文") });
+  assert.equal(truncated.stdoutSampleTruncated, true);
+  assert.equal(truncated.nativeErrorObserved, true);
+  assert.equal(truncated.streamIdleTimeoutObserved, true);
+  assert.equal(truncated.stderrBytes, 6);
+});

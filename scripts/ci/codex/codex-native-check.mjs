@@ -187,9 +187,15 @@ try {
     report.observedModelRequests = harness.modelRequests.length;
     report.observedMemoryRequests = harness.memoryRequests.length;
     report.receiverErrors = harness.serverErrors;
+    if (harness.commandFailure) report.commandFailure = harness.commandFailure;
   }
 } finally {
-  try { await harness?.close(); report.cleanup = "PASS"; }
+  try {
+    const preserveState = report.status !== "PASS";
+    await harness?.close({ preserveState });
+    report.cleanup = "PASS";
+    if (harness && preserveState) report.privateStateRetained = true;
+  }
   catch (error) { report.status = "FAIL"; report.cleanup = error.nativeCode ?? "NATIVE_CLEANUP_FAILED"; }
 }
 console.log(JSON.stringify(report, null, 2));

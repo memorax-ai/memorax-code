@@ -1,3 +1,4 @@
+import { projectNativeCommandFailure } from "../shared/ci-evidence-projections.mjs";
 import { execFile, spawn } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
@@ -31,6 +32,7 @@ export async function createNativeHarness({ packageRoot, claudeCommand, label = 
   const memoryEntrypoint = join(packageRoot, "bin", "memorax-cli.mjs");
   const modelRequests = [], memoryRequests = [], serverErrors = [];
   const children = new Set(), backendPids = new Set();
+  let commandFailure;
   let modelHandler, nativeVersion, beforeClose, setupStarted = false, closePromise, modelPreflightRequests = 0;
   let memoryServer, modelServer, backendPort, env;
   try {
@@ -96,13 +98,15 @@ export async function createNativeHarness({ packageRoot, claudeCommand, label = 
   function track(child) { children.add(child); return child; }
   async function run(command, args, options = {}) {
     check(!closePromise || options.cleanup === true, "NATIVE_HARNESS_IS_CLOSING");
+    if (!options.cleanup) commandFailure = undefined;
     const childEnv = { ...env, ...options.env };
     const invocation = resolveWindowsCliInvocation(command, args, { env: childEnv });
     const child = track(spawn(invocation.command, invocation.args, { cwd: options.cwd ?? workspace,
       env: childEnv, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, detached: process.platform !== "win32" }));
     let timer, stopping;
+    const output = { stdout: "", stderr: "" };
     const pending = new Promise((done, reject) => {
-      const output = { stdout: "", stderr: "" }, sizes = { stdout: 0, stderr: 0 };
+      const sizes = { stdout: 0, stderr: 0 };
       for (const name of ["stdout", "stderr"]) {
         child[name].setEncoding("utf8");
         child[name].on("data", (text) => {
@@ -126,6 +130,7 @@ export async function createNativeHarness({ packageRoot, claudeCommand, label = 
     catch (error) {
       stopping = stopTree(child, childEnv);
       error.nativeCode ??= "NATIVE_COMMAND_FAILED";
+      if (!options.cleanup || !commandFailure) commandFailure = projectNativeCommandFailure(error, output);
       throw error;
     } finally { clearTimeout(timer); if (stopping) await stopping; }
   }
@@ -162,8 +167,8 @@ export async function createNativeHarness({ packageRoot, claudeCommand, label = 
     return track(spawn(invocation.command, invocation.args, { cwd: options.cwd ?? workspace, env,
       stdio: ["pipe", "pipe", "pipe"], windowsHide: true, detached: process.platform !== "win32" }));
   }
-  function close() { return closePromise ??= closeResources(); }
-  async function closeResources() {
+  function close({ preserveState = false } = {}) { return closePromise ??= closeResources(preserveState); }
+  async function closeResources(preserveState) {
     let cleanupError;
     try { await beforeClose?.(); }
     catch (error) { cleanupError = error; }
@@ -191,7 +196,7 @@ export async function createNativeHarness({ packageRoot, claudeCommand, label = 
       try {
         await memoryServer.close();
         await modelServer.close();
-        if (!cleanupError) await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+        if (!cleanupError && !preserveState) await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
       } catch (error) { cleanupError ??= error; }
       for (const [signal, handler] of signalHandlers) process.off(signal, handler);
     }
@@ -208,7 +213,9 @@ export async function createNativeHarness({ packageRoot, claudeCommand, label = 
   const signalHandlers = new Map(["SIGINT", "SIGTERM"].map((signal) => [signal, () => onSignal(signal)]));
   for (const [signal, handler] of signalHandlers) process.on(signal, handler);
   return { root, home, workspace, stateHome, claudeHome, env, packageRoot, claudeCommand,
-    get claudeVersion() { return nativeVersion; }, memoryEntrypoint, productEntrypoint,
+    get claudeVersion() { return nativeVersion; },
+    get commandFailure() { return commandFailure && { ...commandFailure }; },
+    memoryEntrypoint, productEntrypoint,
     get modelPreflightRequests() { return modelPreflightRequests; },
     modelUrl: modelServer.url, memoryUrl: memoryServer.url, modelRequests, memoryRequests, serverErrors,
     setup, close, runProduct, runClaude, spawnClaude,

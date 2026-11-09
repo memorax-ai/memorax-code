@@ -819,6 +819,14 @@ change the functional result. The shared setup terminal helper reports disposal
 failures separately from the original setup failure; it does not signal an
 exited Unix PID again.
 
+The Codex and Claude native conversation runners retain their foreground isolated client
+state after a functional failure, while still stopping owned processes and
+releasing receiver ports. The private state remains on the runner until teardown;
+it is never part of the uploaded evidence. Successful runs still remove it.
+Command failures add bounded stdout/stderr byte counts and fixed native error
+observations to the public report, without including output text or paths.
+An observed stream-idle error is diagnostic evidence, not a root-cause verdict.
+
 Evidence holds typed allowlisted fields only: stages, error, system and exit
 codes, signals, counts, booleans, relative times, versions, checksums and
 aliases for paths inside the test root. Raw logs, command lines, configuration,
