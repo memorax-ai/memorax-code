@@ -84,6 +84,7 @@ const PROFILE_BUNDLE_FILES = Object.freeze([
   "skills/memorax-code/references/repo-read.md",
   "skills/memorax-code/references/repo-templates.md",
   "skills/memorax-code/references/repo-update.md",
+  "skills/memorax-code/references/work-memory.md",
   "skills/memorax-code/scripts/repo-memory.mjs",
   "skills/memorax-code/scripts/user-profile-memory.mjs",
   "src/index.mjs",
