@@ -282,7 +282,8 @@ async function verifyCompleted({ prompt, answer, after = 0, tool, denied }) {
     && body.user_id === `${fixtureUser}@${basename(harness.workspace)}` && body.metadata.memorax_code_base_user_id === fixtureUser
     && body.metadata.memorax_code_workspace === basename(harness.workspace)
     && body.metadata.memorax_code_memory_scope === "workspace-name.v1", "PERMISSION_MEMORY_SCOPE_MISMATCH");
-  check(body.metadata.idempotency_key === `automatic:claude-code:${hash(body.user_id)}:${current.sessionId}:${hash(body.messages[0].content)}:${hash(body.messages[1].content)}`,
+  check(body.content_type === "auto" && body.mode === "default", "PERMISSION_WRITEBACK_ROUTE_MISMATCH");
+  check(body.metadata.idempotency_key === `automatic:claude-code:${hash(body.user_id)}:${current.sessionId}:${hash(body.messages[0].content)}:${hash(body.messages[1].content)}:auto`,
     "PERMISSION_AUTOMATIC_ADD_IDENTITY_MISMATCH");
   check(body.messages[0].timestamp === selected.user.timestamp && body.messages[1].timestamp === selected.assistant.timestamp
     && JSON.stringify(body.metadata.memorax_code_timestamp_sources) === JSON.stringify(["native", "native"]),

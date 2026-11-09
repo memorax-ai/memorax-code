@@ -912,8 +912,11 @@ test("automatic routing honors dialogue configuration for coding clients and rej
 });
 
 
+function shortHash(value) {
+  return createHash("sha256").update(value).digest("hex").slice(0, 16);
+}
+
 test("automatic code writes preserve legacy deduplication keys in immediate and buffered dispatch", async () => {
-  const hash = (value) => createHash("sha256").update(value).digest("hex").slice(0, 16);
   for (const buffered of [false, true]) {
     const requests = [];
     const runtime = createAutomaticMemoryWritebackRuntime();
@@ -926,8 +929,8 @@ test("automatic code writes preserve legacy deduplication keys in immediate and 
       assert.deepEqual(runtime.enqueue(options), { accepted: true });
       await runtime.drain();
       assert.equal(requests.length, 1);
-      const prefix = `${buffered ? "automatic-buffer:v1" : "automatic"}:codex:${hash(REPOSITORY_SCOPE.effectiveUserId)}:legacy-code:`;
-      const digest = buffered ? hash("user:Fix the parser\nassistant:The parser is fixed") : `${hash(options.userText)}:${hash(options.assistantText)}`;
+      const prefix = `${buffered ? "automatic-buffer:v1" : "automatic"}:codex:${shortHash(REPOSITORY_SCOPE.effectiveUserId)}:legacy-code:`;
+      const digest = buffered ? shortHash("user:Fix the parser\nassistant:The parser is fixed") : `${shortHash(options.userText)}:${shortHash(options.assistantText)}`;
       assert.equal(requests[0].body.metadata.idempotency_key, prefix + digest);
       assert.equal(requests[0].body.content_type, "code");
       assert.equal(requests[0].body.mode, "default");
@@ -975,8 +978,9 @@ for (const client of ["codex", "workbuddy", "qoder"]) {
             { role: "assistant", content: turn.assistantText, timestamp: turn.assistantTimestamp },
           ]));
         assert.deepEqual(body.metadata.memorax_code_timestamp_sources, Array(16).fill("native"));
-        assert.match(body.metadata.idempotency_key, /^automatic-buffer:v1:/);
-        assert.match(body.metadata.idempotency_key, /:auto$/);
+        const batchText = turns.flatMap((turn) => [`user:${turn.userText}`, `assistant:${turn.assistantText}`]).join("\n");
+        assert.equal(body.metadata.idempotency_key,
+          `automatic-buffer:v1:${client}:${shortHash(REPOSITORY_SCOPE.effectiveUserId)}:auto-default-buffer:${shortHash(batchText)}:auto`);
         assert.equal(body.session_id, "auto-default-buffer");
         assert.equal(body.metadata.source, "memorax-code");
       } finally { runtime.close(); }

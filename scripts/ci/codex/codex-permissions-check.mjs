@@ -290,7 +290,9 @@ async function verifyWriteback({ threadId, turnId, completed }) {
     `Permission case ${test.id} finished.`,
   ]));
   const hash = (text) => createHash("sha256").update(text).digest("hex").slice(0, 16);
-  check(body.metadata.idempotency_key === `automatic:codex:${hash(body.user_id)}:${threadId}:${hash(body.messages[0].content)}:${hash(body.messages[1].content)}`,
+  check(body.content_type === "auto" && body.mode === "default",
+    "PERMISSION_WRITEBACK_ROUTE_MISMATCH");
+  check(body.metadata.idempotency_key === `automatic:codex:${hash(body.user_id)}:${threadId}:${hash(body.messages[0].content)}:${hash(body.messages[1].content)}:auto`,
     "PERMISSION_WRITEBACK_IDEMPOTENCY_MISMATCH");
   const native = selectNativeTurnContent(records, { sessionId: threadId, turnId });
   const userCoverage = assertCompleteText(body.messages[0].content, native.user.content, "PERMISSION_NATIVE_USER_CONTENT_INCOMPLETE");

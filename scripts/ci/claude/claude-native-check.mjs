@@ -261,7 +261,8 @@ async function turn({ prompt, answer, sessionId, cwd = harness.workspace, expect
     "NATIVE_WRITEBACK_SESSION_MISMATCH");
   check(body.user_id === `${fixtureUser}@${basename(cwd)}` && body.metadata.memorax_code_workspace === basename(cwd)
     && body.metadata.memorax_code_memory_scope === "workspace-name.v1", "NATIVE_WRITEBACK_SCOPE_MISMATCH");
-  check(body.metadata.idempotency_key === `automatic:claude-code:${hash(body.user_id)}:${output.sessionId}:${hash(body.messages[0].content)}:${hash(body.messages[1].content)}`,
+  check(body.content_type === "auto" && body.mode === "default", "NATIVE_WRITEBACK_ROUTE_MISMATCH");
+  check(body.metadata.idempotency_key === `automatic:claude-code:${hash(body.user_id)}:${output.sessionId}:${hash(body.messages[0].content)}:${hash(body.messages[1].content)}:auto`,
     "NATIVE_WRITEBACK_IDEMPOTENCY_MISMATCH");
   expectedTurns.push({ prompt, answer, expectedPrompt, sessionId: output.sessionId, assistantUuid: final[0].uuid, cwd, body, kind, tools });
   const workspace = basename(cwd);

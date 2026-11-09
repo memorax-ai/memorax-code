@@ -228,7 +228,9 @@ async function turn({ prompt, answer, sessionId, cwd = harness.workspace, expect
   check(body.user_id === `${fixtureUser}@${basename(cwd)}` && body.metadata.memorax_code_workspace === basename(cwd)
     && body.metadata.memorax_code_memory_scope === "workspace-name.v1", "NATIVE_WRITEBACK_SCOPE_MISMATCH");
   const hash = (text) => createHash("sha256").update(text).digest("hex").slice(0, 16);
-  check(body.metadata.idempotency_key === `automatic:codex:${hash(body.user_id)}:${nativeSession}:${hash(body.messages[0].content)}:${hash(body.messages[1].content)}`,
+  check(body.content_type === "auto" && body.mode === "default",
+    "NATIVE_WRITEBACK_ROUTE_MISMATCH");
+  check(body.metadata.idempotency_key === `automatic:codex:${hash(body.user_id)}:${nativeSession}:${hash(body.messages[0].content)}:${hash(body.messages[1].content)}:auto`,
     "NATIVE_WRITEBACK_IDEMPOTENCY_MISMATCH");
   expectedTurns.push({ sessionId: nativeSession, prompt, expectedPrompt, answer, cwd, body, kind });
   return nativeSession;
