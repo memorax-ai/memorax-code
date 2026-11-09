@@ -128,6 +128,9 @@ export function startBackendAutomaticUpdateScheduler(
       const nowMs = Number(now());
       if (!Number.isFinite(nowMs)) throw new TypeError("automatic update scheduler clock is invalid");
       if (completion.status !== "valid") {
+        // This wait counts as the discovery interval, so the first wake after
+        // setup completes looks for new clients.
+        nextClientDiscoveryAtMs = nowMs;
         scheduleRetry();
         return;
       }
