@@ -10,11 +10,10 @@ description: >-
   exceptions, validation rules, communication style, preferred language, or
   result presentation. Classify the request as coding memory, repository
   memory, personal procedure memory, personal profile memory, work memory, or
-  no persistent memory, then route it to the matching operation. Invoking this router does
-  not require coding-memory search. Reuse a relevant coding-memory result
-  already retrieved in this conversation; otherwise let the matching operation
-  decide on search. Prefer this router over underlying memory workflows. Ask
-  one focused question only when memory authority remains ambiguous.
+  no persistent memory. Reuse relevant coding-memory results from this
+  conversation. Let the selected operation decide whether to search. Prefer this
+  router over underlying memory workflows. Ask one focused question only if the
+  memory authority is ambiguous.
 ---
 
 # MemoraX Code

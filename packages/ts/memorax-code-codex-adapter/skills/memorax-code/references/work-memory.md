@@ -9,23 +9,24 @@ files stored in another workspace or under an unscoped user ID.
 
 ## Search
 
-For details from indexed files, request document chunks:
+To find relevant indexed files, search their original text with `--sources document`.
+You can start with just the question.
 
 ```bash
 memorax-cli search --query 'What is the travel reimbursement limit?' --sources document --limit 4 --json
 ```
 
-When a prior result supplies document IDs, narrow the request:
+If a follow-up concerns a specific file, use its `document_id` from the
+returned chunk's metadata. Replace `DOCUMENT_ID` below with that value.
 
 ```bash
-memorax-cli search --query 'Which expenses need receipts?' --sources document --document-ids 'doc-1,doc-2' --limit 4 --json
+memorax-cli search --query 'Which expenses need receipts?' --sources document --document-ids 'DOCUMENT_ID' --limit 4 --json
 ```
 
-For previous business conversations, use `--sources dialogue`. To discover
-documents before reading details, use the ordinary Search without `--sources`;
-it follows the server's existing memory and summary route. Only use IDs actually
-returned in document metadata. A summary is a navigation aid, not original
-evidence. `--document-ids` requires exactly `--sources document`.
+For several files, pass their returned IDs as a comma-separated list.
+`--document-ids` requires exactly `--sources document`. For previous business
+conversations, use `--sources dialogue`. Omitting `--sources` searches ordinary
+memory and excludes indexed documents.
 
 Document Search requests fast/facts output. The server performs hybrid recall,
 RRF, and model reranking. Preserve the returned order; do not compare scores
