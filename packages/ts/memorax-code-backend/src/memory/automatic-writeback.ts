@@ -36,6 +36,7 @@ import type {
 import type { TraceContext } from "../trace/context.js";
 import {
   hasMeaningfulMemoryPayloadText,
+  redactBoundedMemoryPayloadText,
   redactMemoryPayloadText,
   type MemoryPayloadRedactionKind,
 } from "./payload-redaction.js";
@@ -83,7 +84,6 @@ export type AutomaticMemoryWritebackRejectionReason =
   | "workspace_scope_missing"
   | "user_prompt_empty"
   | "assistant_text_empty"
-  | "message_too_long"
   | "decision_error"
   | "config_missing"
   | RepositoryMemoryScopeFailureReason;
@@ -272,16 +272,8 @@ function automaticMemoryWritebackDecision(
   const route = memoraxAddOptionsFromContext({ mode: "default" }, env);
   if (!route.ok) throw new Error(route.error);
   const contentType = route.options.contentType ?? "auto";
-  const preserveTurn = contentType === "auto" || contentType === "work";
   const sessionKey = options.sessionKey.trim();
   const maxMessageChars = memoryWritebackMaxMessageChars(env);
-  const boundMessage = (text: string, role: WritebackMessage["role"]): string | undefined => {
-    if (!preserveTurn) return limitMessageContent(text, maxMessageChars, { role, sessionKey }, state.diagnosticLogger);
-    const limit = Math.min(maxMessageChars, MEMORAX_DIALOGUE_MAX_MESSAGE_CHARS);
-    if (text.length <= limit) return text;
-    // A code point occupies at most two UTF-16 units. Skip scanning oversized native turns.
-    return text.length <= 2 * limit && countAddTextChars(text) <= limit ? text : undefined;
-  };
   const rawUserText = options.userText?.trim() ?? "";
   const assistantOutput = options.assistantText ?? "";
   const assistantImpact = stripLeadingMemoryImpactParagraph(assistantOutput);
@@ -296,22 +288,29 @@ function automaticMemoryWritebackDecision(
   }
   if (!rawUserText) return { write: false, skipReason: "user_prompt_empty" };
   if (!rawAssistantText) return { write: false, skipReason: "assistant_text_empty" };
-  const boundedUserText = boundMessage(rawUserText, "user");
-  const boundedAssistantText = boundMessage(rawAssistantText, "assistant");
-  if (boundedUserText === undefined || boundedAssistantText === undefined) {
-    return { write: false, skipReason: "message_too_long" };
-  }
-  // Hashes and buffers must use the redacted text, before chunking can split
-  // sensitive patterns. Dispatch rechecks this invariant on full messages.
-  const userRedaction = redactMemoryPayloadText(boundedUserText);
-  const assistantRedaction = redactMemoryPayloadText(boundedAssistantText);
-  logAutomaticMemoryPayloadRedaction(state, sessionKey, "user", rawUserText, userRedaction);
-  logAutomaticMemoryPayloadRedaction(state, sessionKey, "assistant", rawAssistantText, assistantRedaction);
-  const userText = boundMessage(userRedaction.text, "user");
-  const assistantText = boundMessage(assistantRedaction.text, "assistant");
-  if (userText === undefined || assistantText === undefined) {
-    return { write: false, skipReason: "message_too_long" };
-  }
+  const prepareMessage = (text: string, role: WritebackMessage["role"]): string => {
+    if (contentType === "auto" || contentType === "work") {
+      const limit = Math.min(maxMessageChars, MEMORAX_DIALOGUE_MAX_MESSAGE_CHARS);
+      const result = redactBoundedMemoryPayloadText(text, limit);
+      logAutomaticMemoryPayloadRedaction(state, sessionKey, role, text, result);
+      if (result.truncated) {
+        state.diagnosticLogger("memory.automatic_writeback.truncated", {
+          sessionKeyHash: hashText(sessionKey),
+          role,
+          keptChars: countAddTextChars(result.text),
+          maxChars: limit,
+        });
+      }
+      return result.text;
+    }
+    const bound = (value: string) =>
+      limitMessageContent(value, maxMessageChars, { role, sessionKey }, state.diagnosticLogger);
+    const result = redactMemoryPayloadText(bound(text));
+    logAutomaticMemoryPayloadRedaction(state, sessionKey, role, text, result);
+    return bound(result.text);
+  };
+  const userText = prepareMessage(rawUserText, "user");
+  const assistantText = prepareMessage(rawAssistantText, "assistant");
   if (!hasMeaningfulMemoryPayloadText(userText)) return { write: false, skipReason: "user_prompt_empty" };
   if (!hasMeaningfulMemoryPayloadText(assistantText)) return { write: false, skipReason: "assistant_text_empty" };
 

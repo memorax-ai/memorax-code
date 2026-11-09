@@ -944,16 +944,15 @@ the configured `memory.add.content_type` or its environment override. The route
 is frozen when a completed turn is accepted; different routes never share a
 buffer or deduplication key.
 
-Auto keeps complete turns and uses the configured buffer, including the default
-eight-turn limit. Its batches stay within 128000 text characters and 100 messages,
-even when configured buffer limits are higher. Explicit work sends each completed
-turn immediately. Both routes can resolve to dialogue. If either message in a
-turn exceeds the smaller of `max_message_chars` and 12000 Unicode code points,
-the plugin rejects the whole turn before enqueue. The 12000 ceiling matches the
-server's default `MEMORY.INPUT_MAX_LENGTH`. Set `max_message_chars` lower if your
-server uses a lower limit. Neither route emits code chunks. Explicit code retains the existing
-buffering, clipping, chunk identities, and retry behavior. Automatic writeback
-always uses default mode, independently of explicit Add's configured mode.
+Auto buffers user/assistant pairs, by default up to eight turns. Its batches
+stay within 128000 text characters and 100 messages. Explicit work sends each
+completed turn immediately. For both routes the plugin keeps the beginning of
+each message, up to the smaller of `max_message_chars` and 12000 Unicode code
+points. A long reply can therefore be saved alongside the user's full question.
+The 12000 ceiling matches the server's default `MEMORY.INPUT_MAX_LENGTH`. Set
+`max_message_chars` lower if your server uses a lower limit. Only explicit code
+uses code chunks and their existing retry behavior. Automatic writeback always
+uses default mode, independently of explicit Add's configured mode.
 
 `memorax-cli add --messages-file /path/to/messages.json --type semantic
 --reason 'User requested storing the report.'` reads an explicit JSON array of
@@ -1067,12 +1066,12 @@ from previously uploaded data.
 
 ### Automatic writeback redaction
 
-Automatic writeback first enforces the route's per-message limit. Auto/work reject
-oversized messages; code/dialogue clip them, discarding an incomplete token at
-the cutoff. It then runs a local best-effort detector before hashing, buffering,
-chunking, or sending the content. Auto/work also reject messages expanded beyond
-the limit by redaction. The detector replaces these categories with typed
-placeholders:
+For auto/work, the local detector can look beyond the cutoff to recognize a
+secret crossing it. The outgoing prefix stays within the message limit after
+redaction, and a replacement that does not fit is omitted in full. Code/dialogue
+clip at their configured limit and discard an incomplete token at the cutoff.
+Hashing, buffering, chunking, and dispatch use the redacted text. The detector
+replaces these categories with typed placeholders:
 
 | Category | Placeholder |
 | --- | --- |

@@ -147,12 +147,73 @@ const RULES: readonly RedactionRule[] = [
 ];
 
 export function redactMemoryPayloadText(text: string): MemoryPayloadRedactionResult {
-  if (!text) return { text, counts: {}, redacted: false };
+  return redactPrefix(text, text.length);
+}
+
+function codePointPrefixEnd(text: string, limit: number): number {
+  if (!(limit >= 1)) return 0;
+  if (text.length <= limit) return text.length;
+  let end = 0;
+  let count = 0;
+  for (const character of text) {
+    if (++count > limit) break;
+    end += character.length;
+  }
+  return end;
+}
+
+function trailingRunStart(text: string, character: RegExp): number {
+  let start = text.length;
+  while (start > 0 && character.test(text[start - 1])) start--;
+  return start;
+}
+
+function avoidPartialPlaceholder(text: string, end: number): number {
+  if (!end || end === text.length) return end;
+  const start = text.lastIndexOf("[", end - 1);
+  if (start < 0) return end;
+  const marker = /^\[REDACTED:[A-Z_]+(?:\]|$)/.exec(text.slice(start));
+  return marker && start + marker[0].length > end ? start : end;
+}
+
+// Detect a secret that starts in the retained prefix but ends after the cutoff.
+// The extra context is local to the detector and can never enter the payload.
+export function redactBoundedMemoryPayloadText(text: string, maxChars: number): MemoryPayloadRedactionResult & { truncated: boolean } {
+  let end = codePointPrefixEnd(text, maxChars);
+  const sample = text.slice(0, end + 1024);
+  if (sample.length < text.length) {
+    const next = text[sample.length];
+    // A URL password can contain Unicode and its identifying @ may be outside the sample.
+    const scheme = sample.lastIndexOf("://");
+    if (scheme >= 0 && scheme < end && !/[\s/]/.test(next)) {
+      const authority = sample.slice(scheme + 3);
+      if (/^[^\s/:@]*:[^\s/@]*$/.test(authority)) end = Math.min(end, scheme + 3 + authority.indexOf(":") + 1);
+    }
+    // Other unfinished token formats use ASCII. Keep surrounding unspaced prose.
+    const tokenCharacter = /[A-Za-z0-9._~+/%@=-]/;
+    if (tokenCharacter.test(next)) {
+      const start = trailingRunStart(sample, tokenCharacter);
+      const token = sample.slice(start);
+      if (start < end && (!/^[A-Za-z]+$/.test(token) || token.startsWith("eyJ"))) end = start;
+    }
+    if (/[\d ()-]/.test(next)) {
+      const start = trailingRunStart(sample, /[+\d ()-]/);
+      if (start < end && /\d/.test(sample.slice(start))) end = start;
+    }
+  }
+  end = avoidPartialPlaceholder(sample, end);
+  const result = redactPrefix(sample, end);
+  const kept = avoidPartialPlaceholder(result.text, codePointPrefixEnd(result.text, maxChars));
+  return { ...result, text: result.text.slice(0, kept).trimEnd(), truncated: end < text.length || kept < result.text.length };
+}
+
+function redactPrefix(text: string, end: number): MemoryPayloadRedactionResult {
+  if (!end) return { text: "", counts: {}, redacted: false };
 
   const spans: RedactionSpan[] = [];
   for (const rule of RULES) collectRuleSpans(text, rule, spans);
-  const selected = mergeOverlappingSpans(spans);
-  if (selected.length === 0) return { text, counts: {}, redacted: false };
+  const selected = mergeOverlappingSpans(spans).filter((span) => span.start < end);
+  if (selected.length === 0) return { text: text.slice(0, end), counts: {}, redacted: false };
 
   const counts: Partial<Record<MemoryPayloadRedactionKind, number>> = {};
   const output: string[] = [];
@@ -162,7 +223,7 @@ export function redactMemoryPayloadText(text: string): MemoryPayloadRedactionRes
     counts[span.kind] = (counts[span.kind] ?? 0) + 1;
     offset = span.end;
   }
-  output.push(text.slice(offset));
+  output.push(text.slice(offset, end));
   return { text: output.join(""), counts, redacted: true };
 }
 

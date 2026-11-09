@@ -1081,44 +1081,42 @@ test("buffered auto, code, and dialogue keep identical turns in separate batches
   } finally { runtime.close(); }
 });
 
-test("auto and work reject oversized completed turns before clipping or dispatch", async () => {
-  for (const route of ["auto", "work"]) {
-    const requests = [];
-    const runtime = createAutomaticMemoryWritebackRuntime();
-    try {
-      assert.deepEqual(runtime.enqueue({ client: "codex", sessionKey: "oversized",
-        userText: "Long user text", assistantText: "answer", repositoryScope: REPOSITORY_SCOPE,
-        env: { ...WRITEBACK_ENV, MEMORAX_CODE_MEMORAX_ADD_CONTENT_TYPE: route,
-          MEMORAX_CODE_MEMORY_WRITEBACK_MAX_MESSAGE_CHARS: "10" }, fetchImpl: memoraxFetch(requests),
-      }), { accepted: false, reason: "message_too_long" });
-      await runtime.drain();
-      assert.equal(requests.length, 0);
-    } finally { runtime.close(); }
-  }
-});
-
 for (const route of ["auto", "work"]) {
-  test(`${route} enforces the 12000-code-point limit on each complete message before enqueue`, async (t) => {
+  test(`${route} clips each message to the smaller limit in Unicode code points and redacts safely`, async (t) => {
     const requests = [];
     const runtime = createAutomaticMemoryWritebackRuntime();
     t.after(() => runtime.close());
-    const ascii = "u".repeat(12_000);
-    const supplementary = "\u{20000}".repeat(12_000);
-    const turn = {
+    const enqueue = (userText, assistantText, maxChars = 64_000) => runtime.enqueue({
       client: "codex", sessionKey: "message-limit", repositoryScope: REPOSITORY_SCOPE,
-      userText: ascii, assistantText: supplementary, fetchImpl: memoraxFetch(requests),
-      env: { ...WRITEBACK_ENV, MEMORAX_CODE_MEMORAX_ADD_CONTENT_TYPE: route,
-        MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "true", MEMORAX_CODE_MEMORY_WRITEBACK_MAX_MESSAGE_CHARS: "100000" },
-    };
-    const tooLong = { accepted: false, reason: "message_too_long" };
-    assert.deepEqual(runtime.enqueue({ ...turn, userText: ascii + "u" }), tooLong);
-    assert.deepEqual(runtime.enqueue({ ...turn, assistantText: supplementary + "\u{20000}" }), tooLong);
-    // Redacting the short address expands a message that initially fits the limit.
-    const contact = " a@b.co";
-    assert.deepEqual(runtime.enqueue({ ...turn, userText: ascii.slice(0, -contact.length) + contact }), tooLong);
-    assert.deepEqual(runtime.enqueue(turn), { accepted: true });
+      userText, assistantText, fetchImpl: memoraxFetch(requests),
+      env: {
+        ...WRITEBACK_ENV,
+        MEMORAX_CODE_MEMORAX_ADD_CONTENT_TYPE: route,
+        MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "true",
+        MEMORAX_CODE_MEMORY_WRITEBACK_MAX_MESSAGE_CHARS: String(maxChars),
+      },
+    });
+
+    const ascii = "u".repeat(12_000);
+    const ideograph = "\u{20000}";
+    const supplementary = "a" + ideograph.repeat(11_999);
+    const localPrefix = "a" + ideograph.repeat(4);
+    assert.deepEqual(enqueue(ascii + "z", supplementary), { accepted: true });
+    assert.deepEqual(enqueue("Full prompt", supplementary + ideograph), { accepted: true });
+    assert.deepEqual(enqueue(localPrefix + ideograph, "Done", 5), { accepted: true });
+
+    // The key crosses the raw cutoff. The short email fits until redaction expands it.
+    const key = ["ghp", "C".repeat(36)].join("_");
+    assert.deepEqual(enqueue(`Keep plan. ${key}`, "Use a@b.co", 16), { accepted: true });
+    const prefixWithKey = `Keep ${key}`;
+    assert.deepEqual(enqueue(`${prefixWithKey} Beyond the limit`, "Done", prefixWithKey.length), { accepted: true });
+    assert.deepEqual(enqueue(key, "Done", 16), { accepted: false, reason: "user_prompt_empty" });
+    assert.deepEqual(enqueue("Keep", "a@b.co", 32), { accepted: false, reason: "assistant_text_empty" });
     await runtime.drain();
-    assert.deepEqual(requests.map(({ body }) => body.messages.map(({ content }) => content)), [[ascii, supplementary]]);
+    assert.deepEqual(requests.flatMap(({ body }) => body.messages.map(({ content }) => content)), [
+      ascii, supplementary, "Full prompt", supplementary, localPrefix, "Done", "Keep plan.", "Use",
+      "Keep [REDACTED:API_KEY]", "Done",
+    ]);
   });
 }
 

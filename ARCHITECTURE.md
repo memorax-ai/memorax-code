@@ -770,7 +770,8 @@ that recover do not produce terminal failure records.
   DSH event-interval, and SDK message parsing remains client-specific.
 - Automatic writeback defaults to server-classified `auto/default`. It freezes
   the configured content route at enqueue and isolates buffers and deduplication
-  by route. Auto buffers complete turns within provider budgets; explicit work
+  by route. Auto and work retain a bounded, redacted prefix of each message.
+  Auto buffers user/assistant pairs within provider budgets; explicit work
   dispatches each turn immediately. Only explicit code uses code chunk evidence
   packs, preserving their existing identity and retry contracts. See
   [writeback configuration](docs/configuration.md#writeback-and-explicit-add).
