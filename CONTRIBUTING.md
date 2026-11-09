@@ -974,16 +974,22 @@ they do not establish availability of any hosted model. Native error assertions
 remain strict.
 Assertions compare actual outgoing requests with independently selected native
 source records under the current extraction contract. Automatic Add must have
-valid message fields, nonempty content, and the complete selected text; additional
-content is allowed. The checks retain exact session/Turn identity, request counts,
+valid message fields and nonempty content. Ordinary turns, permission cases, and
+Skill replies require every selected paragraph in order and allow additional
+context. The checks retain exact session/Turn identity, request counts,
 and synthetic credential redaction. They do not call the production parser to
-construct their expected content. Negative controls reject missing or truncated
-source text, empty or malformed messages, and mismatched native identity, while
+construct their expected content. Negative controls reject missing required
+content, empty or malformed messages, and mismatched native identity, while
 allowing appended context. All outgoing messages are also checked against distinct
 foreign-workspace fixture text; permission cases reject other threads' fixture
 text. These controls test known source-isolation failures, not arbitrary provenance
 in real transcripts. Model or tool text alone cannot prove delivery.
 The current Codex parser can select an injected Skill response item as user text.
+For Skill turns, CI compares the outgoing user message exactly with the selected
+text after fixture redaction. It keeps up to the first 12,000 Unicode code points
+of the trimmed source before applying redaction. A known fixture credential that
+crosses the cutoff is replaced in full. Only complete redaction placeholders
+that fit the outgoing limit are retained.
 Reports separately record whether the original user prompt is included; its
 absence does not fail this compatibility check. This is coverage of the existing
 extraction contract, not proof of full raw-trajectory transmission or preservation

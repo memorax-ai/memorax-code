@@ -5,7 +5,7 @@ import { mkdir, readFile, readdir, realpath, stat } from "node:fs/promises";
 import { basename, delimiter, dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { check, createNativeHarness, fixtureKey, fixtureModel, fixtureUser, searchResult, sendResponses, stopNativeProcessTree, waitFor } from "./codex-native-support.mjs";
-import { assertCompleteText, assertNoForeignContent, assertSearchResult, assertSkillReferenceContract,
+import { assertCompleteText, assertNoForeignContent, assertSearchResult, assertSkillReferenceContract, assertSkillWritebackText,
   assertWritebackMessages, expectedSearchAnswer, redactExpectedFixtureText, selectNativeTurnContent } from "./codex-native-content-check.mjs";
 
 const report = { status: "FAIL", scope: "native_codex_installed_plugin_mock_memorax", platform: process.platform,
@@ -279,9 +279,11 @@ async function verifyNativeRollouts() {
       const selected = selectNativeTurnContent(records, { sessionId: turn.sessionId, turnId: starts[index].payload.turn_id });
       if (turn.kind === "ordinary") assertCompleteText(selected.user.content, turn.prompt, "NATIVE_SUBMITTED_PROMPT_INCOMPLETE");
       assertCompleteText(selected.assistant.content, turn.answer, "NATIVE_FIXTURE_ANSWER_INCOMPLETE");
-      const expectedUser = redactExpectedFixtureText(selected.user.content,
-        { apiKey: redactionCanary, paths: [harness.root, harness.packageRoot] });
-      const userCoverage = assertCompleteText(turn.body.messages[0].content, expectedUser, "NATIVE_SELECTED_USER_CONTENT_INCOMPLETE");
+      const fixture = { apiKey: redactionCanary, paths: [harness.root, harness.packageRoot] };
+      const sentUser = turn.body.messages[0].content;
+      const userCoverage = turn.kind === "ordinary"
+        ? assertCompleteText(sentUser, redactExpectedFixtureText(selected.user.content, fixture), "NATIVE_SELECTED_USER_CONTENT_INCOMPLETE")
+        : assertSkillWritebackText(sentUser, selected.user.content, fixture);
       const assistantCoverage = assertCompleteText(turn.body.messages[1].content, selected.assistant.content, "NATIVE_SELECTED_ASSISTANT_CONTENT_INCOMPLETE");
       check(turn.body.messages[0].timestamp === selected.user.timestamp
         && selected.assistant.timestamps.includes(turn.body.messages[1].timestamp), "NATIVE_MESSAGE_TIMESTAMP_MISMATCH");
@@ -294,9 +296,9 @@ async function verifyNativeRollouts() {
         try { assertCompleteText(message.content, turn.expectedPrompt); return true; } catch { return false; }
       });
       report.contentChecks.push({ case: turn.kind, userSource: selected.user.source, assistantSource: selected.assistant.source,
-        selectedUserChars: expectedUser.length, sentUserChars: turn.body.messages[0].content.length,
+        selectedUserChars: Array.from(selected.user.content.trim()).length, sentUserChars: Array.from(sentUser).length,
         userRequiredFragments: userCoverage.requiredFragments, assistantRequiredFragments: assistantCoverage.requiredFragments,
-        selectedContentComplete: true, originalUserPromptIncluded,
+        selectedContentComplete: !userCoverage.truncated, userContentTruncated: userCoverage.truncated ?? false, originalUserPromptIncluded,
         additionalContentObserved: userCoverage.additionalContentObserved || assistantCoverage.additionalContentObserved || turn.body.messages.length > 2 });
     }
   }
