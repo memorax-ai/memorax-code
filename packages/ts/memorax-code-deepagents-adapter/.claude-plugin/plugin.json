@@ -1,0 +1,16 @@
+{
+  "name": "memorax-code-deepagents-adapter",
+  "version": "0.1.22",
+  "description": "Memory skill and local hooks for MemoraX Code in Deep Agents Code (dcode).",
+  "author": {
+    "name": "MemoraX Code Maintainers"
+  },
+  "license": "MIT",
+  "keywords": [
+    "memorax-code",
+    "deepagents",
+    "dcode",
+    "memory"
+  ],
+  "skills": "./skills/"
+}

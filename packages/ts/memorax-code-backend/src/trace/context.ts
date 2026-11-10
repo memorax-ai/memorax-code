@@ -7,6 +7,7 @@ import {
 export type TraceContextOrigin =
   | "codex-hook-body"
   | "claude-hook-body"
+  | "deepagents-hook-body"
   | "dsh-cordis-turn-start"
   | "dsh-cordis-reminder"
   | "dsh-session-event-log"
@@ -18,7 +19,7 @@ export type TraceContextOrigin =
   | "qoder-hook-body"
   | "current-turn-file"
   | "manual";
-export type TraceClient = "codex" | "claude" | "dsh" | "opencode" | "codebuddy" | "workbuddy" | "trae" | "cursor" | "qoder";
+export type TraceClient = "codex" | "claude" | "deepagents" | "dsh" | "opencode" | "codebuddy" | "workbuddy" | "trae" | "cursor" | "qoder";
 
 export type TraceRelatedTurn = Readonly<{
   turnId?: string;
@@ -87,6 +88,28 @@ export function traceContextFromClaudeHookBody(
     memoryProject: resolveMemoryProject(cwd),
     workspaceKind: stringField(body, "workspace_kind") ?? stringField(body, "workspaceKind"),
     contextOrigin: "claude-hook-body",
+    capturedAt,
+  });
+}
+
+export function traceContextFromDeepAgentsHookBody(
+  body: unknown,
+  capturedAt = new Date().toISOString(),
+): TraceContext | undefined {
+  if (!isRecord(body)) return undefined;
+  const sessionId = stringField(body, "session_id") ?? stringField(body, "sessionId");
+  if (!sessionId) return undefined;
+  const cwd = stringField(body, "cwd");
+  return pruneTraceContext({
+    schemaVersion: "1",
+    client: "deepagents",
+    sessionId,
+    turnId: stringField(body, "prompt_id") ?? stringField(body, "promptId"),
+    transcriptPath: stringField(body, "transcript_path") ?? stringField(body, "transcriptPath"),
+    cwd,
+    memoryProject: resolveMemoryProject(cwd),
+    workspaceKind: stringField(body, "workspace_kind") ?? stringField(body, "workspaceKind"),
+    contextOrigin: "deepagents-hook-body",
     capturedAt,
   });
 }
@@ -279,6 +302,7 @@ function pruneRecord<T extends Record<string, unknown>>(value: T): T {
 export function isTraceClient(value: unknown): value is TraceClient {
   return value === "codex"
     || value === "claude"
+    || value === "deepagents"
     || value === "dsh"
     || value === "opencode"
     || value === "codebuddy"

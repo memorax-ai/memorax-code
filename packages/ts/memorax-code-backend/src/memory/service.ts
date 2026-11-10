@@ -11,6 +11,10 @@ import {
   type ClaudeMemoryHookWritebackResult,
 } from "../clients/claude/memory-hook-runtime.js";
 import {
+  createDeepAgentsMemoryHookRuntime,
+  type DeepAgentsMemoryHookWritebackResult,
+} from "../clients/deepagents/memory-hook-runtime.js";
+import {
   createDshMemoryHookRuntime,
   type DshMemoryHookWritebackResult,
 } from "../clients/dsh/memory-hook-runtime.js";
@@ -43,6 +47,7 @@ export type MemoryServiceOptions = Omit<
 type MemoryHookWritebackResult =
   | CodexMemoryHookWritebackResult
   | ClaudeMemoryHookWritebackResult
+  | DeepAgentsMemoryHookWritebackResult
   | OpenCodeMemoryHookWritebackResult
   | DshMemoryHookWritebackResult
   | CodeBuddyMemoryHookWritebackResult
@@ -92,6 +97,13 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
     turnCoordinator,
   });
   const claudeHook = createClaudeMemoryHookRuntime({
+    ...options,
+    searchGuidance,
+    pendingQuotaNotice,
+    repositoryMemorySession,
+    turnCoordinator,
+  });
+  const deepAgentsHook = createDeepAgentsMemoryHookRuntime({
     ...options,
     searchGuidance,
     pendingQuotaNotice,
@@ -174,6 +186,8 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
           return await codexHook.recordTurnStart(command);
         case "claude-code":
           return await claudeHook.recordTurnStart(command);
+        case "deepagents":
+          return await deepAgentsHook.recordTurnStart(command);
         case "opencode":
           return await openCodeHook.recordTurnStart(command);
         case "dsh":
@@ -197,6 +211,8 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
           return await observeWriteback(command, codexHook.writeback(command));
         case "claude-code":
           return await observeWriteback(command, claudeHook.writeback(command));
+        case "deepagents":
+          return await observeWriteback(command, deepAgentsHook.writeback(command));
         case "opencode":
           return await observeWriteback(command, openCodeHook.writeback(command));
         case "dsh":
@@ -223,6 +239,7 @@ export function createMemoryService(options: MemoryServiceOptions = {}): MemoryS
       closed = true;
       codexHook.close();
       claudeHook.close();
+      deepAgentsHook.close();
       openCodeHook.close();
       dshHook.close();
       codeBuddyHook.close();

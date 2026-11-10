@@ -147,6 +147,7 @@ owns only normalized semantic evaluation requests.
 | [adapter-common](packages/ts/memorax-code-adapter-common) | Shared connection, private records, safe deployment-failure projection and diagnostic storage primitives, credential storage, locks, Hook transport/generations, and local memory helpers | Backend composition, native content interpretation, MemoraX requests, or client plugin policy |
 | [Codex adapter](packages/ts/memorax-code-codex-adapter) | Codex plugin, Hooks, workspace observation, and the canonical shared Skill | Rollout interpretation or Backend writeback orchestration |
 | [Claude Code adapter](packages/ts/memorax-code-claude-adapter) | Claude plugin, Hooks, installer, and marketplace source | Transcript interpretation or Backend memory orchestration |
+| [Deep Agents adapter](packages/ts/memorax-code-deepagents-adapter) | Deep Agents Code (`dcode`) plugin, Hooks, installer, and shared Skill | Transcript interpretation, model-provider configuration, or Backend memory orchestration |
 | [DSH adapter](packages/ts/memorax-code-dsh-adapter) | Cordis Turn bridge, persisted-interval delivery, Profile and runtime-generation lifecycle, and supervised Repo Memory | Backend event interpretation or DSH provider/session ownership |
 | [OpenCode adapter](packages/ts/memorax-code-opencode-adapter) | Plugin and thin loader, SDK record delivery, shell-session identity, workspace evidence, and supervised Repo Memory | Backend message interpretation or model-provider configuration |
 | [CodeBuddy/WorkBuddy adapter](packages/ts/memorax-code-codebuddy-adapter) | Marketplace plugin, Hooks, native transcript bridge, and supervised Repo Memory | Backend transcript interpretation or model-provider configuration |
@@ -158,14 +159,14 @@ owns only normalized semantic evaluation requests.
 | [.github](.github) | Contribution templates and CI workflows | Product runtime behavior |
 
 `memorax-code-adapter-common` is a source layer consumed by the Backend and all
-eight adapters; it is not an independently deployed service. The npm artifact
+nine adapters; it is not an independently deployed service. The npm artifact
 assembles all runtime trees, but package assembly does not make the npm wrapper
 the owner of their behavior.
 
 ### 2.2 Physical dependency directions
 
-- The Backend and the Codex, Claude Code, DSH, OpenCode, CodeBuddy, Trae, Cursor, and Qoder deployment adapters
-  may import adapter-common. Adapter-common must not import those higher-level
+- The Backend and the Codex, Claude Code, Deep Agents, DSH, OpenCode, CodeBuddy, Trae, Cursor, and Qoder
+  deployment adapters may import adapter-common. Adapter-common must not import those higher-level
   components back.
 - Adapter Hook and plugin runtimes do not import Backend implementation. They
   communicate through versioned, client-qualified local HTTP commands. Shared
@@ -181,7 +182,7 @@ the owner of their behavior.
 - The npm layer locates staged entrypoints. `scripts` owns how source is
   materialized into that staged layout.
 - The canonical user-facing `memorax-code` skill lives in the Codex adapter.
-  Packaging materializes the Claude Code, DSH, OpenCode, CodeBuddy, Trae, Cursor, and Qoder
+  Packaging materializes the Claude Code, Deep Agents, DSH, OpenCode, CodeBuddy, Trae, Cursor, and Qoder
   artifacts from that source; do not maintain independent skill copies.
 
 Client integration is deliberately not physically symmetric. Codex plugin
@@ -1241,6 +1242,7 @@ contract coverage, not real-client E2E results.
 | Codex | Exact Turn in rollout JSONL | [Codex](packages/ts/memorax-code-backend/test/clients/codex) | [Codex adapter](packages/ts/memorax-code-codex-adapter/test) |
 | Claude Code | Correlated prompt in transcript JSONL | [Claude](packages/ts/memorax-code-backend/test/clients/claude) | [Claude adapter](packages/ts/memorax-code-claude-adapter/test) |
 | DSH | Exact persisted Session Event Log interval | [DSH](packages/ts/memorax-code-backend/test/clients/dsh) | [DSH adapter](packages/ts/memorax-code-dsh-adapter/test) |
+| Deep Agents Code | `thread_id`/`sequence` user-turn alignment plus Stop `last_assistant_message` reply authority | [Deep Agents](packages/ts/memorax-code-backend/test/clients/deepagents) | [Deep Agents adapter](packages/ts/memorax-code-deepagents-adapter/test) |
 | OpenCode | Matching SDK session-message records | [OpenCode](packages/ts/memorax-code-backend/test/clients/opencode) | [OpenCode adapter](packages/ts/memorax-code-opencode-adapter/test) |
 | CodeBuddy/WorkBuddy | Correlated native transcript JSONL | [CodeBuddy](packages/ts/memorax-code-backend/test/clients/codebuddy) | [CodeBuddy adapter](packages/ts/memorax-code-codebuddy-adapter/test) |
 | Trae | Validated Turn-ID and correlated `UserPromptSubmit`/`Stop` Hook pair | [Trae](packages/ts/memorax-code-backend/test/clients/trae) | [Trae adapter](packages/ts/memorax-code-trae-adapter/test) |
@@ -1554,11 +1556,11 @@ Placement rules:
   final-message delivery, canonical-validator wiring, Hook context injection,
   and Backend-authorized worktree selection.
 - Backend, adapter-common, and shared Skill suites discover nested tests
-  recursively. The eight adapter suites currently discover only flat
+  recursively. The nine adapter suites currently discover only flat
   `test/*.test.mjs`; their package scripts must change before tests are nested.
 - Adapter-common and shared Skill suites have independent Make targets without
   separate package manifests. Common changes also require affected consumer
-  coverage: Backend, shared Skill, all eight adapters, and package checks when
+  coverage: Backend, shared Skill, all nine adapters, and package checks when
   staged runtime layout is involved.
 - Before moving, splitting, or renaming tests, search `scripts` and `.github`
   for explicit paths and test-name patterns.
@@ -1581,7 +1583,7 @@ contracts without introducing a separate adapter test framework.
 | Hook HTTP or adapter-visible command schema | `test/transport/http` and affected adapter suites | Backend source boundaries and package shape when staged | Backend + Adapter-common/shared Hook; add Install/artifacts when staged package shape changes |
 | Backend root entrypoint or compatibility facade | Entrypoint, architecture, and npm package tests | Source boundaries and package shape | Backend + Install/artifacts |
 | Client-native parsing or identity | `test/clients/<client>` | Source boundaries | Backend |
-| Client adapter plugin or Hook deployment | Matching adapter suite and affected Backend contract tests | Package shape when staged | Codex, Claude Code, DSH, OpenCode, CodeBuddy/WorkBuddy, Trae, Cursor, or Qoder; add Adapter-common/shared Hook for shared Hook source and Install/artifacts for staged package shape |
+| Client adapter plugin or Hook deployment | Matching adapter suite and affected Backend contract tests | Package shape when staged | Codex, Claude Code, Deep Agents Code, DSH, OpenCode, CodeBuddy/WorkBuddy, Trae, Cursor, or Qoder; add Adapter-common/shared Hook for shared Hook source and Install/artifacts for staged package shape |
 | Adapter-common | Direct common contracts and affected Backend, shared Skill, and adapter tests | Package shape when staged layout changes | Adapter-common/shared Hook; add Install/artifacts when staged runtime or package layout changes |
 | MemoraX or Jev provider, trace, or outbound transport | Matching Backend tests | Local-only trace boundary | Backend + Trace/local-only boundary |
 | Test relocation | Moved owning suite | Platform-specific consumers | Matching named profile |

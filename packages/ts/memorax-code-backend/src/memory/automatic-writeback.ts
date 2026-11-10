@@ -44,7 +44,7 @@ import type { MemoraxQuotaSnapshot } from "../provider/memorax/quota.js";
 import { parseNativeMessageTimestamp } from "../shared/message-time.js";
 import { countAddTextChars, MEMORAX_DIALOGUE_MAX_MESSAGE_CHARS } from "../provider/memorax/add-limits.js";
 
-export type AutomaticMemoryWritebackClient = "codex" | "claude-code" | "opencode" | "dsh" | "codebuddy" | "workbuddy" | "trae" | "cursor" | "qoder";
+export type AutomaticMemoryWritebackClient = "codex" | "claude-code" | "deepagents" | "opencode" | "dsh" | "codebuddy" | "workbuddy" | "trae" | "cursor" | "qoder";
 
 export type AutomaticMemoryWritebackTiming = {
   userTimestamp?: number;

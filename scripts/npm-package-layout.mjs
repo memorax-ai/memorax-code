@@ -8,6 +8,8 @@ const packagePrefixes = [
   "lib/memorax-code-backend/",
   "lib/memorax-code-claude-adapter/",
   "lib/memorax-code-claude-marketplace/",
+  "lib/memorax-code-deepagents-adapter/",
+  "lib/memorax-code-deepagents-marketplace/",
   "lib/memorax-code-codex-adapter/",
   "lib/memorax-code-dsh-adapter/",
   "lib/memorax-code-opencode-adapter/",
@@ -20,6 +22,7 @@ const packageFiles = new Set([
   "bin",
   "bin/memorax-code-backend.mjs",
   "bin/memorax-code-claude.mjs",
+  "bin/memorax-code-deepagents.mjs",
   "bin/memorax-code-plugin-postinstall.mjs",
   "bin/memorax-code-setup.mjs",
   "bin/memorax-code-codex.mjs",
@@ -53,6 +56,7 @@ const rootLibFiles = new Set([
   "lib/dsh-plugin-install.mjs",
   "lib/node-version.mjs",
   "lib/resolve-claude-command.mjs",
+  "lib/resolve-deepagents-command.mjs",
   "lib/resolve-codex-command.mjs",
   "lib/resolve-codebuddy-command.mjs",
   "lib/run-entrypoint.mjs",
@@ -82,6 +86,7 @@ const reviewedCredentialFiles = new Set([
 const credentialRuntimePrefixes = [
   "lib/memorax-code-adapter-common/src/credentials/",
   "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/credentials/",
+  "lib/memorax-code-deepagents-marketplace/plugins/memorax-code-deepagents-adapter/memorax-code-adapter-common/src/credentials/",
 ];
 const sensitivePath = /(?:secret|credential|authorization|api[_-]?key)/i;
 
@@ -97,6 +102,7 @@ export function requiredNpmPackagePaths(manifest) {
   const skillRoots = [
     ...adapterRoots,
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/",
+    "lib/memorax-code-deepagents-marketplace/plugins/memorax-code-deepagents-adapter/",
   ];
   return [
     ...rootFiles,
@@ -135,6 +141,11 @@ export function requiredNpmPackagePaths(manifest) {
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/hooks/hooks.json",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/hooks/runtime-hook.mjs",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/hooks/runtime-shell.json",
+    "lib/memorax-code-deepagents-marketplace/.claude-plugin/marketplace.json",
+    "lib/memorax-code-deepagents-marketplace/plugins/memorax-code-deepagents-adapter/.claude-plugin/plugin.json",
+    "lib/memorax-code-deepagents-marketplace/plugins/memorax-code-deepagents-adapter/hooks/hooks.json",
+    "lib/memorax-code-deepagents-marketplace/plugins/memorax-code-deepagents-adapter/hooks/runtime-hook.mjs",
+    "lib/memorax-code-deepagents-marketplace/plugins/memorax-code-deepagents-adapter/hooks/runtime-shell.json",
     "lib/memorax-code-dsh-adapter/cordis.patch.yml",
     "lib/memorax-code-dsh-adapter/src/index.mjs",
     "lib/memorax-code-opencode-adapter/src/plugin.mjs",

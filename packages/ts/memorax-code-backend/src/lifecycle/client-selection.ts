@@ -20,6 +20,7 @@ export function resolveManagedClients(argv: readonly string[], config: MemoraxCo
     return {
       codex: config.clients.codex === true,
       claude: config.clients.claude === true,
+      ...(config.clients.deepagents === true ? { deepagents: true } : {}),
       // DSH was added after the original clients table. An omitted value keeps
       // automatic local-Harness discovery enabled for existing installations.
       dsh: config.clients.dsh !== false,

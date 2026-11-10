@@ -4,6 +4,7 @@ import type { AdapterReport } from "./participant.js";
 export const LIFECYCLE_CLIENTS = [
   { id: "codex", name: "Codex", reportKey: "codexAdapter", skillKey: "codexSkills", hookKey: undefined },
   { id: "claude", name: "Claude Code", reportKey: "claudeAdapter", skillKey: "claudeSkills", hookKey: undefined },
+  { id: "deepagents", name: "Deep Agents Code", reportKey: "deepagentsAdapter", skillKey: "deepagentsSkills", hookKey: undefined },
   { id: "dsh", name: "DSH", reportKey: "dshAdapter", skillKey: undefined, hookKey: undefined },
   { id: "opencode", name: "OpenCode", reportKey: "opencodeAdapter", skillKey: "opencodeSkills", hookKey: undefined },
   { id: "codebuddy", name: "CodeBuddy CLI", reportKey: "codebuddyAdapter", skillKey: "codebuddySkills", hookKey: "codebuddyHooks" },

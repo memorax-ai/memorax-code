@@ -158,7 +158,7 @@ function sameReferences(left: NativeReferences | undefined, right: NativeReferen
   return Boolean(left && Object.entries(right).every(([key, value]) => left[key as keyof NativeReferences] === value));
 }
 function commandKey(command: TurnStartCommand): MemoryTurnKey | undefined {
-  const clientTurnId = command.client === "claude-code" ? command.promptId
+  const clientTurnId = command.client === "claude-code" || command.client === "deepagents" ? command.promptId
     : command.client === "opencode" ? command.userMessageId
       : command.client === "dsh" ? String(command.turn) : command.turnId;
   return clientTurnId ? { client: command.client, sessionId: command.sessionId, clientTurnId } : undefined;

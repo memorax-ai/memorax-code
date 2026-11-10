@@ -48,6 +48,7 @@ export type AdapterReport = {
   backendUrlMatches?: boolean;
   codexSkills?: { ok?: boolean; status?: string };
   claudeSkills?: { ok?: boolean; status?: string };
+  deepagentsSkills?: { ok?: boolean; status?: string };
   opencodeSkills?: { ok?: boolean; status?: string };
   codebuddySkills?: { ok?: boolean; status?: string };
   traeSkills?: { ok?: boolean; status?: string };

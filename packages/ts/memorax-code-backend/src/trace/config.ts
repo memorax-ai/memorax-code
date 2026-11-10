@@ -5,7 +5,7 @@ import { loadMemoraxCodeConfig, type MemoraxCodeConfig } from "../config/memorax
 import { isTraceClient, type TraceClient } from "./context.js";
 
 export const TRACE_CLIENTS: readonly TraceClient[] = ["codex", "claude", "dsh", "opencode"];
-export const TRACE_RUNTIME_CLIENTS: readonly TraceClient[] = [...TRACE_CLIENTS, "codebuddy", "workbuddy", "trae", "cursor", "qoder"];
+export const TRACE_RUNTIME_CLIENTS: readonly TraceClient[] = [...TRACE_CLIENTS, "deepagents", "codebuddy", "workbuddy", "trae", "cursor", "qoder"];
 
 export type ClientTraceConfig = Readonly<{
   enabled: boolean;
@@ -17,6 +17,7 @@ export type ClientTraceConfig = Readonly<{
 
 export type CodexTraceConfig = ClientTraceConfig;
 export type ClaudeTraceConfig = ClientTraceConfig;
+export type DeepAgentsTraceConfig = ClientTraceConfig;
 export type DshTraceConfig = ClientTraceConfig;
 export type OpenCodeTraceConfig = ClientTraceConfig;
 export type CodeBuddyTraceConfig = ClientTraceConfig;
@@ -55,6 +56,14 @@ export const CLAUDE_TRACE_DEFAULT_CONFIG: ClaudeTraceConfig = {
   maxFileBytes: 52_428_800,
 };
 
+export const DEEPAGENTS_TRACE_DEFAULT_CONFIG: DeepAgentsTraceConfig = {
+  enabled: true,
+  captureContent: true,
+  retentionDays: 7,
+  maxEventChars: 20_000,
+  maxFileBytes: 52_428_800,
+};
+
 export const DSH_TRACE_DEFAULT_CONFIG: DshTraceConfig = {
   enabled: true,
   captureContent: true,
@@ -82,6 +91,7 @@ export const TRAE_TRACE_DEFAULT_CONFIG: TraeTraceConfig = {
 const TRACE_DEFAULT_CONFIGS: Readonly<Record<TraceClient, ClientTraceConfig>> = {
   codex: CODEX_TRACE_DEFAULT_CONFIG,
   claude: CLAUDE_TRACE_DEFAULT_CONFIG,
+  deepagents: DEEPAGENTS_TRACE_DEFAULT_CONFIG,
   dsh: DSH_TRACE_DEFAULT_CONFIG,
   opencode: OPENCODE_TRACE_DEFAULT_CONFIG,
   codebuddy: CODEBUDDY_TRACE_DEFAULT_CONFIG,
@@ -94,6 +104,7 @@ const TRACE_DEFAULT_CONFIGS: Readonly<Record<TraceClient, ClientTraceConfig>> = 
 const TRACE_ENV_PREFIXES: Readonly<Record<TraceClient, string>> = {
   codex: "MEMORAX_CODE_CODEX_TRACE",
   claude: "MEMORAX_CODE_CLAUDE_TRACE",
+  deepagents: "MEMORAX_CODE_DEEPAGENTS_TRACE",
   dsh: "MEMORAX_CODE_DSH_TRACE",
   opencode: "MEMORAX_CODE_OPENCODE_TRACE",
   codebuddy: "MEMORAX_CODE_CODEBUDDY_TRACE",
@@ -122,6 +133,13 @@ export function claudeTraceConfigFromEnv(
   fileConfig?: MemoraxCodeConfig,
 ): ClaudeTraceConfig {
   return clientTraceConfigFromEnv("claude", env, fileConfig);
+}
+
+export function deepAgentsTraceConfigFromEnv(
+  env: Record<string, string | undefined> = process.env,
+  fileConfig?: MemoraxCodeConfig,
+): DeepAgentsTraceConfig {
+  return clientTraceConfigFromEnv("deepagents", env, fileConfig);
 }
 
 export function dshTraceConfigFromEnv(

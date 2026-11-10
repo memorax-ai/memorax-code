@@ -1,7 +1,7 @@
 # @memorax/memorax-code
 
 MemoraX Code adds persistent coding memory to Codex, Claude Code,
-CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, Trae, Cursor, and Qoder.
+CodeBuddy CLI, WorkBuddy, Deep Agents Code, DeepSeek Harness, OpenCode, Trae, Cursor, and Qoder.
 
 ## Requirements
 

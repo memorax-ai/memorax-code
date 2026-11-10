@@ -15,6 +15,7 @@ export function readActiveManagedClients(memoraxCodeHome: string): ManagedClient
     return {
       codex: value.codex,
       claude: value.claude,
+      ...(value.deepagents === true ? { deepagents: true } : {}),
       // Records written before DSH became a Backend participant cannot claim
       // that the Backend was serving DSH.
       dsh: value.dsh === true,

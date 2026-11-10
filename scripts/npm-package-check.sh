@@ -108,6 +108,7 @@ expected_bins = {
     "memorax-cli": "bin/memorax-cli.mjs",
     "memorax-code-backend": "bin/memorax-code-backend.mjs",
     "memorax-code-claude": "bin/memorax-code-claude.mjs",
+    "memorax-code-deepagents": "bin/memorax-code-deepagents.mjs",
     "memorax-code-codex": "bin/memorax-code-codex.mjs",
     "memorax-code-opencode": "bin/memorax-code-opencode.mjs",
     "memorax-code-codebuddy": "bin/memorax-code-codebuddy.mjs",
@@ -123,6 +124,8 @@ expected_library_dirs = {
     "memorax-code-backend",
     "memorax-code-claude-adapter",
     "memorax-code-claude-marketplace",
+    "memorax-code-deepagents-adapter",
+    "memorax-code-deepagents-marketplace",
     "memorax-code-codex-adapter",
     "memorax-code-dsh-adapter",
     "memorax-code-opencode-adapter",
@@ -432,6 +435,7 @@ assert config_sections == {
     "trace.opencode",
     "trace.trae",
     "trace.cursor",
+    "trace.deepagents",
     "trace.qoder",
 }
 assert 'user_id = "package-check-user"' in config_text
@@ -439,6 +443,7 @@ assert 'api_key = "package-check-key"' in config_text
 assert 'output_language = "' in config_text
 assert "codex = false" in config_text
 assert "claude = false" in config_text
+assert "deepagents = false" in config_text
 assert "dsh = false" in config_text
 assert "opencode = false" in config_text
 assert "codebuddy = false" in config_text

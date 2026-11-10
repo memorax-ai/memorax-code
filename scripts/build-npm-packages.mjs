@@ -11,6 +11,7 @@ import {
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildClaudeMarketplace } from "../packages/ts/memorax-code-claude-adapter/scripts/build-marketplace.mjs";
+import { buildDeepAgentsMarketplace } from "../packages/ts/memorax-code-deepagents-adapter/scripts/build-marketplace.mjs";
 import { assertLocalTraceOnly } from "./check-local-trace-only.mjs";
 import {
   assertRequiredNpmPackageFiles,
@@ -135,10 +136,18 @@ async function stageMainPackage(destination) {
     "packages/ts/memorax-code-qoder-adapter/package.json",
     join(destination, "lib/memorax-code-qoder-adapter/package.json"),
   );
+  await copyFile(
+    "packages/ts/memorax-code-deepagents-adapter/package.json",
+    join(destination, "lib/memorax-code-deepagents-adapter/package.json"),
+  );
 
   await buildClaudeMarketplace({
     outputDir: join(destination, "lib/memorax-code-claude-marketplace"),
     adapterRoot: join(destination, "lib/memorax-code-claude-adapter"),
+  });
+  await buildDeepAgentsMarketplace({
+    outputDir: join(destination, "lib/memorax-code-deepagents-marketplace"),
+    adapterRoot: join(destination, "lib/memorax-code-deepagents-adapter"),
   });
 
   await removeMatching(

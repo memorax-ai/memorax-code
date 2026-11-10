@@ -45,6 +45,9 @@ const reviewedNetworkSources = new Set([
   "packages/ts/memorax-code-claude-adapter/runtime-hooks/memory-skill-reminder.mjs",
   "packages/ts/memorax-code-claude-adapter/runtime-hooks/memory-turn.mjs",
   "packages/ts/memorax-code-claude-adapter/src/cli.mjs",
+  "packages/ts/memorax-code-deepagents-adapter/runtime-hooks/memory-skill-reminder.mjs",
+  "packages/ts/memorax-code-deepagents-adapter/runtime-hooks/memory-turn.mjs",
+  "packages/ts/memorax-code-deepagents-adapter/src/cli.mjs",
   "packages/ts/memorax-code-codex-adapter/runtime-hooks/memory-skill-reminder.mjs",
   "packages/ts/memorax-code-codex-adapter/runtime-hooks/memory-writeback.mjs",
   "packages/ts/memorax-code-codex-adapter/src/cli.mjs",
@@ -334,6 +337,16 @@ function sourcePathForArtifact(rawPath) {
       return `packages/ts/memorax-code-codex-adapter/skills/memorax-code/${pluginPath.slice("skills/memorax-code/".length)}`;
     }
     return `packages/ts/memorax-code-claude-adapter/${pluginPath}`;
+  }
+  if (path.startsWith("lib/memorax-code-deepagents-marketplace/plugins/memorax-code-deepagents-adapter/")) {
+    const pluginPath = path.slice("lib/memorax-code-deepagents-marketplace/plugins/memorax-code-deepagents-adapter/".length);
+    if (pluginPath.startsWith("memorax-code-adapter-common/src/")) {
+      return `packages/ts/memorax-code-adapter-common/src/${pluginPath.slice("memorax-code-adapter-common/src/".length)}`;
+    }
+    if (pluginPath.startsWith("skills/memorax-code/")) {
+      return `packages/ts/memorax-code-codex-adapter/skills/memorax-code/${pluginPath.slice("skills/memorax-code/".length)}`;
+    }
+    return `packages/ts/memorax-code-deepagents-adapter/${pluginPath}`;
   }
   if (path.startsWith("lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/")) {
     return `packages/ts/memorax-code-adapter-common/src/${path.slice("lib/memorax-code-dsh-adapter/memorax-code-adapter-common/src/".length)}`;

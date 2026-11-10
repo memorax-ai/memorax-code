@@ -39,7 +39,7 @@
 Coding Agent 擅长解决眼前的问题，但新会话不会自动继承此前积累的架构认知、踩坑经验、仓库规则
 和协作偏好。
 
-MemoraX Code 让 Codex、Claude Code、CodeBuddy CLI、WorkBuddy、DeepSeek Harness、OpenCode、Trae、Cursor 和 Qoder
+MemoraX Code 让 Codex、Claude Code、Deep Agents Code、CodeBuddy CLI、WorkBuddy、DeepSeek Harness、OpenCode、Trae、Cursor 和 Qoder
 共享一套能够持续积累的记忆。
 它会沉淀代码任务中的工程经验，持续整理仓库知识，并在后续任务中找回相关的工作流程和偏好。
 
@@ -49,7 +49,8 @@ MemoraX Code 让 Codex、Claude Code、CodeBuddy CLI、WorkBuddy、DeepSeek Harn
 ## 快速开始
 
 开始前，请确保已安装 Node.js 20 或更高版本（推荐 Node.js 24 LTS），以及 Codex、Claude Code、
-CodeBuddy CLI、WorkBuddy、DeepSeek Harness、OpenCode、Trae、Cursor 或 Qoder 中的至少一个。
+Deep Agents Code（`dcode`）、CodeBuddy CLI、WorkBuddy、DeepSeek Harness、OpenCode、Trae、Cursor
+或 Qoder 中的至少一个。
 
 当前 DeepSeek Harness（DSH）版本要求 Node.js `^22.19.0 || >=24.0.0`。运行 setup 前，
 请先安装或初始化 DSH，创建至少一个 Profile；使用 npm CLI 时，确保 `pnpm` 在 `PATH` 中可用。
@@ -133,6 +134,7 @@ memorax-code account --show-mark-id
 | --- | --- |
 | Codex | 如果尚未启用，请在 Plugins 或 `/plugins` 中启用 **MemoraX Code Codex Adapter**。 |
 | Claude Code | 重启或刷新客户端，加载受管插件和 Hooks。 |
+| Deep Agents Code | 新建 `dcode` 会话或执行 `/reload`，加载受管插件和 Hooks。 |
 | CodeBuddy CLI | 新建 CLI 会话，加载受管插件、Hooks 和 Skill。 |
 | WorkBuddy | 重启 WorkBuddy，加载独立管理的插件、Hooks 和 Skill。 |
 | DeepSeek Harness | 重启或刷新 DSH，加载已注册到现有 Profile 中的插件。 |
@@ -188,14 +190,15 @@ npm 包安装完成后不会自动启动 setup，请运行上面适合您的安�
 
 ### 体验跨会话记忆
 
-克隆示例仓库，并在项目目录中打开 Codex、Claude Code、CodeBuddy CLI、WorkBuddy、DeepSeek Harness、OpenCode、Trae、Cursor 或 Qoder：
+克隆示例仓库，并在项目目录中打开 Codex、Claude Code、Deep Agents Code、CodeBuddy CLI、WorkBuddy、DeepSeek Harness、OpenCode、Trae、Cursor 或 Qoder：
 
 ```bash
 git clone https://github.com/SWE-agent/test-repo.git
 cd test-repo
 ```
 
-在 Codex 中使用 `$memorax-code`，在 Claude Code 或 DeepSeek Harness 中使用 `/memorax-code`
+在 Codex 中使用 `$memorax-code`，在 Claude Code 或 DeepSeek Harness 中使用 `/memorax-code`，
+在 Deep Agents Code 中使用 `/skill:memorax-code-deepagents-adapter@memorax-code-deepagents-local:memorax-code`
 调用该 Skill。在 OpenCode、CodeBuddy CLI、WorkBuddy、Trae、Cursor 或 Qoder 中，直接让 Agent 使用名为 `memorax-code` 的 Skill。
 下面的指令使用产品名称，所有客户端均可直接理解。
 
@@ -244,10 +247,10 @@ Profile 使用 `user-profile/preferences.md`，每个 Procedure 主题在
 | **后台写入记忆** | 任务完成后，在后台提取可复用知识并写入 Coding Memory。 |
 | **用户偏好延续** | 在 User Profile 中记录用户偏好，并按设定周期将其带入后续任务。 |
 | **Procedure 自动复用** | 记录可复用的任务流程，并在后续任务中自动提醒 Agent 按流程执行。 |
-| **记忆作用反馈** | 在 Codex、Claude Code、CodeBuddy CLI、WorkBuddy、DeepSeek Harness、OpenCode、Trae、Cursor 和 Qoder 中，当本轮主动 Search 的 Coding Memory，或本轮读取、注入的 Repo、Procedure、Profile Memory 确实指导了任务时，Agent 会在最终回复开头用自然语言简要说明。 |
+| **记忆作用反馈** | 在 Codex、Claude Code、Deep Agents Code、CodeBuddy CLI、WorkBuddy、DeepSeek Harness、OpenCode、Trae、Cursor 和 Qoder 中，当本轮主动 Search 的 Coding Memory，或本轮读取、注入的 Repo、Procedure、Profile Memory 确实指导了任务时，Agent 会在最终回复开头用自然语言简要说明。 |
 | **Repo Memory 后台整理** | 基于本地已知的默认分支维护一份共享基线。任意 worktree 都能触发构建或按策略更新，各分支复用地图并核对当前源码，无需逐 worktree 构建。已有本地产物会保留。Trae 仍仅支持 Skill；Cursor 和 Qoder 使用各自的原生后台子 Agent。 |
 | **主动记忆控制** | 使用内置的 MemoraX Code Skill 或 CLI，主动查找和添加记忆。 |
-| **客户端集成** | 与 Codex、Claude Code、CodeBuddy CLI、WorkBuddy、DeepSeek Harness、OpenCode、Trae、Cursor 和 Qoder 集成，支持 Skill 主动 Search、本地提醒和自动写回。目前 Codex、Claude Code、CodeBuddy CLI、WorkBuddy、OpenCode 和 Trae 支持自动额度提醒。 |
+| **客户端集成** | 与 Codex、Claude Code、Deep Agents Code、CodeBuddy CLI、WorkBuddy、DeepSeek Harness、OpenCode、Trae、Cursor 和 Qoder 集成，支持 Skill 主动 Search、本地提醒和自动写回。目前 Codex、Claude Code、CodeBuddy CLI、WorkBuddy、OpenCode 和 Trae 支持自动额度提醒。 |
 | **本地可观测性** | 通过受内容控制的本地 trace 和 reconciliation 记录查看活动统计、召回与写入状态。 |
 
 ## 你的记忆，由你控制

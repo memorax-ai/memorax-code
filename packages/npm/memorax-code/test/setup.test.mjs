@@ -27,6 +27,7 @@ const codexRuntimeShellPath = fileURLToPath(new URL(
   import.meta.url,
 ));
 const claudeCommandResolverPath = fileURLToPath(new URL("../lib/resolve-claude-command.mjs", import.meta.url));
+const deepAgentsCommandResolverPath = fileURLToPath(new URL("../lib/resolve-deepagents-command.mjs", import.meta.url));
 const codexCommandResolverPath = fileURLToPath(new URL("../lib/resolve-codex-command.mjs", import.meta.url));
 const codeBuddyCommandResolverPath = fileURLToPath(new URL("../lib/resolve-codebuddy-command.mjs", import.meta.url));
 const vscodeExtensionCommandPath = fileURLToPath(new URL("../lib/vscode-extension-command.mjs", import.meta.url));
@@ -391,6 +392,7 @@ async function runSetup({ existingCache = false, explicitCache = false, codexReg
     type: "module",
   }, null, 2)}\n`);
   await copyFile(claudeCommandResolverPath, join(libDir, "resolve-claude-command.mjs"));
+  await copyFile(deepAgentsCommandResolverPath, join(libDir, "resolve-deepagents-command.mjs"));
   await copyFile(codexCommandResolverPath, join(libDir, "resolve-codex-command.mjs"));
   await copyFile(codeBuddyCommandResolverPath, join(libDir, "codebuddy-command-discovery.mjs"));
   // Only absent runtimes are stubbed, so setup cannot discover a developer app.
@@ -1130,7 +1132,7 @@ test("setup fresh install auto-detects Codex and skips an unavailable Claude run
     assert.match(run.log, /^dsh-adapter-optional status$/m);
     assert.match(run.result.stderr, /Backend and selected adapters: .*Enabled/);
     const config = await readFile(join(run.memoraxCodeHome, "config.toml"), "utf8");
-    assert.match(config, /\[clients\][^\r\n]*\r?\ncodex = true[^\r\n]*\r?\nclaude = false[^\r\n]*\r?\ndsh = true[^\r\n]*\r?\nopencode = false/m);
+    assert.match(config, /\[clients\][^\r\n]*\r?\ncodex = true[^\r\n]*\r?\nclaude = false[^\r\n]*\r?\ndeepagents = false[^\r\n]*\r?\ndsh = true[^\r\n]*\r?\nopencode = false/m);
   } finally {
     await rm(run.root, { recursive: true, force: true });
   }
@@ -1295,6 +1297,8 @@ test("setup seeds the default MemoraX Code config around trial memory preference
     assert.match(config, /\[trace\.dsh\]/);
     assert.match(config, /enabled = true # Enable local DSH session memory trace collection\./);
     assert.match(config, /capture_content = true # Store content in local DSH trace events\./);
+    assert.match(config, /\[trace\.deepagents\]/);
+    assert.match(config, /capture_content = true # Store content in local Deep Agents Code trace events\./);
     assert.match(config, /\[trace\.opencode\]/);
     assert.match(config, /capture_content = true # Store content in local OpenCode trace events\./);
     assert.match(config, /\[trace\.codebuddy\]/);
@@ -1314,6 +1318,7 @@ test("setup seeds the default MemoraX Code config around trial memory preference
       "trace.codebuddy",
       "trace.codex",
       "trace.cursor",
+      "trace.deepagents",
       "trace.dsh",
       "trace.opencode",
       "trace.qoder",

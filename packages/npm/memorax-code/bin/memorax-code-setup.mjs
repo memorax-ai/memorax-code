@@ -25,6 +25,7 @@ import {
 } from "../lib/client-hook-runtime.mjs";
 import { discoverDshProfiles } from "../lib/dsh-plugin-install.mjs";
 import { ensureClaudeCommandEnv } from "../lib/resolve-claude-command.mjs";
+import { ensureDeepAgentsCommandEnv } from "../lib/resolve-deepagents-command.mjs";
 import { ensureCodexCommandEnv } from "../lib/resolve-codex-command.mjs";
 import {
   defaultCodeBuddyHome,
@@ -69,11 +70,12 @@ const RED = "\x1b[31m";
 const BOLD = "\x1b[1m";
 const RESET = "\x1b[0m";
 const DSH_OPTIONAL_ENV = "MEMORAX_CODE_DSH_ADAPTER_OPTIONAL";
-const SETUP_CLIENTS = ["codex", "claude", "opencode", "codebuddy", "workbuddy", "trae", "cursor", "qoder"];
-const LIFECYCLE_CLIENT_IDS = ["codex", "claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor", "qoder"];
+const SETUP_CLIENTS = ["codex", "claude", "deepagents", "opencode", "codebuddy", "workbuddy", "trae", "cursor", "qoder"];
+const LIFECYCLE_CLIENT_IDS = ["codex", "claude", "deepagents", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor", "qoder"];
 
 const skipCodexPluginInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_CODEX_PLUGIN_INSTALL);
 const skipClaudeAdapterInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_CLAUDE_ADAPTER_INSTALL);
+const skipDeepAgentsAdapterInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_DEEPAGENTS_ADAPTER_INSTALL);
 const skipOpenCodeAdapterInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_OPENCODE_ADAPTER_INSTALL);
 const skipCodeBuddyAdapterInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_CODEBUDDY_ADAPTER_INSTALL);
 const skipWorkBuddyAdapterInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_WORKBUDDY_ADAPTER_INSTALL);
@@ -115,6 +117,8 @@ const codexRuntime = ensureCodexCommandEnv();
 const codexCommand = codexRuntime.command;
 const claudeRuntime = ensureClaudeCommandEnv();
 const claudeCommand = claudeRuntime.command;
+const deepAgentsRuntime = ensureDeepAgentsCommandEnv();
+const deepAgentsCommand = deepAgentsRuntime.command;
 const codeBuddyRuntime = ensureCodeBuddyCommandEnv();
 const workBuddyRuntime = ensureWorkBuddyCommandEnv();
 const persistedClientSelection = await readPersistedClientSelection();
@@ -177,6 +181,11 @@ const claudePreflight = requestedClients.includes("claude") && !skipClaudeAdapte
       integrationSelected: !existingSetup || previousClients.includes("claude"),
     })
   : { ok: true };
+const deepagentsPreflight = requestedClients.includes("deepagents") && !skipDeepAgentsAdapterInstall
+  ? runDeepAgentsPreflight({
+      integrationSelected: !existingSetup || previousClients.includes("deepagents"),
+    })
+  : { ok: true };
 const opencodePreflight = requestedClients.includes("opencode") && !skipOpenCodeAdapterInstall
   ? runOpenCodePreflight({
       integrationSelected: !existingSetup || previousClients.includes("opencode"),
@@ -210,6 +219,7 @@ const qoderPreflight = requestedClients.includes("qoder") && !skipQoderAdapterIn
     })
   : { ok: true };
 const failedBuddyClients = [
+  ["deepagents", deepagentsPreflight],
   ["codebuddy", codebuddyPreflight],
   ["workbuddy", workbuddyPreflight],
 ].filter(([client, preflight]) => preflight.failed
@@ -222,6 +232,7 @@ if (failedBuddyClients.length > 0) {
 const detectedClients = requestedClients.filter((client) => {
   if (client === "codex") return !skipCodexPluginInstall && codexPreflight.ok;
   if (client === "claude") return !skipClaudeAdapterInstall && claudePreflight.ok;
+  if (client === "deepagents") return !skipDeepAgentsAdapterInstall && deepagentsPreflight.ok;
   if (client === "opencode") return !skipOpenCodeAdapterInstall && opencodePreflight.ok;
   if (client === "codebuddy") return !skipCodeBuddyAdapterInstall && codebuddyPreflight.ok;
   if (client === "workbuddy") return !skipWorkBuddyAdapterInstall && workbuddyPreflight.ok;
@@ -261,6 +272,9 @@ if (requestedClients.includes("codex") && !skipCodexPluginInstall && !codexPrefl
 }
 if (requestedClients.includes("claude") && !skipClaudeAdapterInstall && !claudePreflight.ok) {
   log(claudePreflight.failed ? "Claude Code runtime could not run; skipping its adapter setup." : "Claude Code runtime was not detected; skipping its adapter setup.");
+}
+if (requestedClients.includes("deepagents") && !skipDeepAgentsAdapterInstall && !deepagentsPreflight.ok) {
+  log(deepagentsPreflight.failed ? "Deep Agents Code runtime could not run; skipping its adapter setup." : "Deep Agents Code runtime was not detected; skipping its adapter setup.");
 }
 if (requestedClients.includes("opencode") && !skipOpenCodeAdapterInstall && !opencodePreflight.ok) {
   log("OpenCode runtime or configuration was not detected; skipping its adapter setup.");
@@ -316,6 +330,7 @@ if (memoraxConfigResult === "configured") {
 }
 const codexClientEnabled = installClients.includes("codex");
 const claudeClientEnabled = installClients.includes("claude");
+const deepAgentsClientEnabled = installClients.includes("deepagents");
 const opencodeClientEnabled = installClients.includes("opencode");
 const codebuddyClientEnabled = installClients.includes("codebuddy");
 const workbuddyClientEnabled = installClients.includes("workbuddy");
@@ -365,6 +380,7 @@ if (codexClientEnabled && result.status === 0) {
 }
 const skipCodexAdapter = !codexClientEnabled;
 const skipClaudeAdapter = !claudeClientEnabled;
+const skipDeepAgentsAdapter = !deepAgentsClientEnabled;
 const skipOpenCodeAdapter = !opencodeClientEnabled;
 const codexSkipReason = setupClientSkipReason({
   explicitlySkipped: skipCodexPluginInstall,
@@ -375,6 +391,11 @@ const claudeSkipReason = setupClientSkipReason({
   explicitlySkipped: skipClaudeAdapterInstall,
   selected: selectedClients.includes("claude"),
   enabled: claudeClientEnabled,
+});
+const deepAgentsSkipReason = setupClientSkipReason({
+  explicitlySkipped: skipDeepAgentsAdapterInstall,
+  selected: selectedClients.includes("deepagents"),
+  enabled: deepAgentsClientEnabled,
 });
 const opencodeSkipReason = setupClientSkipReason({
   explicitlySkipped: skipOpenCodeAdapterInstall,
@@ -425,6 +446,9 @@ const backendAndAdapters = await startBackendAndCheck({
   skipClaudeAdapter,
   claudeAdapterRequired: !skipClaudeAdapter,
   claudeSkipReason,
+  skipDeepAgentsAdapter,
+  deepagentsAdapterRequired: !skipDeepAgentsAdapter,
+  deepagentsSkipReason: deepAgentsSkipReason,
   skipOpenCodeAdapter,
   opencodeAdapterRequired: !skipOpenCodeAdapter,
   opencodeSkipReason,
@@ -453,6 +477,7 @@ if (backendAndAdaptersStatus === "enabled") {
   printNextSteps({
     codexAdapterEnabled: !skipCodexAdapter,
     claudeAdapterEnabled: !skipClaudeAdapter,
+    deepAgentsAdapterEnabled: !skipDeepAgentsAdapter,
     dshAdapterEnabled: backendAndAdapters.dshAdapterEnabled,
     opencodeAdapterEnabled: !skipOpenCodeAdapter,
     codebuddyAdapterEnabled: codebuddyClientEnabled,
@@ -465,6 +490,7 @@ if (backendAndAdaptersStatus === "enabled") {
   printCommonCommands({
     codexAdapterEnabled: !skipCodexAdapter,
     claudeAdapterEnabled: !skipClaudeAdapter,
+    deepAgentsAdapterEnabled: !skipDeepAgentsAdapter,
     opencodeAdapterEnabled: !skipOpenCodeAdapter,
     codebuddyAdapterEnabled: codebuddyClientEnabled,
     workbuddyAdapterEnabled: workbuddyClientEnabled,
@@ -1061,7 +1087,7 @@ function restoredLifecycleClientsMatch(restoredClients, lifecycleClients, includ
 
 function setManagedClientSelection(text, clients, configuredClients = SETUP_CLIENTS) {
   let updated = text;
-  for (const client of ["opencode", "claude", "codebuddy", "workbuddy", "trae", "cursor", "qoder", "codex"]) {
+  for (const client of ["opencode", "deepagents", "claude", "codebuddy", "workbuddy", "trae", "cursor", "qoder", "codex"]) {
     if (!configuredClients.includes(client)) continue;
     updated = setTomlField(updated, "clients", client, String(clients.includes(client)));
   }
@@ -1117,6 +1143,7 @@ function defaultMemoraxCodeConfig() {
     "[clients]",
     "codex = true # Manage the Codex adapter.",
     "claude = true # Manage the Claude adapter.",
+    "deepagents = true # Manage the Deep Agents Code adapter.",
     "dsh = true # Manage the DeepSeek Harness adapter when Profiles exist.",
     "opencode = true # Manage the OpenCode adapter.",
     "codebuddy = true # Manage the CodeBuddy CLI adapter.",
@@ -1158,6 +1185,10 @@ function defaultMemoraxCodeConfig() {
     "[trace.claude]",
     "enabled = true # Enable local Claude session memory trace collection.",
     "capture_content = true # Store content in local Claude trace events.",
+    "",
+    "[trace.deepagents]",
+    "enabled = true # Enable local Deep Agents Code session memory trace collection.",
+    "capture_content = true # Store content in local Deep Agents Code trace events.",
     "",
     "[trace.dsh]",
     "enabled = true # Enable local DSH session memory trace collection.",
@@ -1324,6 +1355,28 @@ function runClaudePreflight({ integrationSelected = true } = {}) {
   return { ok: true };
 }
 
+function runDeepAgentsPreflight({ integrationSelected = true } = {}) {
+  const version = deepAgentsRuntime.source === "unavailable"
+    ? { status: 1 }
+    : runExternalCommand(deepAgentsCommand, ["--version"], { print: false, timeout: 10_000 });
+  log(`Deep Agents Code CLI: ${commandSummary(version) ?? "not runnable"}`);
+  const home = process.env.DEEPAGENTS_HOME || join(homedir(), ".deepagents");
+  log(`Deep Agents Code profile: ${existsSync(home) ? `found (${home})` : "not detected"}`);
+  if (version.status !== 0) {
+    if (deepAgentsRuntime.source === "unavailable") return { ok: false };
+    setupDeploymentFailure("deepagents", "discover", version);
+    const detail = firstOutputLine({ stderr: version.stderr })
+      ?? version.error?.message
+      ?? `version check exited with ${version.status ?? version.signal ?? "unknown status"}`;
+    logRed(`Deep Agents Code runtime was found but could not run: ${detail}`);
+    return { ok: false, failed: true };
+  }
+  log(integrationSelected
+    ? "Keeping Deep Agents Code provider config unchanged and installing the shared memory plugin and Hooks."
+    : "Keeping Deep Agents Code provider config unchanged while checking whether to enable its integration.");
+  return { ok: true };
+}
+
 function runOpenCodePreflight({ integrationSelected = true } = {}) {
   const explicitConfigDir = stringOption(process.env.OPENCODE_CONFIG_DIR);
   const configHome = stringOption(process.env.XDG_CONFIG_HOME) ?? join(homedir(), ".config");
@@ -1467,6 +1520,9 @@ async function startBackendAndCheck({
   skipClaudeAdapter = false,
   claudeAdapterRequired = !skipClaudeAdapter,
   claudeSkipReason,
+  skipDeepAgentsAdapter = false,
+  deepagentsAdapterRequired = !skipDeepAgentsAdapter,
+  deepagentsSkipReason,
   skipOpenCodeAdapter = false,
   opencodeAdapterRequired = !skipOpenCodeAdapter,
   opencodeSkipReason,
@@ -1499,6 +1555,7 @@ async function startBackendAndCheck({
       if (checked.status === 0 && memoraxCodeEnabled(checked, {
         codexAdapterRequired: !skipCodexAdapter,
         claudeAdapterRequired,
+        deepagentsAdapterRequired,
         opencodeAdapterRequired,
         codebuddyAdapterRequired,
         workbuddyAdapterRequired,
@@ -1541,6 +1598,7 @@ async function startBackendAndCheck({
     isReady: (checked) => memoraxCodeEnabled(checked, {
       codexAdapterRequired: !skipCodexAdapter,
       claudeAdapterRequired,
+      deepagentsAdapterRequired,
       opencodeAdapterRequired,
       codebuddyAdapterRequired,
       workbuddyAdapterRequired,
@@ -1705,7 +1763,7 @@ function clientLifecycleFlags({ clientMode = "all" } = {}) {
 }
 
 function clientModeFor(clients, { includeDsh = false } = {}) {
-  const selected = ["codex", "claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor", "qoder"].filter((client) => (
+  const selected = ["codex", "claude", "deepagents", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor", "qoder"].filter((client) => (
     client === "dsh" ? includeDsh : clients.includes(client)
   ));
   if (selected.length === LIFECYCLE_CLIENT_IDS.length) return "all";
@@ -1723,6 +1781,7 @@ function clientSelectionMessage(clients, { dshSelected = false } = {}) {
     const labels = [
       clients.includes("codex") ? "Codex" : undefined,
       clients.includes("claude") ? "Claude Code" : undefined,
+      clients.includes("deepagents") ? "Deep Agents Code" : undefined,
       "DeepSeek Harness",
       clients.includes("opencode") ? "OpenCode" : undefined,
       clients.includes("codebuddy") ? "CodeBuddy CLI" : undefined,
@@ -1758,6 +1817,7 @@ function clientSelectionMessage(clients, { dshSelected = false } = {}) {
 function clientLabel(client) {
   if (client === "codex") return "Codex";
   if (client === "claude") return "Claude Code";
+  if (client === "deepagents") return "Deep Agents Code";
   if (client === "dsh") return "DeepSeek Harness";
   if (client === "opencode") return "OpenCode";
   if (client === "codebuddy") return "CodeBuddy CLI";
@@ -1964,6 +2024,7 @@ function codexClientRunning() {
 function printNextSteps({
   codexAdapterEnabled = true,
   claudeAdapterEnabled = true,
+  deepAgentsAdapterEnabled = true,
   dshAdapterEnabled = false,
   opencodeAdapterEnabled = true,
   codebuddyAdapterEnabled = true,
@@ -1976,6 +2037,7 @@ function printNextSteps({
   const clientText = enabledClientText({
     codexAdapterEnabled,
     claudeAdapterEnabled,
+    deepAgentsAdapterEnabled,
     opencodeAdapterEnabled,
     codebuddyAdapterEnabled,
     workbuddyAdapterEnabled,
@@ -1988,6 +2050,9 @@ function printNextSteps({
     log(`Restart or refresh ${clientText} only if its plugin shell was installed, changed, or newly enabled, or if MemoraX Code is not active on the next prompt.`);
   } else if (clientText) {
     logGreen(`${bold(`Restart or refresh ${clientText}`)} before opening a new MemoraX Code session.`);
+  }
+  if (deepAgentsAdapterEnabled) {
+    logGreen(`${bold("Start a new dcode session or run /reload")} so it loads the installed MemoraX Code plugin.`);
   }
   if (dshAdapterEnabled) {
     logGreen(`${bold("Restart or refresh DeepSeek Harness")} so its Profiles load the installed MemoraX Code plugin.`);
@@ -2006,6 +2071,7 @@ function printNextSteps({
   const statusCommands = statusCommandText({
     codexAdapterEnabled,
     claudeAdapterEnabled,
+    deepAgentsAdapterEnabled,
     opencodeAdapterEnabled,
     codebuddyAdapterEnabled,
     workbuddyAdapterEnabled,
@@ -2024,6 +2090,7 @@ function printNextSteps({
 function enabledClientText({
   codexAdapterEnabled = true,
   claudeAdapterEnabled = true,
+  deepAgentsAdapterEnabled = true,
   opencodeAdapterEnabled = true,
   codebuddyAdapterEnabled = true,
   workbuddyAdapterEnabled = true,
@@ -2034,6 +2101,7 @@ function enabledClientText({
   const labels = [
     codexAdapterEnabled ? "Codex" : undefined,
     claudeAdapterEnabled ? "Claude Code" : undefined,
+    deepAgentsAdapterEnabled ? "Deep Agents Code" : undefined,
     opencodeAdapterEnabled ? "OpenCode" : undefined,
     codebuddyAdapterEnabled ? "CodeBuddy CLI" : undefined,
     workbuddyAdapterEnabled ? "WorkBuddy" : undefined,
@@ -2049,6 +2117,7 @@ function enabledClientText({
 function statusCommandText({
   codexAdapterEnabled = true,
   claudeAdapterEnabled = true,
+  deepAgentsAdapterEnabled = true,
   opencodeAdapterEnabled = true,
   codebuddyAdapterEnabled = true,
   workbuddyAdapterEnabled = true,
@@ -2059,6 +2128,7 @@ function statusCommandText({
   const commands = ["`memorax-code status`"];
   if (codexAdapterEnabled) commands.push("`memorax-code-codex status`");
   if (claudeAdapterEnabled) commands.push("`memorax-code-claude status`");
+  if (deepAgentsAdapterEnabled) commands.push("`memorax-code-deepagents status`");
   if (opencodeAdapterEnabled) commands.push("`memorax-code-opencode status`");
   if (codebuddyAdapterEnabled) commands.push("`memorax-code-codebuddy status`");
   if (workbuddyAdapterEnabled) commands.push("`memorax-code status --clients workbuddy`");
@@ -2239,6 +2309,7 @@ function printLifecycleLockFailureSuggestions() {
 function printCommonCommands({
   codexAdapterEnabled = true,
   claudeAdapterEnabled = true,
+  deepAgentsAdapterEnabled = true,
   opencodeAdapterEnabled = true,
   codebuddyAdapterEnabled = true,
   workbuddyAdapterEnabled = true,
@@ -2253,6 +2324,7 @@ function printCommonCommands({
   log("- `memorax-code stop`: stop the local memory backend and disable managed client integrations.");
   if (codexAdapterEnabled) log("- `memorax-code-codex sessions`: verify recent native Codex session registration.");
   if (claudeAdapterEnabled) log("- `memorax-code-claude sessions`: verify recent native Claude Code session registration.");
+  if (deepAgentsAdapterEnabled) log("- `memorax-code-deepagents status`: verify the managed Deep Agents Code plugin and Hook integration.");
   if (opencodeAdapterEnabled) log("- `memorax-code-opencode doctor`: verify the managed OpenCode plugin, runtime evidence, and Backend health.");
   if (codebuddyAdapterEnabled) log("- `memorax-code-codebuddy status`: verify the managed CodeBuddy CLI plugin and Hook integration.");
   if (workbuddyAdapterEnabled) log("- `memorax-code status --clients workbuddy`: verify the managed WorkBuddy plugin and Hook integration.");
@@ -2264,6 +2336,7 @@ function printCommonCommands({
 function memoraxCodeEnabled(statusResult, {
   codexAdapterRequired = true,
   claudeAdapterRequired = true,
+  deepagentsAdapterRequired = true,
   opencodeAdapterRequired = true,
   codebuddyAdapterRequired = true,
   workbuddyAdapterRequired = true,
@@ -2280,6 +2353,7 @@ function memoraxCodeEnabled(statusResult, {
     || /Backend:\s*(?:running|ok)\b/im.test(normalized);
   const codexAdapterOk = /Codex adapter:\s*ok\b/im.test(normalized);
   const claudeAdapterOk = /Claude adapter:\s*ok\b/im.test(normalized);
+  const deepagentsAdapterOk = /Deep Agents adapter:\s*ok\b/im.test(normalized);
   const opencodeAdapterOk = /OpenCode adapter:\s*ok\b/im.test(normalized);
   const codebuddyAdapterOk = /CodeBuddy adapter:\s*ok\b/im.test(normalized);
   const workbuddyAdapterOk = /WorkBuddy adapter:\s*ok\b/im.test(normalized);
@@ -2290,6 +2364,7 @@ function memoraxCodeEnabled(statusResult, {
     && serviceOk
     && (!codexAdapterRequired || codexAdapterOk)
     && (!claudeAdapterRequired || claudeAdapterOk)
+    && (!deepagentsAdapterRequired || deepagentsAdapterOk)
     && (!opencodeAdapterRequired || opencodeAdapterOk)
     && (!codebuddyAdapterRequired || codebuddyAdapterOk)
     && (!workbuddyAdapterRequired || workbuddyAdapterOk)

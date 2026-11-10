@@ -1,0 +1,99 @@
+#!/usr/bin/env node
+import { postBackendCommand } from "../../memorax-code-adapter-common/src/backend-command.mjs";
+import { resolveBackendConnection } from "../../memorax-code-adapter-common/src/backend-connection.mjs";
+import { readStdinJson } from "../../memorax-code-adapter-common/src/config-utils.mjs";
+import { scheduleMissingRepoMemoryBuild } from "../../memorax-code-adapter-common/src/repo-memory/repo-memory-auto-build.mjs";
+import { isRepoMemoryJobWorker } from "../../memorax-code-adapter-common/src/repo-memory/repo-memory-job-context.mjs";
+
+const TURN_START_BACKEND_TIMEOUT_MS = 12_000;
+const DEEPAGENTS_CLIENT = "deepagents";
+const DEFAULT_BACKEND_TIMEOUT_MS = 5_000;
+
+if (isRepoMemoryJobWorker()) process.exit(0);
+
+try {
+  const input = await readStdinJson();
+  const event = stringValue(input.hook_event_name) ?? stringValue(input.hookEventName);
+  const sessionId = stringValue(input.session_id) ?? stringValue(input.sessionId);
+  const promptId = stringValue(input.prompt_id) ?? stringValue(input.promptId);
+  const transcriptPath = stringValue(input.transcript_path) ?? stringValue(input.transcriptPath);
+  if (!sessionId || !promptId || !transcriptPath) process.exit(0);
+
+  if (event === "UserPromptSubmit") {
+    const prompt = stringValue(input.prompt);
+    if (!prompt) process.exit(0);
+    const response = await postMemoryService("/memory/turn-start", {
+      version: 1,
+      client: DEEPAGENTS_CLIENT,
+      sessionId,
+      promptId,
+      transcriptPath,
+      prompt,
+      cwd: stringValue(input.cwd),
+      workspaceKind: stringValue(input.workspace_kind) ?? stringValue(input.workspaceKind),
+    });
+    scheduleMissingRepoMemoryBuild(stringValue(response?.repoMemoryWorktree), {
+      debugEnv: "MEMORAX_CODE_DEEPAGENTS_HOOK_DEBUG",
+      pluginRoot: pluginRoot(),
+    });
+    const systemMessage = stringValue(response?.userNotice);
+    if (systemMessage) {
+      process.stdout.write(`${JSON.stringify({
+        systemMessage,
+      })}\n`);
+    }
+  } else if (event === "Stop") {
+    const lastAssistantMessage = stringValue(input.last_assistant_message) ?? stringValue(input.lastAssistantMessage);
+    if (!lastAssistantMessage) process.exit(0);
+    await postMemoryService("/memory/writeback", {
+      version: 1,
+      client: DEEPAGENTS_CLIENT,
+      sessionId,
+      promptId,
+      transcriptPath,
+      lastAssistantMessage,
+      cwd: stringValue(input.cwd),
+      workspaceKind: stringValue(input.workspace_kind) ?? stringValue(input.workspaceKind),
+    });
+  }
+} catch (error) {
+  if (process.env.MEMORAX_CODE_DEEPAGENTS_HOOK_DEBUG === "1") {
+    console.error(error instanceof Error ? error.message : String(error));
+  }
+}
+
+process.exit(0);
+
+async function postMemoryService(path, body) {
+  const connection = resolveBackendConnection();
+  const timeoutMs = parsePositiveInt(
+    process.env.MEMORAX_CODE_DEEPAGENTS_MEMORY_HOOK_TIMEOUT_MS,
+    path === "/memory/turn-start" ? TURN_START_BACKEND_TIMEOUT_MS : DEFAULT_BACKEND_TIMEOUT_MS,
+  );
+  const response = await postBackendCommand({
+    connection,
+    path,
+    body,
+    timeoutMs,
+  });
+  if (!response.ok) {
+    await response.arrayBuffer().catch(() => undefined);
+    return undefined;
+  }
+  return await response.json().catch(() => undefined);
+}
+
+function parsePositiveInt(value, fallback) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function pluginRoot() {
+  return process.env.CLAUDE_PLUGIN_ROOT
+    ?? process.env.PLUGIN_ROOT
+    ?? undefined;
+}
+
+function stringValue(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}

@@ -162,9 +162,9 @@ test("npm registry JSON preserves recognized causes without retaining response t
   })), {});
 });
 
-test("update diagnostics relay all nine client failures including Qoder within the input bound", async (t) => {
+test("update diagnostics relay all ten client failures including Qoder within the input bound", async (t) => {
   const { diagnostics, memoraxCodeHome } = await fixture(t);
-  const clients = ["codex", "claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor", "qoder"];
+  const clients = ["codex", "claude", "deepagents", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor", "qoder"];
   const clientFailures = clients.map((client, index) => ({
     client,
     failure: { errorCode: "CLIENT_HOOKS_WRITE_FAILED", stage: "hooks-write", systemCode: "EACCES",

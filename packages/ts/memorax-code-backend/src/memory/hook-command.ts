@@ -7,7 +7,7 @@ import { parseTraeTurnId, traePromptDigest } from "../clients/trae/turn-id.js";
 export const MEMORY_HOOK_COMMAND_VERSION = 1 as const;
 export const INVALID_MEMORY_HOOK_COMMAND = "invalid memory Hook command";
 
-export type MemoryHookClient = "codex" | "claude-code" | "opencode" | "dsh" | "codebuddy" | "workbuddy" | "trae" | "cursor" | "qoder";
+export type MemoryHookClient = "codex" | "claude-code" | "deepagents" | "opencode" | "dsh" | "codebuddy" | "workbuddy" | "trae" | "cursor" | "qoder";
 
 const BASE_COMMAND_KEYS = [
   "version",
@@ -19,6 +19,7 @@ const BASE_COMMAND_KEYS = [
 const TURN_START_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = {
   codex: new Set([...BASE_COMMAND_KEYS, "turnId", "prompt", "transcriptPath"]),
   "claude-code": new Set([...BASE_COMMAND_KEYS, "promptId", "prompt", "transcriptPath"]),
+  deepagents: new Set([...BASE_COMMAND_KEYS, "promptId", "prompt", "transcriptPath"]),
   opencode: new Set([...BASE_COMMAND_KEYS, "userMessageId", "prompt"]),
   dsh: new Set(["version", "client", "sessionId", "turn", "startSeq", "cwd", "prompt"]),
   codebuddy: new Set([...BASE_COMMAND_KEYS, "turnId", "prompt", "transcriptPath"]),
@@ -30,6 +31,12 @@ const TURN_START_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> =
 const WRITEBACK_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = {
   codex: new Set([...BASE_COMMAND_KEYS, "turnId", "lastAssistantMessage", "transcriptPath"]),
   "claude-code": new Set([
+    ...BASE_COMMAND_KEYS,
+    "promptId",
+    "lastAssistantMessage",
+    "transcriptPath",
+  ]),
+  deepagents: new Set([
     ...BASE_COMMAND_KEYS,
     "promptId",
     "lastAssistantMessage",
@@ -61,6 +68,7 @@ const WRITEBACK_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = 
 const SKILL_REMINDER_KEYS: Readonly<Record<MemoryHookClient, ReadonlySet<string>>> = {
   codex: new Set([...BASE_COMMAND_KEYS, "turnId", "transcriptPath", "content", "triggers"]),
   "claude-code": new Set([...BASE_COMMAND_KEYS, "promptId", "transcriptPath", "content", "triggers"]),
+  deepagents: new Set([...BASE_COMMAND_KEYS, "promptId", "transcriptPath", "content", "triggers"]),
   dsh: new Set(["version", "client", "sessionId", "turn", "cwd", "content", "triggers"]),
   opencode: new Set([...BASE_COMMAND_KEYS, "userMessageId", "content", "triggers"]),
   codebuddy: new Set([...BASE_COMMAND_KEYS, "turnId", "transcriptPath", "content", "triggers"]),
@@ -88,6 +96,12 @@ export type CodexTurnStartCommand = MemoryHookCommandBase<"codex"> & Readonly<{
 }>;
 
 export type ClaudeTurnStartCommand = MemoryHookCommandBase<"claude-code"> & Readonly<{
+  promptId: string;
+  prompt: string;
+  transcriptPath: string;
+}>;
+
+export type DeepAgentsTurnStartCommand = MemoryHookCommandBase<"deepagents"> & Readonly<{
   promptId: string;
   prompt: string;
   transcriptPath: string;
@@ -147,6 +161,7 @@ export type QoderTurnStartCommand = MemoryHookCommandBase<"qoder"> & Readonly<{
 export type TurnStartCommand =
   | CodexTurnStartCommand
   | ClaudeTurnStartCommand
+  | DeepAgentsTurnStartCommand
   | OpenCodeTurnStartCommand
   | DshTurnStartCommand
   | CodeBuddyTurnStartCommand
@@ -168,6 +183,12 @@ export type CodexWritebackCommand = MemoryHookCommandBase<"codex"> & Readonly<{
 }>;
 
 export type ClaudeWritebackCommand = MemoryHookCommandBase<"claude-code"> & Readonly<{
+  promptId: string;
+  lastAssistantMessage: string;
+  transcriptPath: string;
+}>;
+
+export type DeepAgentsWritebackCommand = MemoryHookCommandBase<"deepagents"> & Readonly<{
   promptId: string;
   lastAssistantMessage: string;
   transcriptPath: string;
@@ -215,6 +236,7 @@ export type CursorWritebackCommand = MemoryHookCommandBase<"cursor"> & Readonly<
 export type WritebackCommand =
   | CodexWritebackCommand
   | ClaudeWritebackCommand
+  | DeepAgentsWritebackCommand
   | OpenCodeWritebackCommand
   | DshWritebackCommand
   | CodeBuddyWritebackCommand
@@ -240,6 +262,13 @@ export type CodexSkillReminderCommand = MemoryHookCommandBase<"codex"> & Readonl
 }>;
 
 export type ClaudeSkillReminderCommand = MemoryHookCommandBase<"claude-code"> & Readonly<{
+  promptId: string;
+  transcriptPath: string;
+  content: string;
+  triggers: SkillReminderTrigger[];
+}>;
+
+export type DeepAgentsSkillReminderCommand = MemoryHookCommandBase<"deepagents"> & Readonly<{
   promptId: string;
   transcriptPath: string;
   content: string;
@@ -284,6 +313,7 @@ export type CursorSkillReminderCommand = MemoryHookCommandBase<"cursor"> & Reado
 export type SkillReminderCommand =
   | CodexSkillReminderCommand
   | ClaudeSkillReminderCommand
+  | DeepAgentsSkillReminderCommand
   | DshSkillReminderCommand
   | OpenCodeSkillReminderCommand
   | CodeBuddySkillReminderCommand
@@ -406,6 +436,21 @@ export function parseTurnStartCommand(
     const turnId = requiredStringField(value, "turnId");
     if (!turnId || !validTraeTurnId(turnId, base.sessionId, prompt)) return invalidCommand();
     return { ok: true, command: { ...base, client: "trae", turnId, prompt } };
+  }
+  if (base.client === "deepagents") {
+    const promptId = requiredStringField(value, "promptId");
+    const transcriptPath = requiredStringField(value, "transcriptPath");
+    if (!promptId || !transcriptPath) return invalidCommand();
+    return {
+      ok: true,
+      command: {
+        ...base,
+        client: "deepagents",
+        promptId,
+        prompt,
+        transcriptPath,
+      },
+    };
   }
   const promptId = requiredStringField(value, "promptId");
   const transcriptPath = requiredStringField(value, "transcriptPath");
@@ -538,6 +583,18 @@ export function parseWritebackCommand(
   const promptId = requiredStringField(value, "promptId");
   const transcriptPath = requiredStringField(value, "transcriptPath");
   if (!promptId || !transcriptPath) return invalidCommand();
+  if (base.client === "deepagents") {
+    return {
+      ok: true,
+      command: {
+        ...base,
+        client: "deepagents",
+        promptId,
+        lastAssistantMessage,
+        transcriptPath,
+      },
+    };
+  }
   return {
     ok: true,
     command: {
@@ -626,6 +683,21 @@ export function parseSkillReminderCommand(
       },
     };
   }
+  if (base.client === "deepagents") {
+    const promptId = requiredStringField(value, "promptId");
+    if (!promptId) return invalidCommand();
+    return {
+      ok: true,
+      command: {
+        ...base,
+        client: "deepagents",
+        promptId,
+        transcriptPath,
+        content,
+        triggers,
+      },
+    };
+  }
   if (base.client !== "claude-code") return invalidCommand();
   const promptId = requiredStringField(value, "promptId");
   if (!promptId) return invalidCommand();
@@ -651,6 +723,7 @@ function parseCommandBase(
   if (
     client !== "codex"
     && client !== "claude-code"
+    && client !== "deepagents"
     && client !== "opencode"
     && client !== "dsh"
     && client !== "codebuddy"
