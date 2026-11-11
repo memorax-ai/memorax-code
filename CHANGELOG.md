@@ -6,22 +6,39 @@ behavior.
 
 ## Unreleased
 
+## [0.1.23] - 2026-11-11
+
 ### Added
 
 - Supported coding agents installed after setup are now activated
   automatically while the managed Backend is running, usually within about 15
   minutes. Set `[clients].<client> = false` to keep one disabled. See
   [Clients installed after setup](docs/configuration.md#clients-installed-after-setup).
+- Added Work Memory guidance for searching indexed documents and previous
+  business discussions through the shared Skill.
+- Added Search source selection with `--sources dialogue`, `--sources document`,
+  or both, plus document ID filtering for document-only searches.
+- Added structured Add input through `--messages-file`, supporting text, image,
+  and file parts, and explicit `auto` and `work` content types.
 
 ### Changed
 
 - First setup now records only the clients it finds. Clients it does not find
   stay undecided instead of being recorded as `false`.
+- Automatic writeback now defaults to server-side `auto` classification while
+  retaining the default eight-turn buffer. Explicit `work` routing sends each
+  completed turn immediately; explicit `code` retains code chunking.
+- Automatic auto/work/dialogue messages now retain at most 12000 Unicode code
+  points each. Auto batches are capped at 128000 text characters and 100 messages.
+- Search top-k and dense/sparse recall counts are now capped at 50.
 
 ### Fixed
 
 - Setup now finds the Claude Code runtime that macOS Claude Desktop places
   under a build directory.
+- Document Search preserves Markdown, source metadata, and server ordering.
+  JSON output keeps complete returned evidence; text output includes whole
+  chunks within its context budget and reports omitted evidence.
 
 ### Upgrade notes
 
@@ -30,6 +47,13 @@ upgrading, including one started by a background update, removes `false` from
 `[clients]` for agents that are still not installed, so they can be activated
 when they appear. A `false` for an agent that is installed is kept; delete that
 line or set it to `true`, then rerun `memorax-code setup` to enable that agent.
+
+Existing explicit `memory.add.content_type` settings remain in effect. Plain
+`add --memory` keeps its `code/pre_summarized` default; structured Add defaults
+to `auto/default`. Document and multimodal operations require support from the
+configured MemoraX service. Add acceptance does not confirm completed indexing.
+See [Writeback and explicit Add](docs/configuration.md#writeback-and-explicit-add)
+for routing and structured-input details.
 
 ## [0.1.22] - 2026-11-03
 
