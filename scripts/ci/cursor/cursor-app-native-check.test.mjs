@@ -211,19 +211,44 @@ test("native sequence restores the original session after workspace switching wi
   assert.equal(context.report.evidence.sameSessionRecovered, true);
 });
 
-test("Skill submission preserves its menu mention and rejects ambiguous menu or missing mention", async () => {
-  for (const [operation, menuCount, mentionCount, suffix] of [[undefined, 0, 0], ["search", 1, 1],
-    ["add", 2, 1, "MENU"], ["search", 1, 0, "MENTION"]]) {
+test("Skill submission supports both menu layouts and rejects missing or ambiguous exact titles and mentions", async () => {
+  const legacy = ".ui-slash-menu__content:visible";
+  const current = '[data-component="editor-suggest-list"][role="listbox"][aria-label="Slash commands"]:visible';
+  const menu = (container, titles = ["/memorax-code"], visible = true) => ({ container, titles, visible });
+  const cases = [
+    { menus: [], mentionCount: 0 },
+    { operation: "search", menus: [menu(legacy)], mentionCount: 1 },
+    { operation: "add", menus: [menu(current)], mentionCount: 1 },
+    { operation: "search", menus: [menu(current, ["/memorax-code-other", "/memorax-code"]),
+      menu(legacy, ["/memorax-code"], false), menu("unrelated-listbox")], mentionCount: 1 },
+    { operation: "search", menus: [], mentionCount: 0, suffix: "MENU" },
+    { operation: "search", menus: [menu(current, ["/memorax-code-other", "prefix /memorax-code"])], mentionCount: 0, suffix: "MENU" },
+    { operation: "add", menus: [menu(legacy), menu(current)], mentionCount: 1, suffix: "MENU" },
+    { operation: "search", menus: [menu(current)], mentionCount: 0, suffix: "MENTION" },
+  ];
+  for (const { operation, menus, mentionCount, suffix } of cases) {
     const events = [], fixture = { operation, prompt: operation ? "/memorax-code synthetic prompt" : "synthetic prompt" };
     let text = "", attached = false;
     const input = { async fill(value) { events.push("fill"); text = value; attached = false; },
-      async pressSequentially(value) { text += value; }, locator: () => ({ count: async () => mentionCount }),
+      async pressSequentially(value) { text += value; }, locator(selector) {
+        assert.equal(selector, '[data-typeahead-type="cursor_skill"][data-mention-name="memorax-code"]');
+        return { count: async () => mentionCount };
+      },
       async press(key) { events.push(key); if (key === "Enter") { assert.equal(text, fixture.prompt); assert.equal(attached, Boolean(operation)); } } };
     const submit = nativeFunction("submitPrompt", { page: {
-      locator: () => ({ locator: () => ({ filter: ({ hasText }) => {
-        assert.equal(hasText.test("/memorax-code-other"), false);
-        return { count: async () => menuCount, async click() { attached = true; text = "/memorax-code "; } };
-      } }) }),
+      locator(selector) {
+        const containers = selector.split(", ");
+        const selected = menus.filter((item) => item.visible && containers.includes(item.container));
+        return { locator(titleSelector) {
+          assert.equal(titleSelector, ".ui-slash-menu__item-title");
+          return { filter: ({ hasText }) => {
+            const matches = selected.flatMap((item) => item.titles.filter((title) => hasText.test(title)));
+            return { count: async () => matches.length, async click() {
+              assert.equal(matches.length, 1); attached = true; text = matches[0] + " ";
+            } };
+          } };
+        } };
+      },
       keyboard: { async insertText(value) { assert.equal(attached, true); text += value; } },
     }, async waitFor(predicate, code) { check(await predicate(), code); } });
     if (suffix) await assert.rejects(submit(input, fixture), { code: `CURSOR_APP_SKILL_${suffix}` });

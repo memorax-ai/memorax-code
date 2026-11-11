@@ -583,7 +583,10 @@ async function submitPrompt(input, fixture, context = {}) {
       await input.fill("");
       phase = "type-skill";
       await input.pressSequentially("/memorax-code");
-      const item = page.locator(".ui-slash-menu__content:visible")
+      const item = page.locator([
+        ".ui-slash-menu__content:visible",
+        '[data-component="editor-suggest-list"][role="listbox"][aria-label="Slash commands"]:visible',
+      ].join(", "))
         .locator(".ui-slash-menu__item-title").filter({ hasText: /^\/memorax-code$/ });
       phase = "select-skill";
       await waitFor(async () => await item.count() === 1, "CURSOR_APP_SKILL_MENU");

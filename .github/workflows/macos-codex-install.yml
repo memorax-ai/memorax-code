@@ -941,6 +941,7 @@ jobs:
           import { join } from 'node:path';
           const release = JSON.parse(readFileSync(join(process.env.RUNNER_TEMP, 'workbuddy-release.json'), 'utf8'));
           assert.equal(process.argv[3], release.productVersion);
+          const { workBuddyRuntimeVersion } = await import('./scripts/ci/codebuddy-workbuddy/workbuddy-runtime-metadata.mjs');
           const cli = join(process.argv[2], 'Contents/Resources/app.asar.unpacked/cli');
           for (const name of ['package.json', 'bin/codebuddy']) {
             const path = join(cli, name);
@@ -948,12 +949,7 @@ jobs:
             assert.ok(statSync(path).isFile());
           }
           const metadata = JSON.parse(readFileSync(join(cli, 'package.json'), 'utf8'));
-          assert.equal(metadata.publishConfig?.customPackage?.name, '@tencent-ai/codebuddy-code');
-          assert.equal(metadata.bin?.codebuddy, './bin/codebuddy');
-          const runtime = metadata.publishConfig?.customPackage?.version;
-          assert.match(runtime, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/);
-          assert.ok(!/[\r\n]/.test(runtime));
-          if (release.runtimeVersion !== null) assert.equal(runtime, release.runtimeVersion);
+          const runtime = workBuddyRuntimeVersion(metadata, release.runtimeVersion);
           const reportPath = join(process.env.RUNNER_TEMP, 'workbuddy-bundle.json');
           const report = JSON.parse(readFileSync(reportPath, 'utf8'));
           report.runtimeVersion = runtime;

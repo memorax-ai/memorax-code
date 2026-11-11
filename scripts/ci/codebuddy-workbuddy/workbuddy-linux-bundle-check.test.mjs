@@ -85,6 +85,21 @@ for (const args of [[], ["x64"]]) {
   });
 }
 
+for (const channel of ["baseline", "latest"]) {
+  test("WorkBuddy Linux " + channel + " acquisition validates the current metadata format", posixOnly, async () => {
+    await fixture(async ({ run, destination, releasePath, packageRoot }) => {
+      const runtimeVersion = channel === "baseline" ? "2.137.1" : "2.165.0";
+      const metadata = { name: "@genie/agent-cli", version: runtimeVersion,
+        publishConfig: { name: "@tencent-ai/codebuddy-code" }, bin: { codebuddy: "./bin/codebuddy" } };
+      await writeFile(join(packageRoot, cliRelative, "package.json"), JSON.stringify(metadata));
+      const args = channel === "baseline" ? [destination] : [destination, "x64", releasePath];
+      const result = await run(args);
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(JSON.parse(result.stdout).runtimeVersion, runtimeVersion);
+    }, { packageVersion: channel === "baseline" ? "5.5.6" : "5.7.0", hash: channel === "baseline" ? sha256 : latestRelease.sha256 });
+  });
+}
+
 test("WorkBuddy Linux latest acquisition discovers the bundled runtime after a hash warning", posixOnly, async () => {
   const actualSha256 = "b".repeat(64);
   await fixture(async ({ run, calls, curlArgs, destination, releasePath, metadata, packageRoot }) => {
