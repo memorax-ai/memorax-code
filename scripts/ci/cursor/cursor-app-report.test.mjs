@@ -187,7 +187,10 @@ test("the Hook timeline is kept for final PASS, final FAIL and recovered progres
       contextRequests: Array(11).fill(1), contextResults: Array(11).fill(1), contextCloses: Array(11).fill(1) }, memoryRequestCount: 11 });
   const timeline = { collection: "completed", readStatus: "present", filesRead: 4, raw: privateCanary,
     launches: [{ launch: 1, logFiles: 1, serviceInitMs: 900, config: [{ ms: 950, state: "loaded", text: privateCanary }],
-      requestsMs: { sessionStart: [1200], beforeSubmitPrompt: [1300] }, omittedEvents: 0 }],
+      requestsMs: { sessionStart: [1200], beforeSubmitPrompt: [1300] }, omittedEvents: 0,
+       loginMs: { started: 100, ended: 200, token: privateCanary },
+       dispatch: [{ ms: 1200, stage: "matched", step: "sessionStart", generation: 2, hooks: 0, command: privateCanary }],
+       hookConfig: [{ phase: "login-end", readStatus: "present", requestedMs: 200, completedMs: 201, contentChangedSinceLaunch: false, metadataChangedSinceLaunch: true, hash: privateCanary }] }],
     sessions: [{ role: "S1", launch: 1, createMs: { requested: 1100, observed: 1250 }, configAtCreate: "not-ready", id: privateCanary,
       submitsMs: [{ launch: 1, ms: 1300 }], context: { runs: 1, ownRuns: 0, none: ["initial"], foreignRoles: [privateCanary] } }],
     sessionStart: { requests: 1, ownedExecutionBlocks: 1, executions: [{ role: "S2", launch: 2, exitCode: 0, responseKind: "json",
@@ -204,6 +207,9 @@ test("the Hook timeline is kept for final PASS, final FAIL and recovered progres
     assert.equal(report.nativeExecution.reportSource, source === "progress" ? "progress" : "final");
     assert.deepEqual(report.hookTimeline, projectCursorAppHookTimeline(timeline));
     assert.equal(report.hookTimeline.sessions[0].configAtCreate, "not-ready");
+    assert.equal(report.hookTimeline.launches[0].dispatch[0].hooks, 0);
+    assert.equal(report.hookTimeline.launches[0].hookConfig[0].contentChangedSinceLaunch, false);
+    assert.deepEqual(report.hookTimeline.launches[0].loginMs, { started: 100, ended: 200 });
     assert.equal(report.hookTimeline.sessionStart.executions[0].traceRole, "S1");
     assert.equal(JSON.stringify(report).includes(privateCanary), false);
   }

@@ -11,6 +11,10 @@ import { assertClaudeSettings, assertLifecycleHooks, assertLifecycleMarketplace,
   snapshotClaudeSettings } from "./claude-lifecycle-assertions.mjs";
 import { trackLifecycleTerminal } from "./claude-lifecycle-process.mjs";
 import { selectNativeMemoraxPlugin } from "./claude-native-content-check.mjs";
+import { createEvidenceRecorder } from "../shared/ci-evidence.mjs";
+import { interruptionFailureEvidence } from "../codex/codex-install-interruption-evidence.mjs";
+import { collectInterruptionDiagnostics, createInterruptionGateObservation, interruptionCode,
+  observeInterruptionTerminal, recordInterruptionFailure, waitForInterruptionStage } from "./claude-install-interruption-evidence.mjs";
 
 const report = { status: "FAIL", suite: "claude_setup_interruption", platform: process.platform,
   paidModelRequests: 0, evidence: "real installed setup in a PTY; native lifecycle lock and test-only Node child admission gates", cases: [] };
@@ -18,6 +22,7 @@ const phases = ["after-config-write", "before-backend-start", "after-backend-sta
 const key = `sk_${"I".repeat(43)}`;
 const pluginName = "memorax-code-claude-adapter";
 let packageRoot, claudeCommand, pty, expectedVersion;
+const evidence = createEvidenceRecorder({ suite: "claude-install-interruption-check", client: "claude" });
 try {
   check(process.argv.length === 6, "EXPECTED_PACKAGE_CLAUDE_PTY_PATHS_AND_VERSION");
   packageRoot = resolve(process.argv[2]);
@@ -41,6 +46,9 @@ try {
   report.status = report.cases.every((result) => result.status === "PASS") ? "PASS" : "FAIL";
 } catch (error) {
   report.error = safeCode(error);
+  report.failureStage = "prerequisites";
+} finally {
+  report.evidenceStatus = evidence.finish({ testOutcome: report.status, failure: interruptionFailureEvidence(report) });
 }
 console.log(JSON.stringify(report, null, 2));
 if (report.status !== "PASS") process.exitCode = 1;
@@ -53,32 +61,40 @@ async function runCase(phase) {
   let gateEnabled = true, reached, initialConfig, parse, protectedConfig, protectedSettings;
   const gateReached = new Promise((done) => { reached = done; });
   const blockedResponses = new Set(), dependencyPids = new Set(), backendPids = new Set();
+  const gate = createInterruptionGateObservation(), cleanupErrors = new Set();
+  const stopTracking = evidence.track(() => ({ case: phase, stage, gate: gate.snapshot(), terminal: terminal?.snapshot() }));
+  const recordCleanup = (name, error) => {
+    if (cleanupErrors.has(error)) return;
+    cleanupErrors.add(error);
+    const failure = recordInterruptionFailure(result, phase + ":" + name, error, { cleanup: true });
+    evidence.observe(phase + ".cleanupFailure", failure);
+  };
   const quiesceSetup = () => setupCleanupPromise ??= (async () => {
     let cleanupError;
-    const attempt = async (operation) => {
-      try { await operation(); } catch (error) { cleanupError ??= error; }
+    const attempt = async (name, operation) => {
+      try { await operation(); } catch (error) { recordCleanup(name, error); cleanupError ??= error; }
     };
-    await attempt(async () => { if (terminal) await terminal.stop(); });
-    await attempt(async () => {
+    await attempt("terminal-stop", async () => { if (terminal) await terminal.stop(); });
+    await attempt("gate-release", async () => {
       gateEnabled = false;
       for (const response of blockedResponses) {
         if (!response.destroyed && !response.writableEnded) response.writeHead(503).end("cleanup");
       }
       blockedResponses.clear();
     });
-    await attempt(async () => {
+    await attempt("lock-release", async () => {
       releaseLock?.();
       try {
         if (heldLock) await deadline(heldLock, 10_000, "INTERRUPTION_RELEASE_LOCK_TIMEOUT");
       } finally { heldLock = undefined; }
     });
-    await attempt(async () => {
+    await attempt("gate-close", async () => {
       if (gateServer?.listening) {
         gateServer.closeAllConnections();
         await deadline(new Promise((done) => gateServer.close(done)), 5_000, "INTERRUPTION_GATE_CLOSE_TIMEOUT");
       }
     });
-    await attempt(() => waitFor(() => [...dependencyPids].every((pid) => !alive(pid)), "INTERRUPTION_CLEANUP_DEPENDENCY_REMAINS"));
+    await attempt("dependency-processes", () => waitFor(() => [...dependencyPids].every((pid) => !alive(pid)), "INTERRUPTION_CLEANUP_DEPENDENCY_REMAINS"));
     if (cleanupError) throw cleanupError;
   })();
   const rememberBackend = async () => {
@@ -93,29 +109,33 @@ async function runCase(phase) {
   };
   const cleanupSetup = () => cleanupPromise ??= (async () => {
     let cleanupError;
-    const attempt = async (operation) => {
-      try { await operation(); } catch (error) { cleanupError ??= error; }
+    const attempt = async (name, operation) => {
+      try { await operation(); } catch (error) { recordCleanup(name, error); cleanupError ??= error; }
     };
-    await attempt(quiesceSetup);
+    await attempt("setup-quiesce", quiesceSetup);
     if (harness) {
       delete harness.env.NODE_OPTIONS;
       delete harness.env.MEMORAX_TEST_CLAUDE_GATE_URL;
       delete harness.env.MEMORAX_TEST_GATED_ENTRYPOINT;
-      await attempt(rememberBackend);
-      await attempt(async () => {
+      await attempt("backend-record", rememberBackend);
+      await attempt("backend-stop", async () => {
         const stopped = JSON.parse((await harness.runProduct(["stop", "--clients", "claude", "--json"],
           { cleanup: true, timeout: 15_000 })).stdout);
         check(stopped.ok === true, "INTERRUPTION_CLEANUP_STOP_FAILED");
       });
-      await attempt(() => waitFor(() => [...backendPids, ...dependencyPids].every((pid) => !alive(pid)),
+      await attempt("remaining-processes", () => waitFor(() => [...backendPids, ...dependencyPids].every((pid) => !alive(pid)),
         "INTERRUPTION_CLEANUP_PROCESS_REMAINS"));
-      await attempt(async () => check(!(await rememberBackend()), "INTERRUPTION_CLEANUP_PID_RECORD_REMAINS"));
+      await attempt("backend-record-removal", async () => check(!(await rememberBackend()), "INTERRUPTION_CLEANUP_PID_RECORD_REMAINS"));
     }
     if (cleanupError) throw cleanupError;
   })();
   const config = () => readFile(join(harness.stateHome, "config.toml"), "utf8");
   const completed = () => exists(join(harness.stateHome, "runtime", "setup", "setup-completion.json"));
-  const observe = async (operation) => { try { await operation(); } catch (error) { result.errors.push(safeCode(error)); } };
+  const recordFailure = (error) => {
+    recordInterruptionFailure(result, phase + ":" + stage, error);
+    evidence.observe(phase + ".firstFailure", result.firstFailure);
+  };
+  const observe = async (operation) => { try { await operation(); } catch (error) { recordFailure(error); } };
   try {
     harness = await createNativeHarness({ packageRoot, claudeCommand, label: `interruption-${phase}`, writeback: false,
       expectedVersion });
@@ -138,27 +158,44 @@ async function runCase(phase) {
     stage = "interrupt-setup";
     gateServer = createServer((request, response) => {
       (async () => {
+        gate.stage("request");
         let raw = "";
         for await (const chunk of request) { raw += chunk; check(raw.length < 32768, "DEPENDENCY_GATE_REQUEST_TOO_LARGE"); }
         const call = JSON.parse(raw);
         check(request.method === "POST" && request.url === "/" && Number.isSafeInteger(call.pid) && call.pid > 1
           && Array.isArray(call.args) && call.args.every((arg) => typeof arg === "string")
           && ["start", "status"].includes(call.args[0]), "DEPENDENCY_GATE_REQUEST_INVALID");
+        gate.request(call.args[0]);
         let gated = false;
         const backend = await rememberBackend();
+        gate.record(backend === undefined ? "absent" : backend ? "valid" : "invalid");
         if (gateEnabled && phase === "after-config-write" && call.args[0] === "start" && !backend) gated = true;
         if (gateEnabled && phase === "after-backend-start" && call.args[0] === "status" && backend) {
+          gate.probingHealth();
           const health = await fetch(new URL("/health", backend.url), { signal: AbortSignal.timeout(5_000) });
+          gate.response(health);
           const body = await health.json();
+          gate.health(health, body, body?.instanceId === backend.instanceId);
           gated = health.ok && body.ok === true && body.instanceId === backend.instanceId;
         }
         if (gated) {
           dependencyPids.add(call.pid);
           blockedResponses.add(response);
-          reached({ kind: "test-preload-pauses-real-installed-cli-child", command: call.args[0], configPublished: await config() !== initialConfig,
+          gate.stage("config");
+          const configPublished = await config() !== initialConfig;
+          gate.stage("held");
+          reached({ kind: "test-preload-pauses-real-installed-cli-child", command: call.args[0], configPublished,
             backendHealthy: phase === "after-backend-start" });
-        } else response.writeHead(200).end("continue");
-      })().catch(() => { response.writeHead(500).end("dependency gate failed"); });
+        } else {
+          gate.stage("continued");
+          response.writeHead(200).end("continue");
+        }
+        evidence.observe(phase + ".gate", gate.snapshot());
+      })().catch((error) => {
+        gate.fail(error);
+        evidence.observe(phase + ".gate", gate.snapshot());
+        response.writeHead(500).end("dependency gate failed");
+      });
     });
     await new Promise((done, reject) => { gateServer.once("error", reject); gateServer.listen(0, "127.0.0.1", done); });
     Object.assign(harness.env, {
@@ -179,7 +216,7 @@ async function runCase(phase) {
         if (phase === "saved-account-key-cancel" && event === "key-prompt") reached({ kind: "native-masked-key-prompt", backendHealthy: false });
       },
     });
-    result.stageEvidence = await deadline(Promise.race([gateReached, terminal.exited.then(() => { throw failure("SETUP_EXITED_BEFORE_INTERRUPTION_STAGE"); })]),
+    result.stageEvidence = await deadline(waitForInterruptionStage(gateReached, terminal),
       110_000, "INTERRUPTION_STAGE_NOT_REACHED");
     terminal.verify();
     result.stageReached = true;
@@ -278,36 +315,43 @@ async function runCase(phase) {
     result.status = result.errors.length === 0 ? "PASS" : "FAIL";
   } catch (error) {
     result.failureStage = stage;
-    result.errors.push(safeCode(error));
+    recordFailure(error);
   } finally {
+    result.gate = gate.snapshot();
+    if (terminal) {
+      result.terminal = terminal.snapshot();
+      evidence.observe(phase + ".terminal", result.terminal);
+    }
+    if (result.status !== "PASS") result.productDiagnostics = await collectInterruptionDiagnostics(evidence, phase, harness);
     try {
       await cleanupSetup();
-      result.cleanup = "PASS";
-    } catch (error) {
-      result.status = "FAIL";
-      result.cleanup = safeCode(error);
+      if (!result.cleanupFailures?.length) result.cleanup = "PASS";
+    } catch (error) { recordCleanup("setup-cleanup", error); }
+    if (terminal) evidence.observe(phase + ".terminalAfterStop", terminal.snapshot());
+    if (result.cleanupFailures?.length && !result.productDiagnostics) {
+      result.productDiagnostics = await collectInterruptionDiagnostics(evidence, phase, harness);
     }
     try { await harness?.close(); }
-    catch (error) { result.status = "FAIL"; result.cleanup = safeCode(error); }
+    catch (error) { recordCleanup("harness-close", error); }
+    stopTracking();
+    evidence.observe(phase + ".result", { status: result.status, errors: result.errors, cleanup: result.cleanup });
   }
   return result;
 }
 
 function startTerminal(harness, args, { cancelCase, onStage = () => {} }) {
-  let output = "", outputBytes = 0, terminalError, queriesAnswered = 0, usernameAnswered = false, keySeen = false, startSeen = false;
+  let output = "", outputBytes = 0, queriesAnswered = 0, usernameAnswered = false, keySeen = false, startSeen = false;
+  let terminalFailed = false;
   const env = { ...harness.env, TERM: "xterm-256color" };
   delete env.MEMORAX_CODE_SETUP_ASSUME_INTERACTIVE;
   const child = pty.spawn(process.execPath, [join(packageRoot, "bin", "memorax-code.mjs"), ...args],
     { name: "xterm-256color", cols: 120, rows: 40, cwd: harness.workspace, env });
-  const terminal = { ...trackLifecycleTerminal(child, env), inputRequested: false, output: () => output,
-    verify() { if (terminalError) throw terminalError; } };
-  const abort = (error) => {
-    terminalError ??= error;
-    void terminal.stop().catch((cleanupError) => { terminalError = cleanupError; });
-  };
+  const terminal = { ...observeInterruptionTerminal(trackLifecycleTerminal(child, env)),
+    inputRequested: false, output: () => output };
   child.onData((chunk) => {
     try {
-      if (terminalError) return;
+      terminal.observation.output(chunk);
+      if (terminalFailed) return;
       outputBytes += Buffer.byteLength(chunk);
       if (outputBytes > 2 * 1024 * 1024) throw failure("INTERRUPTION_TERMINAL_OUTPUT_LIMIT");
       output += chunk;
@@ -325,7 +369,8 @@ function startTerminal(harness, args, { cancelCase, onStage = () => {} }) {
       if (cancelCase && keyPrompt && !keySeen) { keySeen = true; onStage("key-prompt"); }
       if (!startSeen && visible.includes("Starting backend with `memorax-code start`")) { startSeen = true; onStage("starting-backend"); }
     } catch (error) {
-      abort(error);
+      terminalFailed = true;
+      terminal.fail(error);
     }
   });
   return terminal;
@@ -382,7 +427,7 @@ function within(parent, path) {
 }
 function failure(code) { return Object.assign(new Error(code), { testCode: code }); }
 function check(condition, code) { if (!condition) throw failure(code); }
-function safeCode(error) { return error.testCode ?? error.nativeCode ?? error.message?.match(/^PROTECTED_[A-Z_]+/)?.[0] ?? "INTERRUPTION_CHECK_FAILED_PRIVATE_OUTPUT_SUPPRESSED"; }
+function safeCode(error) { return interruptionCode(error); }
 function alive(pid) {
   try { process.kill(pid, 0); return true; }
   catch (error) { if (error.code === "ESRCH") return false; if (error.code === "EPERM") return true; throw error; }

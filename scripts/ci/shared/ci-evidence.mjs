@@ -291,7 +291,7 @@ const LEDGER_EVENTS = ["start", "end", "skip", "not_run", "incomplete"];
 const SKIP_REASONS = ["pending_implementation"];
 const WRAPPER_PHASES = ["setup", "suites", "cleanup"];
 // Suites whose runners write a journal and a result; the ledger alone tracks every other suite.
-const EVIDENCE_SUITES = new Set(["codex-install-smoke", "codex-install-interruption-check", "opencode-native-check", "claude-install-smoke"]);
+const EVIDENCE_SUITES = new Set(["codex-install-smoke", "codex-install-interruption-check", "opencode-native-check", "claude-install-smoke", "claude-install-interruption-check"]);
 
 function writeLedgerRecord(directory, record) {
   appendFileSync(join(directory, "ledger.jsonl"), `${JSON.stringify({ v: EVIDENCE_SCHEMA, at: new Date().toISOString(), ...record })}\n`,

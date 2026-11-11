@@ -706,7 +706,8 @@ test("a main push manifest records the package, marks native client checks not a
   assert.equal(JSON.parse(await readFile(output, "utf8")).clientChecks, "NOT_APPLICABLE");
 });
 
-for (const [client, suite] of [["codex", "codex-install-interruption-check"], ["claude", "claude-install-smoke"]]) {
+for (const [client, suite] of [["codex", "codex-install-interruption-check"], ["claude", "claude-install-smoke"],
+  ["claude", "claude-install-interruption-check"]]) {
   test(suite + " requires its first-failure evidence and retains the primary failure", async (t) => {
     const setup = { ledger: [["plan", "", suite], ["phase", "", "suites"], ["start", suite], ["end", suite, "1"]] };
     const options = { client, os: "windows-2025", testStepOutcome: "failure" };
@@ -722,6 +723,6 @@ for (const [client, suite] of [["codex", "codex-install-interruption-check"], ["
     } }), options);
     assert.equal(recorded.evidenceStatus, "COMPLETE");
     assert.equal(recorded.category, "functional+cleanup");
-    assert.ok(recorded.signature.endsWith("|recovery|PRIMARY_FAILURE"));
+    assert.equal(recorded.signature, `${client}|windows-2025|${suite}|recovery|PRIMARY_FAILURE`);
   });
 }

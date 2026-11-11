@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open, opendir } from "node:fs/promises";
 import { isAbsolute, join, win32 } from "node:path";
@@ -18,11 +19,86 @@ const executionBlock = /(?:^|\n)\u2550{87}\n(\w+)\n\u2550{87}\nCommand: ([^\n]+)
 const elapsed = (value) => Number.isSafeInteger(value) && value >= 0 && value <= 1800000 ? value : null;
 const maxLaunches = 6, maxTimelineSessions = 6, maxTimelineEvents = 8, maxTimelineSubmits = 6, maxTimelineExecutions = 10;
 const configStates = ["reloading", "loaded", "partial", "missing"];
+const dispatchStages = ["request-line", "matched", "executing", "command-start", "merged", "no-valid-response", "failed", "cancelled", "timed-out"];
+const configPhases = ["launch", "login-start", "login-end", "config-wait-end", "session-wait-end"];
+const nullableCount = (value) => Number.isSafeInteger(value) && value >= 0 && value <= maxExecutionBlocks ? value : null;
+const nullableBoolean = (value) => typeof value === "boolean" ? value : null;
+
+// Fixed native metadata only. Unscoped execution lines must not inherit the last request's identity.
+function dispatchEvent(text) {
+  let match = /^Hook step requested: (sessionStart|beforeSubmitPrompt)$/.exec(text);
+  if (match) return { stage: "request-line", step: match[1], hooks: null };
+  match = /^Found (\d+) hook\(s\) to execute for step: (sessionStart|beforeSubmitPrompt)$/.exec(text);
+  if (match && nullableCount(Number(match[1])) !== null) return { stage: "matched", step: match[2], hooks: Number(match[1]) };
+  match = /^Merged (\d+) valid response\(s\) for step (sessionStart|beforeSubmitPrompt)$/.exec(text);
+  if (match && nullableCount(Number(match[1])) !== null) return { stage: "merged", step: match[2], hooks: Number(match[1]) };
+  match = /^All hooks for step (sessionStart|beforeSubmitPrompt) completed but none returned a valid response$/.exec(text);
+  if (match) return { stage: "no-valid-response", step: match[1], hooks: null };
+  if (/^Executing hook \d+\/\d+ from (?:user|project|enterprise|team|claude-project-local|claude-project|claude-user|claude-plugin) config$/.test(text)) return { stage: "executing", step: null, hooks: null };
+  if (/^Running hook \d+ with timeout \d+ms$/.test(text)) return { stage: "command-start", step: null, hooks: null };
+  if (/^ERROR: Hook \d+ timed out after \d+s$/.test(text)) return { stage: "timed-out", step: null, hooks: null };
+  if (/^ERROR: Hook \d+ failed with exit code \d+$/.test(text)) return { stage: "failed", step: null, hooks: null };
+  match = /^Hook execution for step (sessionStart|beforeSubmitPrompt) canceled by signal abort$/.exec(text);
+  if (match) return { stage: "cancelled", step: match[1], hooks: null };
+}
+
+// Fingerprints stay in this observer; only comparisons and observation times leave it.
+export function createCursorAppHookConfigObserver({ now = Date.now } = {}) {
+  const samples = [];
+  async function read(home) {
+    if (typeof home !== "string" || !isAbsolute(home) || /[\0\r\n]/.test(home)) throw "invalid";
+    const directory = await lstat(home);
+    if (directory.isSymbolicLink() || !directory.isDirectory()) throw "unsafe";
+    const path = join(home, "hooks.json"), before = await lstat(path);
+    if (before.isSymbolicLink() || !before.isFile()) throw "unsafe";
+    if (before.size > 64 * 1024) throw "oversized";
+    const file = await open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0));
+    const identity = (stat) => [stat.dev, stat.ino, stat.size, stat.mtimeMs, stat.ctimeMs].join(":");
+    try {
+      const opened = await file.stat();
+      if (!opened.isFile() || identity(opened) !== identity(before)) throw "unavailable";
+      const buffer = Buffer.alloc(before.size);
+      let position = 0;
+      while (position < buffer.length) {
+        const { bytesRead } = await file.read(buffer, position, buffer.length - position, position);
+        if (!bytesRead) throw "unavailable";
+        position += bytesRead;
+      }
+      const after = await lstat(path), parent = await lstat(home);
+      if (identity(await file.stat()) !== identity(before) || identity(after) !== identity(before)
+        || after.isSymbolicLink() || parent.isSymbolicLink() || parent.dev !== directory.dev || parent.ino !== directory.ino) throw "unavailable";
+      return { digest: createHash("sha256").update(buffer).digest("hex"), metadata: identity(before) };
+    } finally { await file.close(); }
+  }
+  return {
+    sample({ home, launch, startedAt, phase }) {
+      if (!configPhases.includes(phase) || !Number.isSafeInteger(launch) || launch < 1 || launch > maxLaunches
+        || !Number.isSafeInteger(startedAt) || samples.filter((item) => item.launch === launch).length >= maxTimelineEvents) return;
+      const item = { launch, phase, requestedAt: now(), completedAt: null, startedAt, readStatus: "unavailable" };
+      samples.push(item);
+      // No await in the native flow; a pending read remains explicitly unobserved in the snapshot.
+      return read(home).then((value) => { item.value = value; item.readStatus = "present"; }, (error) => {
+        item.readStatus = statuses.includes(error) ? error : error?.code === "ENOENT" ? "absent" : "unavailable";
+      }).finally(() => { item.completedAt = now(); });
+    },
+    snapshot() {
+      return samples.map((item) => {
+        const baseline = samples.find((first) => first.launch === item.launch && first.phase === "launch");
+        const comparable = baseline !== item && baseline?.value && item.value && baseline.completedAt !== null
+          && baseline.completedAt <= item.requestedAt && item.completedAt !== null;
+        return { launch: item.launch, phase: item.phase, readStatus: item.readStatus,
+          requestedMs: elapsed(item.requestedAt - item.startedAt), completedMs: item.completedAt === null ? null : elapsed(item.completedAt - item.startedAt),
+          contentChangedSinceLaunch: comparable ? baseline.value.digest !== item.value.digest : null,
+          metadataChangedSinceLaunch: comparable ? baseline.value.metadata !== item.value.metadata : null };
+      });
+    },
+  };
+}
 
 export function projectCursorAppHookDiagnostics(value) {
   return {
     readStatus: choice(value?.readStatus, statuses, "unavailable"), filesRead: count(value?.filesRead, maxFiles),
-    // Request lines have no native identity; they are never evidence for this Turn.
+    // Request lines may repeat within one invocation and have no native identity; they never prove this Turn.
     unscopedRequests: Object.fromEntries(steps.map((step) => [step, count(value?.unscopedRequests?.[step], 4096)])),
     // Only complete, marker-owned blocks enter these counts, before identity filtering.
     ownedExecutionBlocks: Object.fromEntries(steps.map((step) => [step, count(value?.ownedExecutionBlocks?.[step], maxExecutionBlocks)])),
@@ -330,9 +406,17 @@ export function projectCursorAppHookTimeline(value) {
     unattributedLogFiles: count(value?.unattributedLogFiles, maxFiles), incompleteLogFiles: count(value?.incompleteLogFiles, maxFiles),
     // Every time is relative to the check's spawn of the same launch.
     launches: list(value?.launches, maxLaunches).map((item) => ({
-      launch: launch(item.launch), logFiles: count(item.logFiles, maxFiles), serviceInitMs: elapsed(item.serviceInitMs),
+      launch: launch(item.launch), logFiles: count(item.logFiles, maxFiles), serviceInitMs: elapsed(item.serviceInitMs), serviceReadyMs: elapsed(item.serviceReadyMs),
+      loginMs: { started: elapsed(item.loginMs?.started), ended: elapsed(item.loginMs?.ended) },
       config: list(item.config, maxTimelineEvents).filter((event) => configStates.includes(event.state) && elapsed(event.ms) !== null)
-        .map((event) => ({ ms: event.ms, state: event.state })),
+        .map((event) => ({ ms: event.ms, state: event.state, generation: nullableCount(event.generation) })),
+      dispatch: list(item.dispatch, maxTimelineEvents).filter((event) => dispatchStages.includes(event.stage) && elapsed(event.ms) !== null)
+        .map((event) => ({ ms: event.ms, stage: event.stage, step: choice(event.step, ["sessionStart", "beforeSubmitPrompt"], null),
+          generation: nullableCount(event.generation), hooks: nullableCount(event.hooks) })),
+      hookConfig: list(item.hookConfig, maxTimelineEvents).filter((event) => configPhases.includes(event.phase))
+        .map((event) => ({ phase: event.phase, readStatus: choice(event.readStatus, statuses, "unavailable"),
+          requestedMs: elapsed(event.requestedMs), completedMs: elapsed(event.completedMs),
+          contentChangedSinceLaunch: nullableBoolean(event.contentChangedSinceLaunch), metadataChangedSinceLaunch: nullableBoolean(event.metadataChangedSinceLaunch) })),
       requestsMs: { sessionStart: times(item.requestsMs?.sessionStart), beforeSubmitPrompt: times(item.requestsMs?.beforeSubmitPrompt) },
       omittedEvents: count(item.omittedEvents, maxExecutionBlocks),
     })),
@@ -363,7 +447,7 @@ export function projectCursorAppHookTimeline(value) {
 }
 
 // One bounded read of every launch's Hooks log. Native identities leave this function only as check roles.
-export async function collectCursorAppHookTimeline({ home, launches, sessions, runs } = {}) {
+export async function collectCursorAppHookTimeline({ home, launches, sessions, runs, logins, hookConfigs } = {}) {
   const starts = Array.isArray(launches) ? launches.slice(0, maxLaunches) : [];
   const created = Array.isArray(sessions) ? sessions.slice(0, maxTimelineSessions) : [];
   const roles = new Map();
@@ -377,7 +461,7 @@ export async function collectCursorAppHookTimeline({ home, launches, sessions, r
     }
   }
   const roleOf = (id) => roles.get(id) ?? "other";
-  const logs = starts.map(() => ({ files: 0, config: [], requests: { sessionStart: [], beforeSubmitPrompt: [] } }));
+  const logs = starts.map(() => ({ files: 0, config: [], dispatch: [], requests: { sessionStart: [], beforeSubmitPrompt: [] } }));
   const result = { ...projectCursorAppHookDiagnostics(), unattributedLogFiles: 0, incompleteLogFiles: 0 };
   let files = 0;
   const status = await readHookLogs(home, (raw) => {
@@ -390,9 +474,18 @@ export async function collectCursorAppHookTimeline({ home, launches, sessions, r
       log.files += 1; log.init = Math.min(log.init ?? init.time, init.time);
       // An incomplete log is known only up to its last readable line.
       log.until = scan.complete ? Infinity : scan.lines.at(-1).time;
+      // An observed reload ordinal, not the managed Hook runtime generation.
+      let generation = 0;
       for (const line of scan.lines) {
+        if (line.text === "Cursor Hooks Service initialized successfully") log.ready = line.time;
+        const event = dispatchEvent(line.text);
         const state = configState(line.text), step = /^Hook step requested: (sessionStart|beforeSubmitPrompt)$/.exec(line.text)?.[1];
-        if (state) log.config.push({ time: line.time, state });
+        if (state === "reloading") generation += 1;
+        if (state) log.config.push({ time: line.time, state, generation });
+        if (event) {
+          if (log.dispatch.length >= maxExecutionBlocks) throw "oversized";
+          log.dispatch.push({ time: line.time, ...event, generation });
+        }
         if (step) log.requests[step].push(line.time);
       }
     } else result.unattributedLogFiles += 1;
@@ -413,12 +506,18 @@ export async function collectCursorAppHookTimeline({ home, launches, sessions, r
   return projectCursorAppHookTimeline({ ...status, collection: "completed",
     unattributedLogFiles: result.unattributedLogFiles, incompleteLogFiles: result.incompleteLogFiles,
     launches: logs.map((log, index) => {
-      const config = log.config.map((event) => ({ ms: since(event.time, index + 1), state: event.state }))
+      const config = log.config.map((event) => ({ ms: since(event.time, index + 1), state: event.state, generation: log.files === 1 ? event.generation : null }))
         .filter((event) => event.ms !== null);
       const requestsMs = Object.fromEntries(Object.entries(log.requests).map(([step, times]) =>
         [step, times.sort((a, b) => a - b).map((time) => since(time, index + 1)).filter((item) => item !== null)]));
-      return { launch: index + 1, logFiles: log.files, serviceInitMs: since(log.init, index + 1), config, requestsMs,
-        omittedEvents: [config, ...Object.values(requestsMs)].reduce((total, items) => total + Math.max(0, items.length - maxTimelineEvents), 0) };
+      const dispatch = log.dispatch.map((event) => ({ ...event, ms: since(event.time, index + 1), generation: log.files === 1 ? event.generation : null }))
+        .filter((event) => event.ms !== null);
+      const login = Array.isArray(logins) ? logins[index] : undefined;
+      return { launch: index + 1, logFiles: log.files, serviceInitMs: since(log.init, index + 1), serviceReadyMs: since(log.ready, index + 1),
+        loginMs: { started: since(login?.startedAt, index + 1), ended: since(login?.endedAt, index + 1) }, config, dispatch, requestsMs,
+        hookConfig: (Array.isArray(hookConfigs) ? hookConfigs : []).filter((item) => item?.launch === index + 1),
+        omittedEvents: Math.min(maxExecutionBlocks, [config, dispatch, ...Object.values(requestsMs)]
+          .reduce((total, items) => total + Math.max(0, items.length - maxTimelineEvents), 0)) };
     }),
     sessions: created.map((session, index) => {
       // Readiness at both ends of the creation wait, only when every log was read and the launch's only

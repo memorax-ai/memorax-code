@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtemp, mkdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, realpath, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import test from "node:test";
 import { collectCursorAppHookDiagnostics, projectCursorAppHookDiagnostics, collectCursorAppHookTiming, projectCursorAppHookTiming,
   collectCursorAppSessionHookDiagnostics, projectCursorAppSessionHookDiagnostics, projectCursorAppHookReadinessFailure,
-  collectCursorAppHookTimeline, projectCursorAppHookTimeline } from "./cursor-app-hook-diagnostics.mjs";
+  collectCursorAppHookTimeline, projectCursorAppHookTimeline, createCursorAppHookConfigObserver } from "./cursor-app-hook-diagnostics.mjs";
 
 const secret = "PRIVATE_PROMPT_PATH_EMAIL_TOKEN_CANARY";
 const rule = "\u2550".repeat(87), command = `node /${secret}/runtime-hook.mjs --memorax-code-cursor-hook-v1`;
@@ -373,6 +373,8 @@ test("readiness failure projection is bounded, idempotent and excludes identity 
   assert.equal(JSON.stringify(invalid).includes(secret), false);
 });
 
+const launchDefaults = { serviceReadyMs: null, loginMs: { started: null, ended: null }, dispatch: [], hookConfig: [] };
+const requestEvent = (ms, step, generation) => ({ ms, stage: "request-line", step, generation, hooks: null });
 const loadedText = "Loaded 5 user hook(s) for steps: sessionStart, beforeSubmitPrompt, preCompact, afterAgentResponse, stop";
 async function timelineFixture(t) {
   const home = await realpath(await mkdtemp(join(tmpdir(), "cursor-hook-timeline-")));
@@ -422,9 +424,11 @@ test("Hook timeline attributes launches, sessionStart executions and request con
   const second2 = { launch: 2, writtenMs: { notBefore: 6, notAfter: 20 }, submitRequestsBefore: 0 };
   assert.deepEqual(result, { collection: "completed", readStatus: "present", filesRead: 3, unattributedLogFiles: 1, incompleteLogFiles: 1,
     launches: [
-      { launch: 1, logFiles: 1, serviceInitMs: 1, config: [{ ms: 2, state: "reloading" }, { ms: 9, state: "loaded" }],
+      { ...launchDefaults, launch: 1, logFiles: 1, serviceInitMs: 1, config: [{ ms: 2, state: "reloading", generation: 1 }, { ms: 9, state: "loaded", generation: 1 }],
+        dispatch: [requestEvent(4, "sessionStart", 1), requestEvent(12, "beforeSubmitPrompt", 1), requestEvent(15, "beforeSubmitPrompt", 1)],
         requestsMs: { sessionStart: [4], beforeSubmitPrompt: [12, 15] }, omittedEvents: 0 },
-      { launch: 2, logFiles: 1, serviceInitMs: 1, config: [{ ms: 2, state: "reloading" }, { ms: 3, state: "loaded" }],
+      { ...launchDefaults, launch: 2, logFiles: 1, serviceInitMs: 1, config: [{ ms: 2, state: "reloading", generation: 1 }, { ms: 3, state: "loaded", generation: 1 }],
+        dispatch: [requestEvent(6, "sessionStart", 1), requestEvent(20, "beforeSubmitPrompt", 1)],
         requestsMs: { sessionStart: [6], beforeSubmitPrompt: [20] }, omittedEvents: 0 }],
     sessions: [
       { role: "S1", launch: 1, createMs: { requested: 5, observed: 8 }, configAtCreate: "not-ready", submitsMs: [{ launch: 1, ms: 11 }],
@@ -457,9 +461,9 @@ test("Hook timeline reports readiness changes, ambiguous log windows, caps and s
   // Loaded when creation was requested, reloading when it was observed.
   assert.deepEqual(result.sessions.map((item) => item.configAtCreate), ["changed", "unknown"]);
   assert.deepEqual(result.launches[0].requestsMs.beforeSubmitPrompt, [10, 11, 12, 13, 14, 15, 16, 17]);
-  assert.equal(result.launches[0].omittedEvents, 2);
-  assert.deepEqual(result.launches[1], { launch: 2, logFiles: 2, serviceInitMs: 1,
-    config: [{ ms: 3, state: "loaded" }, { ms: 4, state: "loaded" }], requestsMs: { sessionStart: [], beforeSubmitPrompt: [] }, omittedEvents: 0 });
+  assert.equal(result.launches[0].omittedEvents, 4);
+  assert.deepEqual(result.launches[1], { ...launchDefaults, launch: 2, logFiles: 2, serviceInitMs: 1,
+    config: [{ ms: 3, state: "loaded", generation: null }, { ms: 4, state: "loaded", generation: null }], requestsMs: { sessionStart: [], beforeSubmitPrompt: [] }, omittedEvents: 0 });
   const unattributed = await collectCursorAppHookTimeline({ home, launches: [], sessions });
   assert.equal(unattributed.unattributedLogFiles, 3);
   assert.deepEqual(unattributed.launches, []);
@@ -479,11 +483,11 @@ test("Hook timeline leaves readiness unknown when a read fails or the log stops 
   // The read fails on the 33rd execution, after this launch's configuration lines were collected.
   const failed = await collect(() => Array.from({ length: 33 }, start).join(""));
   assert.deepEqual([failed.readStatus, failed.launches[0].config, failed.sessions[0].configAtCreate],
-    ["oversized", [{ ms: 3, state: "loaded" }], "unknown"]);
+    ["oversized", [{ ms: 3, state: "loaded", generation: 0 }], "unknown"]);
   // The readable part ends before creation was observed, so a reload there could be missing.
   const cut = await collect(() => start().slice(0, -40));
   assert.deepEqual([cut.readStatus, cut.incompleteLogFiles, cut.launches[0].config, cut.sessions[0].configAtCreate],
-    ["present", 1, [{ ms: 3, state: "loaded" }], "unknown"]);
+    ["present", 1, [{ ms: 3, state: "loaded", generation: 0 }], "unknown"]);
   const covered = await collect((line) => line(startedAt, 8, "Hook step requested: sessionStart") + start().slice(0, -40));
   assert.deepEqual([covered.incompleteLogFiles, covered.sessions[0].configAtCreate], [1, "ready"]);
 });
@@ -519,10 +523,124 @@ test("Hook timeline projection is idempotent, bounded and drops unknown, private
   const invalid = projectCursorAppHookTimeline({ collection: secret, launches: [{ launch: 0, serviceInitMs: -1, config: [{ ms: 1, state: secret }],
     requestsMs: { sessionStart: [-1, max + 1, 3] } }], sessions: [{ role: secret, launch: 9, configAtCreate: secret, submitsMs: [{ launch: 1, ms: -1 }] }],
     sessionStart: { executions: [{ role: secret, trace: secret, traceRole: "S1" }, { trace: "own", traceRole: "S1" }] } });
-  assert.deepEqual(invalid.launches, [{ launch: null, logFiles: 0, serviceInitMs: null, config: [],
+  assert.deepEqual(invalid.launches, [{ ...launchDefaults, launch: null, logFiles: 0, serviceInitMs: null, config: [],
     requestsMs: { sessionStart: [3], beforeSubmitPrompt: [] }, omittedEvents: 0 }]);
   assert.deepEqual([invalid.sessions[0].role, invalid.sessions[0].launch, invalid.sessions[0].configAtCreate, invalid.sessions[0].submitsMs],
     ["other", null, "unknown", [{ launch: 1, ms: null }]]);
   assert.deepEqual(invalid.sessionStart.executions.map((item) => [item.role, item.trace, item.traceRole]), [["other", "absent", null], ["other", "own", null]]);
   assert.equal(JSON.stringify(invalid).includes(secret), false);
+});
+
+
+test("native scheduling distinguishes repeated request lines, explicit zero matches and executed hooks without context", async (t) => {
+  const { home, line, write } = await timelineFixture(t), sessionId = randomUUID();
+  const cases = [
+    { body: [[6, "Hook step requested: sessionStart"], [8, "Reloading hooks configuration..."], [9, "Hook step requested: sessionStart"], [10, loadedText]],
+      stages: ["request-line", "request-line"], matches: [], blocks: 0, generations: [1, 2] },
+    { body: [[6, "Hook step requested: sessionStart"], [7, "Found 0 hook(s) to execute for step: sessionStart"]],
+      stages: ["request-line", "matched"], matches: [0], blocks: 0, generations: [1, 1] },
+    { body: [[6, "Hook step requested: sessionStart"], [7, "Found 1 hook(s) to execute for step: sessionStart"],
+      [8, "Executing hook 1/1 from user config"], [9, "Running hook 1 with timeout 10000ms"], [10, "Merged 1 valid response(s) for step sessionStart"]],
+      stages: ["request-line", "matched", "executing", "command-start", "merged"], matches: [1], blocks: 1, generations: [1, 1, 1, 1, 1] },
+  ];
+  for (const c of cases) {
+    await write("20261009T120000", line(startedAt, 1, "Initializing Cursor Hooks Service...")
+      + line(startedAt, 2, "Reloading hooks configuration...") + line(startedAt, 3, loadedText)
+      + line(startedAt, 4, "Cursor Hooks Service initialized successfully")
+      + c.body.map(([ms, text]) => line(startedAt, ms, text)).join("")
+      + (c.blocks ? execution({ hook_event_name: "sessionStart", conversation_id: sessionId, session_id: sessionId,
+        generation_id: "", workspace_roots: [home] }, { output: {}, stderr: "" }) : ""));
+    const value = await collectCursorAppHookTimeline({ home, launches: [startedAt],
+      sessions: [{ id: sessionId, launch: 1, requestedAt: startedAt + 5, observedAt: startedAt + 6 }],
+      logins: [{ startedAt: startedAt + 1, endedAt: startedAt + 2 }] });
+    const launch = value.launches[0];
+    assert.deepEqual(launch.dispatch.map(x => x.stage), c.stages);
+    assert.deepEqual(launch.dispatch.filter(x => x.stage === "matched").map(x => x.hooks), c.matches);
+    assert.deepEqual(launch.dispatch.map(x => x.generation), c.generations);
+    assert.equal(launch.serviceReadyMs, 4);
+    assert.deepEqual(launch.loginMs, { started: 1, ended: 2 });
+    assert.equal(value.sessionStart.ownedExecutionBlocks, c.blocks);
+    // These metadata lines never replace the exact session's context-bearing completion.
+    const readiness = await collectCursorAppHookTiming({ home, startedAt, sessionId });
+    assert.equal(readiness.requiredUserHooksLoaded, true);
+    assert.equal(readiness.sessionStartReady, false);
+    assert.ok(launch.dispatch.filter(x => ["executing", "command-start"].includes(x.stage)).every(x => x.step === null));
+  }
+});
+
+test("dispatch diagnostics whitelist native stages, exclude payload lookalikes and bound retained events", async (t) => {
+  const { home, line, write } = await timelineFixture(t), id = randomUUID();
+  const untrusted = line(startedAt, 6, "Found 999 hook(s) to execute for step: sessionStart");
+  const body = ["Found 2 hook(s) to execute for step: beforeSubmitPrompt", "Executing hook 1/2 from user config", "Running hook 1 with timeout 10000ms",
+    "ERROR: Hook 1 failed with exit code 1", "Hook execution for step beforeSubmitPrompt canceled by signal abort",
+    "ERROR: Hook 2 timed out after 10s", "All hooks for step beforeSubmitPrompt completed but none returned a valid response",
+    "Merged 2 valid response(s) for step sessionStart"];
+  await write("20261009T120000", line(startedAt, 1, "Initializing Cursor Hooks Service...") + line(startedAt, 2, loadedText)
+    + body.map((text, i) => line(startedAt, 10 + i, text)).join("")
+    + line(startedAt, 20, "Found 1 hook(s) to execute for step: sessionStart " + secret)
+    + line(startedAt, 21, "Found 99999 hook(s) to execute for step: sessionStart")
+    + line(startedAt, 22, "Running script in directory: /" + secret)
+    + execution({ hook_event_name: "sessionStart", conversation_id: id }, { output: { additional_context: untrusted + secret }, stderr: untrusted })
+    + line(startedAt, 30, "Hook step requested: sessionStart") + line(startedAt, 31, "Hook step requested: sessionStart"));
+  const value = await collectCursorAppHookTimeline({ home, launches: [startedAt] });
+  assert.deepEqual(value.launches[0].dispatch.map(x => x.stage), ["matched", "executing", "command-start", "failed", "cancelled", "timed-out", "no-valid-response", "merged"]);
+  assert.equal(value.launches[0].dispatch.length, 8);
+  assert.equal(value.launches[0].omittedEvents, 2);
+  assert.ok(value.launches[0].dispatch.every(x => x.hooks !== 999));
+  assert.equal(JSON.stringify(value).includes(secret), false);
+  assert.equal(JSON.stringify(value).includes(home), false);
+  assert.deepEqual(projectCursorAppHookTimeline(value), value);
+});
+
+test("isolated Hook config observations retain only bounded comparisons and do not wait in the native flow", async (t) => {
+  const home = await realpath(await mkdtemp(join(tmpdir(), "cursor-hook-config-")));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const file = join(home, "hooks.json");
+  await writeFile(file, JSON.stringify({ command: secret }));
+  let now = startedAt;
+  const observer = createCursorAppHookConfigObserver({ now: () => now });
+  const sample = (phase, launch = 1) => observer.sample({ home, phase, launch, startedAt });
+  const pending = sample("launch");
+  assert.equal(observer.snapshot()[0].completedMs, null);
+  assert.equal(observer.snapshot()[0].contentChangedSinceLaunch, null);
+  now += 1; await pending;
+  now += 1; await sample("login-start");
+  assert.deepEqual([observer.snapshot()[1].contentChangedSinceLaunch, observer.snapshot()[1].metadataChangedSinceLaunch], [false, false]);
+  await utimes(file, new Date("2020-01-01"), new Date("2020-01-01"));
+  now += 1; await sample("login-end");
+  assert.deepEqual([observer.snapshot()[2].contentChangedSinceLaunch, observer.snapshot()[2].metadataChangedSinceLaunch], [false, true]);
+  await writeFile(file, JSON.stringify({ command: secret + "changed" }));
+  now += 1; await sample("config-wait-end");
+  assert.equal(observer.snapshot()[3].contentChangedSinceLaunch, true);
+  const frozen = observer.snapshot();
+  now += 1; await sample("launch", 2);
+  assert.equal(observer.snapshot().at(-1).contentChangedSinceLaunch, null);
+  for (let i = 0; i < 20; i++) await sample("session-wait-end");
+  assert.equal(observer.snapshot().filter(x => x.launch === 1).length, 8);
+  assert.equal(frozen.length, 4);
+  const value = await collectCursorAppHookTimeline({ home, launches: [startedAt, startedAt + 5], hookConfigs: observer.snapshot() });
+  assert.equal(value.launches[0].hookConfig[3].contentChangedSinceLaunch, true);
+  for (const text of [secret, home, "digest", "metadata\"", "command", "sha256"]) assert.equal(JSON.stringify(value).includes(text), false);
+});
+
+test("Hook config samples reject unsafe or oversized files and preserve unknown comparisons", async (t) => {
+  const home = await realpath(await mkdtemp(join(tmpdir(), "cursor-hook-config-")));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const file = join(home, "hooks.json"), observer = createCursorAppHookConfigObserver();
+  const sample = (phase) => observer.sample({ home, phase, launch: 1, startedAt: Date.now() });
+  await sample("launch");
+  assert.equal(observer.snapshot()[0].readStatus, "absent");
+  await writeFile(file, "x".repeat(64 * 1024 + 1));
+  await sample("login-start");
+  assert.equal(observer.snapshot()[1].readStatus, "oversized");
+  await rm(file); await mkdir(file); await sample("login-end");
+  assert.equal(observer.snapshot()[2].readStatus, "unsafe");
+  await rm(file, { recursive: true }); await writeFile(file, secret); await sample("session-wait-end");
+  assert.equal(observer.snapshot()[3].readStatus, "present");
+  assert.ok(observer.snapshot().every(x => x.contentChangedSinceLaunch === null));
+  const projected = projectCursorAppHookTimeline({ launches: [{ hookConfig: observer.snapshot().map(x => ({ ...x, hash: secret, path: secret })),
+    dispatch: [{ ms: 1, stage: "matched", step: secret, hooks: -1, generation: secret, raw: secret }, { ms: 2, stage: secret }] }] });
+  assert.deepEqual(projected.launches[0].dispatch, [{ ms: 1, stage: "matched", step: null, hooks: null, generation: null }]);
+  assert.equal(JSON.stringify(projected).includes(secret), false);
+  assert.deepEqual(projectCursorAppHookTimeline(projected), projected);
 });
