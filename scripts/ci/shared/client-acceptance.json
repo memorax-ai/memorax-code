@@ -1,9 +1,9 @@
 {
   "schemaVersion": 1,
   "node": {
-    "24": "24.22.1",
+    "20": "20.20.2",
     "22": "22.23.4",
-    "20": "20.20.2"
+    "24": "24.22.1"
   },
   "runs": {
     "40430762460/1": {
@@ -49,6 +49,11 @@
       "event": "schedule",
       "head": "f9b6d2dca098531f7fd9dabf80c15b1f354d0735",
       "date": "2026-11-01"
+    },
+    "42995667184/1": {
+      "event": "workflow_dispatch",
+      "head": "37b334f4bb79491adceb23ef12d6197e2a69cccf",
+      "date": "2026-11-11"
     }
   },
   "clients": {
@@ -313,7 +318,22 @@
             "result": "passed"
           }
         ]
-      }
+      },
+      "deferred": [
+        {
+          "version": "3.29.15",
+          "platforms": [
+            "linux-x64",
+            "darwin-arm64",
+            "win32-x64-user"
+          ],
+          "date": "2026-11-11",
+          "runs": [
+            "42995667184/1"
+          ],
+          "reason": "Official latest failed native Skill selection on Linux, macOS and Windows with CURSOR_APP_SKILL_MENU at native-submit/select-skill; full native compatibility remains unverified, so accepted stays at 3.27.22."
+        }
+      ]
     },
     "workbuddy": {
       "baseline": {
@@ -526,9 +546,10 @@
           "date": "2026-10-28",
           "runs": [
             "40623661565/2",
-            "40623666188/2"
+            "40623666188/2",
+            "42995667184/1"
           ],
-          "reason": "Official latest failed package validation (macOS bundled cli/package.json lacks publishConfig.customPackage.name; Windows WORKBUDDY_BUNDLE_LAYOUT_INVALID); root cause undetermined, so these platforms stay on 5.8.3.41334564."
+          "reason": "Official latest failed legacy bundled-metadata validation (macOS missing publishConfig.customPackage.name; Windows WORKBUDDY_BUNDLE_LAYOUT_INVALID). The native suites were not reached, so accepted remains at 5.8.3.41334564 pending complete verification."
         }
       ]
     }

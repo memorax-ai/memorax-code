@@ -162,10 +162,12 @@ if ! dpkg-deb -x "$destination/WorkBuddy.deb" "$destination/extracted" >/dev/nul
   fail WORKBUDDY_BUNDLE_EXTRACT_FAILED
 fi
 command_relative=extracted/opt/WorkBuddy/resources/app.asar.unpacked/cli/bin/codebuddy
-if ! actual_runtime="$(node --input-type=module - "$destination" "$runtime_version" <<'NODE' 2>/dev/null
+if ! actual_runtime="$(node --input-type=module - "$destination" "$runtime_version" "$script_dir/workbuddy-runtime-metadata.mjs" <<'NODE' 2>/dev/null
 import assert from 'node:assert/strict';
 import { accessSync, constants, readFileSync, realpathSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const { workBuddyRuntimeVersion } = await import(pathToFileURL(process.argv[4]).href);
 const cli = join(process.argv[2], 'extracted/opt/WorkBuddy/resources/app.asar.unpacked/cli');
 for (const name of ['bin/codebuddy', 'package.json']) {
   const path = join(cli, name);
@@ -174,12 +176,7 @@ for (const name of ['bin/codebuddy', 'package.json']) {
 }
 accessSync(join(cli, 'bin/codebuddy'), constants.X_OK);
 const metadata = JSON.parse(readFileSync(join(cli, 'package.json'), 'utf8'));
-assert.equal(metadata.publishConfig?.customPackage?.name, '@tencent-ai/codebuddy-code');
-const version = metadata.publishConfig?.customPackage?.version;
-assert.match(version, /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/);
-assert.ok(!/[\r\n]/.test(version));
-if (process.argv[3] !== 'discover') assert.equal(version, process.argv[3]);
-assert.equal(metadata.bin?.codebuddy, './bin/codebuddy');
+const version = workBuddyRuntimeVersion(metadata, process.argv[3] === 'discover' ? null : process.argv[3]);
 process.stdout.write(version);
 NODE
 )"; then

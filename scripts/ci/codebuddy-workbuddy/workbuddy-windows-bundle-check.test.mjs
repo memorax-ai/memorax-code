@@ -35,8 +35,9 @@ test("Windows acquisition resolves a validated release before downloading and fa
   assert.ok(source.indexOf("Get-FileHash") < source.indexOf("Get-AuthenticodeSignature"));
   assert.ok(source.indexOf("Get-AuthenticodeSignature") < source.indexOf("& $sevenZip"));
   assert.match(source, /VersionInfo\.ProductVersion -cne \$release\.productVersion/);
-  assert.match(source, /customPackage\.name -cne '@tencent-ai\/codebuddy-code'/);
-  assert.match(source, /\$null -ne \$release\.runtimeVersion -and \$runtimeVersion -cne \$release\.runtimeVersion/);
+  assert.match(source, /Join-Path \$PSScriptRoot 'workbuddy-runtime-metadata\.mjs'/);
+  assert.match(source, /\$expectedRuntime = if \(\$null -eq \$release\.runtimeVersion\)/);
+  assert.match(source, /\$metadataExit -ne 0 -or \$metadata\.ok -ne \$true/);
   assert.match(source, /'\$PLUGINSDIR\/app-64\.7z'/);
   assert.match(source, /'resources\/app\.asar\.unpacked\/cli\/\*'/);
   assert.doesNotMatch(source, /Start-Process|&\s+\$installer|Invoke-Expression|\bwinget\b|\bchoco\b/);
@@ -58,7 +59,7 @@ test("Windows acquisition verifies the publisher and extracts the actual complet
       arch: "x64", sha256: sha256.toLowerCase(), command });
     assert.equal(result.stdout.includes(destination), false);
     const observed = await calls();
-    assert.deepEqual(observed.map((call) => call.tool), ["release", "curl", "hash", "signature", "desktop", "7zip", "7zip"]);
+    assert.deepEqual(observed.map((call) => call.tool), ["release", "curl", "hash", "signature", "desktop", "7zip", "7zip", "metadata"]);
     assert.deepEqual(observed[0].args, [releaseScript, "select-json", "win32-x64-user"]);
     assert.equal(observed[0].exitCode, 0);
     assert.equal(observed[0].outputCount, 1);
@@ -74,8 +75,8 @@ test("Windows acquisition verifies the publisher and extracts the actual complet
   });
 });
 
-for (const release of [baseline, latest]) {
-  test(`Windows acquisition accepts an explicit ${release.channel} release and reports the extracted runtime`, windowsOnly, async () => {
+for (const [release, scenario] of [baseline, latest].flatMap((release) => ["success", "current"].map((scenario) => [release, scenario]))) {
+  test(`Windows acquisition accepts an explicit ${release.channel} release with ${scenario} metadata and reports the extracted runtime`, windowsOnly, async () => {
     await fixture(async ({ run, calls, releaseFile }) => {
       const result = await run();
       assert.equal(result.code, 0, result.stderr);
@@ -83,10 +84,10 @@ for (const release of [baseline, latest]) {
       assert.deepEqual(JSON.parse(result.stdout), { desktopVersion: release.desktopVersion,
         runtimeVersion: release.runtimeVersion ?? "2.150.1", arch: "x64", sha256: release.sha256, command });
       const observed = await calls();
-      assert.deepEqual(observed.map((call) => call.tool), ["release", "curl", "hash", "signature", "desktop", "7zip", "7zip"]);
+      assert.deepEqual(observed.map((call) => call.tool), ["release", "curl", "hash", "signature", "desktop", "7zip", "7zip", "metadata"]);
       assert.deepEqual(observed[0].args, [releaseScript, "select-json", "win32-x64-user", releaseFile]);
       assert.equal(observed[1].args.at(-1), release.url);
-    }, "success", release);
+    }, scenario, release);
   });
 }
 
@@ -167,11 +168,14 @@ for (const [scenario, expected, tools] of [
   ["missing-payload", "EXTRACTION_FAILED", ["curl", "hash", "signature", "desktop", "7zip"]],
   ["inner", "EXTRACTION_FAILED", ["curl", "hash", "signature", "desktop", "7zip", "7zip"]],
   ["directory-entry", "LAYOUT_INVALID", ["curl", "hash", "signature", "desktop", "7zip", "7zip"]],
-  ["package-name", "LAYOUT_INVALID", ["curl", "hash", "signature", "desktop", "7zip", "7zip"]],
-  ["package-name-array", "LAYOUT_INVALID", ["curl", "hash", "signature", "desktop", "7zip", "7zip"]],
-  ["bin", "LAYOUT_INVALID", ["curl", "hash", "signature", "desktop", "7zip", "7zip"]],
-  ["bin-array", "LAYOUT_INVALID", ["curl", "hash", "signature", "desktop", "7zip", "7zip"]],
-  ["runtime", "RUNTIME_VERSION_MISMATCH", ["curl", "hash", "signature", "desktop", "7zip", "7zip"]],
+  ["package-name", "LAYOUT_INVALID", ["curl", "hash", "signature", "desktop", "7zip", "7zip", "metadata"]],
+  ["package-name-array", "LAYOUT_INVALID", ["curl", "hash", "signature", "desktop", "7zip", "7zip", "metadata"]],
+  ["bin", "LAYOUT_INVALID", ["curl", "hash", "signature", "desktop", "7zip", "7zip", "metadata"]],
+  ["bin-array", "LAYOUT_INVALID", ["curl", "hash", "signature", "desktop", "7zip", "7zip", "metadata"]],
+  ["runtime", "RUNTIME_VERSION_MISMATCH", ["curl", "hash", "signature", "desktop", "7zip", "7zip", "metadata"]],
+  ["conflicting-metadata", "RUNTIME_VERSION_MISMATCH", ["curl", "hash", "signature", "desktop", "7zip", "7zip", "metadata"]],
+  ["partial-current", "RUNTIME_VERSION_MISMATCH", ["curl", "hash", "signature", "desktop", "7zip", "7zip", "metadata"]],
+  ["metadata-exit", "LAYOUT_INVALID", ["curl", "hash", "signature", "desktop", "7zip", "7zip", "metadata"]],
   ["junction", "LAYOUT_INVALID", ["curl", "hash", "signature", "desktop", "7zip", "7zip"]],
 ]) {
   test(`Windows acquisition stops, redacts and cleans only owned files after ${scenario} failure`, windowsOnly, async () => {
@@ -194,7 +198,7 @@ for (const scenario of ["runtime-prerelease", "runtime-number", "runtime-missing
       assert.equal(result.code, 1);
       assert.equal(result.stdout, "");
       assert.equal(result.stderr.trim(), "WORKBUDDY_BUNDLE_RUNTIME_VERSION_MISMATCH");
-      assert.deepEqual((await calls()).map((call) => call.tool), ["release", "curl", "hash", "signature", "desktop", "7zip", "7zip"]);
+      assert.deepEqual((await calls()).map((call) => call.tool), ["release", "curl", "hash", "signature", "desktop", "7zip", "7zip", "metadata"]);
       assert.deepEqual(await readdir(destination), []);
     }, scenario, latest);
   });
@@ -228,7 +232,8 @@ async function fixture(callback, scenario = "success", release) {
 $ErrorActionPreference = 'Stop'
 function Record-Call($Value) { Add-Content -LiteralPath $env:FIXTURE_CALLS -Value ($Value | ConvertTo-Json -Compress -Depth 5) }
 function node {
-  $diagnostic = @{ tool = 'release'; args = [string[]]$args }
+  $kind = if ($args[0].EndsWith('workbuddy-runtime-metadata.mjs')) { 'metadata' } else { 'release' }
+  $diagnostic = @{ tool = $kind; args = [string[]]$args }
   try {
     $output = & $env:FIXTURE_NODE @args
     $diagnostic.exitCode = $LASTEXITCODE
@@ -236,7 +241,8 @@ function node {
     $diagnostic.validJson = $false
     try { $null = $output | ConvertFrom-Json; $diagnostic.validJson = $null -ne $output } catch {}
     $output
-    if ($env:FIXTURE_SCENARIO -eq 'selector-exit') { $global:LASTEXITCODE = 1 }
+    if (($kind -eq 'release' -and $env:FIXTURE_SCENARIO -eq 'selector-exit') -or
+      ($kind -eq 'metadata' -and $env:FIXTURE_SCENARIO -eq 'metadata-exit')) { $global:LASTEXITCODE = 1 }
   } catch {
     $diagnostic.errorType = $_.Exception.GetType().Name
     throw
@@ -319,6 +325,13 @@ function Invoke-Fixture7Zip {
   $name = if ($env:FIXTURE_SCENARIO -eq 'package-name') { '@unrelated/cli' } else { '@tencent-ai/codebuddy-code' }
   $bin = if ($env:FIXTURE_SCENARIO -eq 'bin') { './bin/unrelated' } else { './bin/codebuddy' }
   $package = @{ publishConfig = @{ customPackage = @{ name = $name; version = $version } }; bin = @{ codebuddy = $bin } }
+  if ($env:FIXTURE_SCENARIO -eq 'current') {
+    $package.publishConfig = @{ name = $name }; $package.version = $version
+  }
+  if ($env:FIXTURE_SCENARIO -in @('conflicting-metadata', 'partial-current')) {
+    $package.publishConfig.name = $name
+    if ($env:FIXTURE_SCENARIO -eq 'conflicting-metadata') { $package.version = '2.165.0' }
+  }
   if ($env:FIXTURE_SCENARIO -eq 'package-name-array') { $package.publishConfig.customPackage.name = @($name) }
   if ($env:FIXTURE_SCENARIO -eq 'bin-array') { $package.bin.codebuddy = @($bin) }
   $package | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $cli 'package.json')

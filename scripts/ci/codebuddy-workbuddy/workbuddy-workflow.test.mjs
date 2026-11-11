@@ -260,7 +260,8 @@ test("WorkBuddy mounted metadata validation follows signature gates and treats t
 });
 
 for (const scenario of ["baseline", "latest", "baseline runtime mismatch", "product mismatch",
-  "wrong package", "wrong bin", "malformed runtime", "runtime newline", "metadata symlink"]) {
+  "wrong package", "wrong bin", "malformed runtime", "runtime newline", "metadata symlink",
+  "current baseline", "current latest", "conflicting versions", "partial current"]) {
   test(`WorkBuddy macOS workflow validates actual mounted metadata: ${scenario}`, {
     skip: process.platform === "win32" && scenario === "metadata symlink",
   }, async () => {
@@ -270,18 +271,26 @@ for (const scenario of ["baseline", "latest", "baseline runtime mismatch", "prod
       const cli = join(app, "Contents", "Resources", "app.asar.unpacked", "cli");
       await mkdir(join(cli, "bin"), { recursive: true });
       const release = baselineRelease("darwin-arm64");
-      if (["latest", "malformed runtime", "runtime newline"].includes(scenario)) {
+      if (["latest", "current latest", "malformed runtime", "runtime newline"].includes(scenario)) {
         Object.assign(release, { desktopVersion: "5.7.0.40000000", productVersion: "5.7.0",
           runtimeVersion: null, sha256: "a".repeat(64), channel: "latest",
           url: "https://download.codebuddy.cn/workbuddy/saas/darwin-arm64/WorkBuddy-darwin-arm64-5.7.0.40000000-abcdef12.dmg" });
       }
-      const runtime = scenario === "latest" || scenario === "baseline runtime mismatch" ? "2.160.1" : "2.147.0";
+      const runtime = scenario === "latest" || scenario === "current latest" || scenario === "baseline runtime mismatch" ? "2.160.1" : "2.147.0";
       const metadata = { bin: { codebuddy: "./bin/codebuddy" },
         publishConfig: { customPackage: { name: "@tencent-ai/codebuddy-code", version: runtime } } };
       if (scenario === "wrong package") metadata.publishConfig.customPackage.name = "other-cli";
       if (scenario === "wrong bin") metadata.bin.codebuddy = "./other-command";
       if (scenario === "malformed runtime") metadata.publishConfig.customPackage.version = "2.160.1-beta.1";
       if (scenario === "runtime newline") metadata.publishConfig.customPackage.version = "2.160.1\n";
+      if (scenario.startsWith("current ")) {
+        metadata.version = runtime;
+        metadata.publishConfig = { name: "@tencent-ai/codebuddy-code" };
+      }
+      if (scenario === "conflicting versions" || scenario === "partial current") {
+        metadata.publishConfig.name = "@tencent-ai/codebuddy-code";
+        if (scenario === "conflicting versions") metadata.version = "2.165.0";
+      }
       const packageJson = join(cli, "package.json");
       await writeFile(packageJson, JSON.stringify(metadata));
       if (scenario === "metadata symlink") {
@@ -299,20 +308,20 @@ for (const scenario of ["baseline", "latest", "baseline runtime mismatch", "prod
       await writeFile(reportPath, originalReport);
       const product = scenario === "product mismatch" ? "0.0.0" : release.productVersion;
       const result = spawnSync(process.execPath, ["--input-type=module", "-", app, product], {
-        input: macosMetadataScript(), cwd: root, encoding: "utf8", timeout: 5_000,
+        input: macosMetadataScript(), cwd: fileURLToPath(new URL("../../../", import.meta.url)), encoding: "utf8", timeout: 5_000,
         env: { RUNNER_TEMP: root, HOME: root, USERPROFILE: root,
           ...(process.platform === "win32" ? { SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR } : {}) },
       });
       assert.ifError(result.error);
       assert.equal(result.stdout, "");
-      if (scenario === "baseline" || scenario === "latest") {
+      if (["baseline", "latest", "current baseline", "current latest"].includes(scenario)) {
         assert.equal(result.status, 0, result.stderr);
         assert.equal(result.stderr, "");
         assert.deepEqual(JSON.parse(await readFile(reportPath, "utf8")), { ...report, runtimeVersion: runtime,
           command: "mounted/WorkBuddy.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy" });
       } else {
         assert.equal(result.status, 1, result.stderr);
-        assert.match(result.stderr, /AssertionError/);
+        assert.match(result.stderr, /AssertionError|WORKBUDDY_BUNDLE_(?:LAYOUT_INVALID|RUNTIME_VERSION_MISMATCH)/);
         assert.equal(await readFile(reportPath, "utf8"), originalReport);
       }
     } finally {

@@ -65,14 +65,16 @@ try {
   if (@(Get-ChildItem -LiteralPath $bundle -Recurse -Force |
     Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }).Count -ne 0) { throw $stage }
   if (-not (Test-Path -LiteralPath (Join-Path $Destination $command) -PathType Leaf)) { throw $stage }
-  $metadata = Get-Content -LiteralPath (Join-Path $bundle 'resources/app.asar.unpacked/cli/package.json') -Raw | ConvertFrom-Json
-  if ($metadata.publishConfig.customPackage.name -isnot [string] -or
-    $metadata.publishConfig.customPackage.name -cne '@tencent-ai/codebuddy-code' -or
-    $metadata.bin.codebuddy -isnot [string] -or $metadata.bin.codebuddy -cne './bin/codebuddy') { throw $stage }
-  $stage = 'WORKBUDDY_BUNDLE_RUNTIME_VERSION_MISMATCH'
-  $runtimeVersion = $metadata.publishConfig.customPackage.version
-  if ($runtimeVersion -isnot [string] -or $runtimeVersion -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\z' -or
-    ($null -ne $release.runtimeVersion -and $runtimeVersion -cne $release.runtimeVersion)) { throw $stage }
+  $metadataPath = Join-Path $bundle 'resources/app.asar.unpacked/cli/package.json'
+  $expectedRuntime = if ($null -eq $release.runtimeVersion) { 'discover' } else { $release.runtimeVersion }
+  $metadataJson = & node (Join-Path $PSScriptRoot 'workbuddy-runtime-metadata.mjs') $metadataPath $expectedRuntime 2>$null
+  $metadataExit = $LASTEXITCODE
+  $metadata = $metadataJson | ConvertFrom-Json
+  if ($metadataExit -ne 0 -or $metadata.ok -ne $true) {
+    if ($metadata.code -ceq 'WORKBUDDY_BUNDLE_RUNTIME_VERSION_MISMATCH') { $stage = $metadata.code }
+    throw $stage
+  }
+  $runtimeVersion = $metadata.runtimeVersion
   $verified = $true
 } catch {
   $failure = $stage
