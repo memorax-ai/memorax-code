@@ -433,9 +433,10 @@ Unless it just replaced the package, the updater then asks
 `lib/client-discovery.mjs` for supported clients that are installed but have no
 recorded choice, and runs one setup reconciliation per client under the update
 lock. A version reconciliation does not adopt new clients. An activation run
-writes `true` only after final verification, and its failure cannot fail the
-update check. Per-client retry deadlines live in a private record; setup remains
-the only writer of `[clients]`.
+writes `true` only after final verification and only if the field is still
+absent, so a selection changed during the run is kept. Its failure cannot fail
+the update check. Per-client retry deadlines live in a private record; setup
+remains the only writer of `[clients]`.
 
 Hook generation staging and activation are separate decisions: failed Backend
 readiness must not replace the authoritative generation. Cross-process

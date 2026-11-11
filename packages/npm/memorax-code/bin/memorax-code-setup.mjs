@@ -552,7 +552,7 @@ if (nonInteractive) {
     process.exit(1);
   }
 }
-if (clientActivationRun && writeClientSelectionConfig(selectedClients, newlyDetectedClients) === "failed") {
+if (clientActivationRun && recordActivatedClients(newlyDetectedClients) === "failed") {
   process.exit(1);
 }
 try {
@@ -1084,6 +1084,22 @@ function writeClientSelectionConfig(clients, configuredClients = SETUP_CLIENTS, 
     path,
     defaultText: setManagedClientSelection(defaultMemoraxCodeConfig(), clients, configuredClients, undecidedClients),
     transform: (text) => setManagedClientSelection(text, clients, configuredClients, undecidedClients),
+    parseToml: parse,
+    warn: () => {},
+    onFailure: (details) => setupFailure("config", { details }),
+  });
+}
+
+// Activation was decided from the config read when setup started. A selection
+// changed since then wins, so only a field that is still absent becomes true.
+function recordActivatedClients(clients) {
+  return updateConfigFileWithLock({
+    path: memoraxCodeConfigPath(),
+    transform: (text, config) => setManagedClientSelection(
+      text,
+      clients,
+      clients.filter((client) => config.clients && !Object.hasOwn(config.clients, client)),
+    ),
     parseToml: parse,
     warn: () => {},
     onFailure: (details) => setupFailure("config", { details }),
