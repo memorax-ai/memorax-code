@@ -85,10 +85,105 @@ test("local scheduling checks notice a transition created during the registry th
 
   context.controls.pending = false;
   context.children[0].emit("close", 0, null);
+  assert.equal(context.timers.pending[0].delay, RETRY_INTERVAL_MS);
+  assert.equal(context.spawns.length, 1);
+  context.scheduler.close();
+});
+
+test("local wakes start the updater for client discovery inside the registry window", () => {
+  const context = fixture({
+    state: updateState("0.1.9", STARTED_AT + 8 * 60 * 60 * 1_000),
+  });
+  assert.equal(context.spawns.length, 0);
+
+  for (const expectedSpawns of [1, 2]) {
+    assert.equal(context.timers.pending[0].delay, RETRY_INTERVAL_MS);
+    context.controls.now += RETRY_INTERVAL_MS;
+    context.timers.runNext();
+    assert.equal(context.spawns.length, expectedSpawns);
+    assert.equal(context.timers.pending.length, 0, "only one updater may run at a time");
+    context.children[expectedSpawns - 1].emit("close", 0, null);
+  }
+  context.scheduler.close();
+});
+
+test("a Backend restarted by an activation run waits a full interval before discovery", () => {
+  const context = fixture({
+    env: { MEMORAX_CODE_AUTOMATIC_UPDATE_PROCESS: "1" },
+    state: updateState("0.1.9", STARTED_AT + 8 * 60 * 60 * 1_000),
+  });
+  assert.equal(context.spawns.length, 0);
+  assert.equal(context.timers.pending[0].delay, RETRY_INTERVAL_MS);
+
   context.controls.now += RETRY_INTERVAL_MS;
   context.timers.runNext();
-  assert.equal(context.spawns.length, 1, "local checks do not query the registry before its deadline");
+  assert.equal(context.spawns.length, 1);
   context.scheduler.close();
+});
+
+test("the registry deadline still wakes the updater before the next discovery interval", () => {
+  const context = fixture({ state: updateState("0.1.9", STARTED_AT + 5 * 60 * 1_000) });
+  assert.equal(context.timers.pending[0].delay, 5 * 60 * 1_000);
+  context.scheduler.close();
+});
+
+test("the first wake after setup completes starts client discovery", () => {
+  for (const incompleteWakes of [0, 2]) {
+    const context = fixture({
+      setup: { status: "absent" },
+      state: updateState("0.1.9", STARTED_AT + 8 * 60 * 60 * 1_000),
+    });
+    for (let wake = 0; wake < incompleteWakes; wake += 1) {
+      context.controls.now += RETRY_INTERVAL_MS;
+      context.timers.runNext();
+    }
+    assert.equal(context.spawns.length, 0);
+    assert.equal(context.timers.pending[0].delay, RETRY_INTERVAL_MS);
+
+    context.controls.setup = setupCompletion();
+    context.controls.now += RETRY_INTERVAL_MS;
+    context.timers.runNext();
+    assert.equal(context.spawns.length, 1);
+
+    context.children[0].emit("close", 0, null);
+    assert.equal(context.spawns.length, 1, "discovery returns to its own interval");
+    assert.equal(context.timers.pending[0].delay, RETRY_INTERVAL_MS);
+    context.scheduler.close();
+  }
+});
+
+test("discovery after setup completes leaves the registry deadline in charge", () => {
+  const context = fixture({
+    setup: { status: "absent" },
+    state: updateState("0.1.9", STARTED_AT + RETRY_INTERVAL_MS + 5 * 60 * 1_000),
+  });
+  context.controls.setup = setupCompletion();
+  context.controls.now += RETRY_INTERVAL_MS;
+  context.timers.runNext();
+  assert.equal(context.spawns.length, 1);
+
+  context.children[0].emit("close", 0, null);
+  assert.equal(context.timers.pending[0].delay, 5 * 60 * 1_000);
+  context.scheduler.close();
+});
+
+test("setup that is not complete never starts the updater", () => {
+  for (const setup of [
+    { status: "absent" },
+    { status: "invalid", reason: "malformed_json" },
+    { status: "unsupported", version: 2 },
+  ]) {
+    for (const nextCheckAtMs of [STARTED_AT - 60_000, STARTED_AT + 8 * 60 * 60 * 1_000]) {
+      const context = fixture({ setup, state: updateState("0.1.9", nextCheckAtMs) });
+      for (let wake = 0; wake < 3; wake += 1) {
+        assert.equal(context.timers.pending[0].delay, RETRY_INTERVAL_MS);
+        context.controls.now += RETRY_INTERVAL_MS;
+        context.timers.runNext();
+      }
+      assert.equal(context.spawns.length, 0);
+      context.scheduler.close();
+    }
+  }
 });
 
 test("manual and automatic restoration can consume their transition before diagnostic checks", () => {
@@ -117,11 +212,11 @@ test("explicit automatic-update opt-out prevents the Backend scheduler", () => {
   assert.equal(context.timers.pending.length, 0);
 });
 
-function fixture({ env = {}, packageVersion = "0.1.9", state = updateState(), pending = false } = {}) {
+function fixture({ env = {}, packageVersion = "0.1.9", setup = setupCompletion(), state = updateState(), pending = false } = {}) {
   const packageRoot = resolve("/installed/memorax-code");
   const memoraxCodeHome = resolve("/state/memorax-code");
   const timers = fakeTimers();
-  const controls = { now: STARTED_AT, state, pending };
+  const controls = { now: STARTED_AT, setup, state, pending };
   const children = [];
   const spawns = [];
   const scheduler = startBackendAutomaticUpdateScheduler({
@@ -134,7 +229,7 @@ function fixture({ env = {}, packageVersion = "0.1.9", state = updateState(), pe
       || (path === join(memoraxCodeHome, "runtime", "install", "package-transition.json") && controls.pending),
     now: () => controls.now,
     readAutomaticUpdateState: () => controls.state,
-    readSetupCompletionRecord: () => setupCompletion(),
+    readSetupCompletionRecord: () => controls.setup,
     setTimeout: timers.setTimeout,
     clearTimeout: timers.clearTimeout,
     spawnProcess(command, args, options) {

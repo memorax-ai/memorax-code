@@ -21,6 +21,7 @@ test("automatic update installs an exact latest version and runs non-interactive
   assert.deepEqual(await readJsonLines(fixture.setupLogPath), [{
     automaticUpdateMode: "1",
     home: fixture.memoraxCodeHome,
+    newClients: "",
     updateMode: "1",
   }]);
   const state = JSON.parse(await readFile(
@@ -29,6 +30,31 @@ test("automatic update installs an exact latest version and runs non-interactive
   ));
   assert.equal(state.installedVersion, "0.1.10");
   assert.deepEqual(Object.keys(state).sort(), ["installedVersion", "nextCheckAt", "version"]);
+});
+
+test("automatic update activates a newly installed client inside the registry window", async (t) => {
+  const fixture = await createFixture(t);
+  await writeSetupCompletion(fixture.memoraxCodeHome, "0.1.9");
+  // Claude is the only undecided client, so other local installs cannot affect the result.
+  await writeFile(join(fixture.memoraxCodeHome, "config.toml"), [
+    "[clients]", "codex = true", "opencode = false", "codebuddy = false", "workbuddy = false",
+    "trae = false", "cursor = false", "qoder = false", "",
+  ].join("\n"));
+  const statePath = join(fixture.memoraxCodeHome, "runtime", "install", "automatic-update.json");
+  await mkdir(dirname(statePath), { recursive: true });
+  const state = {
+    version: 1,
+    installedVersion: "0.1.9",
+    nextCheckAt: new Date(Date.now() + 60 * 60 * 1_000).toISOString(),
+  };
+  await writeFile(statePath, JSON.stringify(state));
+
+  const result = runAutomaticUpdate(fixture, { MEMORAX_CODE_CLAUDE_COMMAND: process.execPath });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(await readJsonLines(fixture.npmLogPath), []);
+  assert.deepEqual((await readJsonLines(fixture.setupLogPath)).map((entry) => entry.newClients), ["claude"]);
+  assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
 });
 
 test("automatic update reports npm registry authentication failure without response text", async (t) => {
@@ -101,6 +127,7 @@ async function createFixture(t) {
   await Promise.all([
     "bin/memorax-code.mjs",
     "lib/automatic-update.mjs",
+    "lib/client-discovery.mjs",
     "lib/package-update.mjs",
     "lib/package-transition.mjs",
     "lib/update-diagnostics.mjs",
@@ -135,6 +162,18 @@ async function createFixture(t) {
     await mkdir(dirname(target), { recursive: true });
     await cp(join(commonRoot, relativePath), target);
   }));
+  await Promise.all(["trae", "cursor", "qoder"].map(async (client) => {
+    const adapterPaths = join(`memorax-code-${client}-adapter`, "src", "adapter-paths.mjs");
+    const target = join(root, "lib", adapterPaths);
+    await mkdir(dirname(target), { recursive: true });
+    await cp(join(packageRoot, "..", "..", "ts", adapterPaths), target);
+  }));
+  await mkdir(join(root, "node_modules"));
+  await symlink(
+    join(packageRoot, "..", "..", "ts", "memorax-code-backend", "node_modules", "smol-toml"),
+    join(root, "node_modules", "smol-toml"),
+    "dir",
+  );
   await Promise.all([fakeBin, home].map((path) => mkdir(path, { recursive: true })));
   await writeFile(join(root, "package.json"), `${JSON.stringify({
     name: "@memorax/memorax-code",
@@ -146,6 +185,7 @@ async function createFixture(t) {
     "appendFileSync(process.env.MEMORAX_CODE_TEST_SETUP_LOG, JSON.stringify({",
     "  automaticUpdateMode: process.env.MEMORAX_CODE_SETUP_AUTOMATIC_UPDATE,",
     "  home: process.env.MEMORAX_CODE_HOME,",
+    "  newClients: process.env.MEMORAX_CODE_SETUP_NEW_CLIENTS,",
     "  updateMode: process.env.MEMORAX_CODE_SETUP_UPDATE,",
     "}) + '\\n');",
     "",

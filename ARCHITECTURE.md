@@ -308,7 +308,7 @@ sequenceDiagram
   Setup->>Completion: commit only after final verification
 
   loop completed setup while managed Backend remains running
-    Service->>Update: dispatch when due or a pending transition needs diagnosis
+    Service->>Update: dispatch when due, on a local discovery wake, or when a pending transition needs diagnosis
     Update->>Update: lock, validate pending state, recheck cadence, resolve channel target
     opt target version differs
       Update->>NPM: install exact published target
@@ -319,6 +319,9 @@ sequenceDiagram
       Note over Setup,Lifecycle: Reuse staging, lifecycle and verification above
     end
     Update->>Update: persist next check or retry deadline
+    opt no package was replaced and a detected client has no recorded choice
+      Update->>Setup: non-interactive reconciliation for that client
+    end
   end
 ```
 
@@ -415,7 +418,7 @@ effort and cannot replace the installation outcome.
 
 After completed setup, the managed Backend schedules a detached updater from
 the durable deadline, with bounded local wakeups to detect pending transitions
-independently of the registry check window. The updater validates those records;
+and newly installed clients independently of the registry check window. The updater validates those records;
 the scheduler only observes their presence and preserves restoration deferral and
 failure backoff. Client startup Hooks only recover an unavailable Backend.
 The updater serializes checks through its private record and lock, installs an
@@ -425,6 +428,15 @@ Codex Hook changes may be trusted silently only when marketplace identity stays
 the same and the exact incremental Hook selection validates before and after
 the config write. Failed verification leaves reconciliation incomplete; a
 replaced Backend resumes scheduling from the same record.
+
+Unless it just replaced the package, the updater then asks
+`lib/client-discovery.mjs` for supported clients that are installed but have no
+recorded choice, and runs one setup reconciliation per client under the update
+lock. A version reconciliation does not adopt new clients. An activation run
+writes `true` only after final verification and only if the field is still
+absent, so a selection changed during the run is kept. Its failure cannot fail
+the update check. Per-client retry deadlines live in a private record; setup
+remains the only writer of `[clients]`.
 
 Hook generation staging and activation are separate decisions: failed Backend
 readiness must not replace the authoritative generation. Cross-process
@@ -1222,6 +1234,7 @@ and
 | Package replacement intent | Versioned private package-transition record plus its bounded lock | npm process state or the presence of installed package files |
 | Completed foreground setup | Versioned private setup-completion record written after final verification | Configuration-file presence, Backend liveness, or detected clients |
 | Automatic update cadence | Versioned private automatic-update record plus its bounded lock | Managed Backend timer state or client process lifetime |
+| Client selection | `[clients]` in `config.toml`, written only by setup: a boolean is an explicit choice and an absent field is undecided | Detected clients, Backend lifecycle state, and client-activation retry deadlines |
 | Quota reminders | Versioned private local runtime record keyed by a one-way connection fingerprint for deduplication; normalized MemoraX balances for the quota amount; a ready secure trial record matching the active API key for optional anonymous Mark ID text | Account registration status, raw API keys, and in-memory reminder state are not quota-reminder authority |
 | MemoraX memory results and Add acceptance | Normalized response from `provider/memorax` | Observability and trace |
 | Persisted current-turn operational state | Client-qualified current-turn records with Session and Turn checks | CLI workspace association and exact recovery; native content is independently validated |

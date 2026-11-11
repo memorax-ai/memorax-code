@@ -60,6 +60,7 @@ export function startBackendAutomaticUpdateScheduler(
   let closed = false;
   let childRunning = false;
   let timer: TimerHandle | undefined;
+  let nextClientDiscoveryAtMs: number | undefined;
   // Restoration starts the Backend before consuming its transition or saving
   // the next deadline. Let the current installation finish before checking again.
   let suppressImmediate = env.MEMORAX_CODE_AUTOMATIC_UPDATE_PROCESS === "1"
@@ -78,6 +79,7 @@ export function startBackendAutomaticUpdateScheduler(
   const scheduleRetry = (): void => scheduleAfter(AUTOMATIC_UPDATE_RETRY_INTERVAL_MS);
 
   const launch = (): void => {
+    nextClientDiscoveryAtMs = Number(now()) + AUTOMATIC_UPDATE_RETRY_INTERVAL_MS;
     let child;
     try {
       child = spawnProcess(
@@ -126,6 +128,9 @@ export function startBackendAutomaticUpdateScheduler(
       const nowMs = Number(now());
       if (!Number.isFinite(nowMs)) throw new TypeError("automatic update scheduler clock is invalid");
       if (completion.status !== "valid") {
+        // This wait counts as the discovery interval, so the first wake after
+        // setup completes looks for new clients.
+        nextClientDiscoveryAtMs = nowMs;
         scheduleRetry();
         return;
       }
@@ -133,9 +138,14 @@ export function startBackendAutomaticUpdateScheduler(
       if (!fileExists(transitionPath) && state.status === "valid" && state.record.installedVersion === installedVersion) {
         const remainingMs = Date.parse(state.record.nextCheckAt) - nowMs;
         if (remainingMs > 0) {
-          // Recheck local pending state without advancing the npm registry deadline.
-          scheduleAfter(Math.min(remainingMs, AUTOMATIC_UPDATE_RETRY_INTERVAL_MS));
-          return;
+          // Recheck local pending state without advancing the npm registry
+          // deadline. The updater also looks for newly installed clients here.
+          nextClientDiscoveryAtMs ??= nowMs + AUTOMATIC_UPDATE_RETRY_INTERVAL_MS;
+          const discoveryDelayMs = nextClientDiscoveryAtMs - nowMs;
+          if (discoveryDelayMs > 0) {
+            scheduleAfter(Math.min(remainingMs, discoveryDelayMs));
+            return;
+          }
         }
       }
     } catch (error) {

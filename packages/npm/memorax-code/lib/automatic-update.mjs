@@ -14,6 +14,10 @@ import {
   writeAutomaticUpdateState,
 } from "./memorax-code-adapter-common/src/automatic-update-state.mjs";
 import {
+  readJsonRuntimeRecord,
+  writePrivateJsonRecord,
+} from "./memorax-code-adapter-common/src/runtime-record.mjs";
+import {
   readSetupCompletionRecord,
   withSetupCompletionLock,
 } from "./memorax-code-adapter-common/src/setup-completion.mjs";
@@ -23,6 +27,8 @@ import {
   runNpmCommand,
   waitForChildProcess,
 } from "./npm-invocation.mjs";
+
+const CLIENT_ACTIVATION_RECORD_VERSION = 1;
 
 export {
   AUTOMATIC_UPDATE_CHECK_INTERVAL_MS,
@@ -75,7 +81,9 @@ export async function runAutomaticUpdate(options) {
       packageRoot,
       targetVersion,
       reuseRestoredBackend: setupOptions?.reuseRestoredBackend === true,
+      newClients: setupOptions?.newClients,
     }),
+    discoverClients: options?.discoverClients,
   });
 }
 
@@ -95,6 +103,16 @@ export async function runAutomaticUpdateCore(options) {
     return await withJsonFileLockAsync(path, async () => {
       stage = "update_state";
       const nowMs = currentTime(options);
+      const withClientActivation = async (result, version) => {
+        const failures = await activateNewClients({
+          memoraxCodeHome,
+          discoverClients: options.discoverClients,
+          reconcile,
+          version,
+          nowMs,
+        });
+        return failures.length > 0 ? { ...result, clientActivationFailures: failures } : result;
+      };
       const finish = (result, effectiveVersion, retry) => {
         try {
           const state = writeAutomaticUpdateState({
@@ -126,8 +144,13 @@ export async function runAutomaticUpdateCore(options) {
       if (state.status === "valid"
         && state.record.installedVersion === installedVersion
         && nowMs < Date.parse(state.record.nextCheckAt)) {
+        const throttled = { ok: true, disposition: "throttled", state: state.record };
+        // An unfinished version reconcile must complete before another client joins.
+        const result = completedByVersion === installedVersion
+          ? await withClientActivation(throttled, installedVersion)
+          : throttled;
         stage = "update_lock";
-        return { ok: true, disposition: "throttled", state: state.record };
+        return result;
       }
 
       let targetVersion;
@@ -188,7 +211,9 @@ export async function runAutomaticUpdateCore(options) {
         : completedByVersion === effectiveVersion
           ? "up-to-date"
           : "reconciled";
-      return finish({ ok: true, disposition: outcome }, effectiveVersion, false);
+      const finished = finish({ ok: true, disposition: outcome }, effectiveVersion, false);
+      // A replaced package discovers clients with its own code on the next wake.
+      return updated ? finished : await withClientActivation(finished, effectiveVersion);
     });
   } catch (error) {
     const failure = updateFailure(error, "UPDATE_FAILED", stage, { lockStage: "update_lock" });
@@ -197,6 +222,55 @@ export async function runAutomaticUpdateCore(options) {
       throw completedResult.error;
     }
     throw failure;
+  }
+}
+
+// Each client gets its own reconcile, so one failure cannot stop the others or
+// the update that started this pass. The next attempt time is saved first: a
+// crash or Backend restart must not repeat the attempt on every local wake.
+async function activateNewClients({ memoraxCodeHome, discoverClients, reconcile, version, nowMs }) {
+  if (!discoverClients) return [];
+  const failures = [];
+  try {
+    const nextAttemptAt = readClientActivationDeadlines(memoraxCodeHome);
+    const deferredClients = Object.keys(nextAttemptAt)
+      .filter((client) => nowMs < Date.parse(nextAttemptAt[client]));
+    for (const client of await discoverClients(deferredClients)) {
+      nextAttemptAt[client] = new Date(nowMs + AUTOMATIC_UPDATE_CHECK_INTERVAL_MS).toISOString();
+      writeClientActivationDeadlines(memoraxCodeHome, nextAttemptAt);
+      try {
+        if (await reconcile(version, { reuseRestoredBackend: false, newClients: [client] }) !== true) {
+          throw new UpdateFailure("UPDATE_RECONCILE_FAILED", "reconcile");
+        }
+      } catch (error) {
+        failures.push(updateFailure(error, "UPDATE_RECONCILE_FAILED", "reconcile"));
+      }
+    }
+  } catch (error) {
+    failures.push(updateFailure(error, "UPDATE_RECONCILE_FAILED", "reconcile"));
+  }
+  return failures;
+}
+
+function clientActivationPath(memoraxCodeHome) {
+  return join(memoraxCodeHome, "runtime", "install", "client-activation.json");
+}
+
+function readClientActivationDeadlines(memoraxCodeHome) {
+  const state = readJsonRuntimeRecord(clientActivationPath(memoraxCodeHome));
+  if (state.status !== "present" || state.value.version !== CLIENT_ACTIVATION_RECORD_VERSION) return {};
+  return Object.fromEntries(Object.entries(state.value.nextAttemptAt ?? {})
+    .filter(([, deadline]) => Number.isFinite(Date.parse(deadline))));
+}
+
+function writeClientActivationDeadlines(memoraxCodeHome, nextAttemptAt) {
+  try {
+    writePrivateJsonRecord(clientActivationPath(memoraxCodeHome), {
+      version: CLIENT_ACTIVATION_RECORD_VERSION,
+      nextAttemptAt,
+    }, { durableBoundary: memoraxCodeHome });
+  } catch (error) {
+    throw updateFailure(error, "UPDATE_STATE_WRITE_FAILED", "update_state");
   }
 }
 
@@ -229,7 +303,7 @@ function resolveTargetVersion({ channel, env, packageName }) {
   return version;
 }
 
-export async function runAutomaticSetup({ env, memoraxCodeHome, packageRoot, targetVersion, reuseRestoredBackend = false }) {
+export async function runAutomaticSetup({ env, memoraxCodeHome, packageRoot, targetVersion, reuseRestoredBackend = false, newClients = [] }) {
   const children = new Map();
   let childFailed = false;
   let stage = "setup_state";
@@ -246,6 +320,7 @@ export async function runAutomaticSetup({ env, memoraxCodeHome, packageRoot, tar
         MEMORAX_CODE_SETUP_AUTOMATIC_UPDATE: "1",
         MEMORAX_CODE_SETUP_UPDATE: "1",
         MEMORAX_CODE_SETUP_REUSE_RESTORED_BACKEND: reuseRestoredBackend ? "1" : "0",
+        MEMORAX_CODE_SETUP_NEW_CLIENTS: newClients.join(","),
       };
       delete setupEnv.MEMORAX_CODE_SETUP_MODE;
       let result;

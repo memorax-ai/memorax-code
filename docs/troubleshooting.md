@@ -390,6 +390,27 @@ explicit diagnostic review, then rerun `memorax-code setup` if needed. Direct
 npm installation replaces package files but does not perform this product
 reconciliation.
 
+## A newly installed coding agent is not activated
+
+Automatic activation runs only while the managed Backend is running, and it can
+take about 15 minutes to notice a new agent. Check these in order:
+
+1. Run `memorax-code status` and confirm that the Backend is running. After a
+   reboot, opening only the new agent does not start it; open an agent that is
+   already enabled, or run `memorax-code start`.
+2. Check `[clients]` in `$MEMORAX_CODE_HOME/config.toml`. A `false` is an opt-out
+   that discovery never overrides; delete the line or set it to `true`.
+3. Confirm that `MEMORAX_CODE_AUTO_UPDATE` was not set to `false` when the
+   Backend started.
+4. Run `memorax-code logs --diagnostics` for a failed activation. A failed
+   attempt is retried after eight hours.
+
+To activate the agent immediately, or if it is only on a shell `PATH` the
+Backend did not inherit, run `memorax-code setup` from a terminal. Restart the
+agent afterwards, because a session that was already open does not load the
+integration. Detection and retry rules are in
+[Clients installed after setup](configuration.md#clients-installed-after-setup).
+
 ## Installed, but memory is unavailable
 
 The package and Backend can be healthy while MemoraX remains unconfigured. Run:
@@ -653,7 +674,7 @@ Node entrypoint without invoking a command shell. If a discovered CodeBuddy
 CLI or WorkBuddy runtime cannot run, setup reports the preflight error and
 stops before changing client selection or starting integrations. Correct the
 runtime installation or configured command, then rerun setup. An integration
-explicitly disabled in `[clients]` does not block setup for other clients.
+that `[clients]` does not enable does not block setup for other clients.
 After upgrading an older installation, rerun setup and refresh the affected
 client to load its new Hooks.
 
