@@ -322,11 +322,6 @@
       "deferred": [
         {
           "version": "3.29.15",
-          "platforms": [
-            "linux-x64",
-            "darwin-arm64",
-            "win32-x64-user"
-          ],
           "date": "2026-11-11",
           "runs": [
             "42995667184/1"
