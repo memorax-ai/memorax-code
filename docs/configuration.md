@@ -50,7 +50,8 @@ optional CodeBuddy/WorkBuddy, Trae, Cursor, and Qoder adapters, enables automati
 writeback, sets the preferred language to Chinese (`zh`), uses a five-turn skill
 reminder and a 72-hour repository-update interval, and
 enables content-bearing local traces for every supported client. Foreground
-setup may narrow `[clients]` to clients detected on the host. The tables below
+setup records the clients it detects on the host and leaves the others
+undecided. The tables below
 list all fallbacks, including tuning fields omitted from the generated file.
 Fresh setup also includes the disabled [Jev configuration](#jev-provider-configuration).
 
@@ -72,8 +73,8 @@ foreground setup. If the table is present, `codex`, `claude`, `dsh`,
 `opencode`, `codebuddy`, `workbuddy`, `trae`, `cursor`, and `qoder` are boolean fields. Direct lifecycle
 commands treat omitted `codex`, `claude`, `opencode`, `codebuddy`, `workbuddy`, `trae`, `cursor`, or `qoder`
 values as disabled. Setup and update reconciliation retain an omitted field as
-an undecided choice for client support added after the configuration was
-written. An omitted `dsh` value remains enabled so configurations written
+an undecided choice, so a client installed or supported after the configuration
+was written can still be enabled. An omitted `dsh` value remains enabled so configurations written
 before DSH support can discover an existing local Harness. Set `dsh = false`
 explicitly to disable that integration. The command-line override accepts a
 comma-separated subset:
@@ -82,8 +83,8 @@ comma-separated subset:
 --clients codex|claude|dsh|opencode|codebuddy|workbuddy|trae|cursor|qoder|<comma-separated subset>|all|none
 ```
 
-Foreground `memorax-code setup` refreshes `[clients]` from the clients
-available at that time. OpenCode is available when its explicit, XDG, or
+The first `memorax-code setup` records `true` for each client available at that
+time and leaves the others undecided. OpenCode is available when its explicit, XDG, or
 default configuration directory exists, or when `opencode` is on `PATH`.
 DSH is available when at least one valid Profile exists under
 `$DSH_HOME/profiles`; `DSH_HOME` defaults to `~/.dsh`. An explicit
@@ -109,6 +110,42 @@ absent. This lets configurations written before an adapter was supported
 adopt it when its runtime is already
 installed, without overriding an explicit `false`.
 
+Earlier releases wrote `false` for every client that first setup did not find,
+which cannot be told apart from an opt-out. For an installation whose earlier
+setup completed, the first setup after upgrading, including one started by a
+background update, removes that `false` once for clients that are still not
+detected, then records the migration in
+`$MEMORAX_CODE_HOME/runtime/setup/client-selection-migration.json`. A `false`
+for a client that is detected, or found but unable to run, is kept, as is every
+`false` in a configuration that has no completed setup; delete the field or set
+it to `true` and rerun setup to enable that client.
+
+### Clients installed after setup
+
+While the managed Backend is running, the updater looks for newly installed
+clients at most every 15 minutes, using the availability rules above. These
+passes do not query npm. A client that is available and has no recorded choice
+is enabled by non-interactive reconciliation, one client at a time. Each
+activation restarts the Backend once, and `true` is recorded only after
+verification. A failed attempt leaves the field absent, does not affect other
+clients or update checks, and is retried after eight hours. The retry deadline
+is stored in a private record:
+
+```text
+$MEMORAX_CODE_HOME/runtime/install/client-activation.json
+```
+
+Set `[clients].<client> = false` to keep a client disabled; discovery never
+overrides an explicit choice. Discovery runs only after setup has completed and
+while the Backend is running, and `MEMORAX_CODE_AUTO_UPDATE=false` turns it off.
+It uses the environment the Backend started with. Run `memorax-code setup` from
+a terminal to activate a client immediately, or when the client is only on a
+newer shell `PATH`. Partial uninstall does not record an opt-out, so set the
+field to `false` to keep an uninstalled integration from returning.
+
+A session that was already open needs a restart to load the new integration.
+Trae also still needs its one-time Global Hooks setting.
+
 Client selection controls managed client-integration lifecycle only. It does
 not change any coding agent's provider settings.
 `--clients none` runs the Backend without managing a client integration.
@@ -129,8 +166,9 @@ operating-system username and system language defaults (`zh` or `en`). If a
 safe username cannot be detected, it fails and directs the user to interactive
 setup. To reuse an already complete connection, the caller should retain it
 instead of invoking this explicit replacement command. Existing explicit
-client choices, including `false`, are preserved; newly detected clients with
-no recorded choice are enabled.
+client choices, including `false`, are preserved, apart from the one-time
+[client selection](#client-selection) cleanup for older configurations; newly
+detected clients with no recorded choice are enabled.
 
 The command uses the same private configuration writes, Hook activation,
 Backend reconciliation, and setup-completion authority as interactive setup.
@@ -189,7 +227,8 @@ client session. Stable installations follow npm `latest`; prerelease
 installations follow `preview`. A successful result is reused for eight hours,
 while a failed check, install, or reconciliation retries after 15 minutes. Local
 scheduling checks run at intervals of at most 15 minutes to detect pending package
-transitions without waiting for the eight-hour window. These local checks do not
+transitions and [newly installed clients](#clients-installed-after-setup) without
+waiting for the eight-hour window. These local checks do not
 themselves query npm; when no transition is pending, registry checks follow the
 persisted deadline. A Backend started during package restoration defers its
 initial check so a normal installation can consume its transition first. Pending
@@ -215,8 +254,9 @@ replacement can finish while the command directs you to run
 
 The automatic updater installs an exact published version and runs an internal
 non-interactive setup mode. That mode preserves explicit `[clients]` choices,
-enables detected clients missing from an older configuration, and preserves
-connection data and memory preferences. For Codex, only new or changed Hooks
+connection data, and memory preferences. Undecided clients are enabled
+separately, as described in [Clients installed after setup](#clients-installed-after-setup).
+For Codex, only new or changed Hooks
 returned by the incremental check are trusted silently, and the exact Hook
 selection is validated again before and after the config write. A changed
 marketplace identity or unverifiable Hook set prevents reconciliation from

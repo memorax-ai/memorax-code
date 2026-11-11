@@ -6,6 +6,31 @@ behavior.
 
 ## Unreleased
 
+### Added
+
+- Supported coding agents installed after setup are now activated
+  automatically while the managed Backend is running, usually within about 15
+  minutes. Set `[clients].<client> = false` to keep one disabled. See
+  [Clients installed after setup](docs/configuration.md#clients-installed-after-setup).
+
+### Changed
+
+- First setup now records only the clients it finds. Clients it does not find
+  stay undecided instead of being recorded as `false`.
+
+### Fixed
+
+- Setup now finds the Claude Code runtime that macOS Claude Desktop places
+  under a build directory.
+
+### Upgrade notes
+
+For an installation whose earlier setup completed, the first setup after
+upgrading, including one started by a background update, removes `false` from
+`[clients]` for agents that are still not installed, so they can be activated
+when they appear. A `false` for an agent that is installed is kept; delete that
+line or set it to `true`, then rerun `memorax-code setup` to enable that agent.
+
 ## [0.1.22] - 2026-11-03
 
 ### Changed

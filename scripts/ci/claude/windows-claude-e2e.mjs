@@ -485,8 +485,8 @@ function clientOwnedProviderSettingsPresent(settings) {
 async function requireClaudeOnlySelection(memoraxCodeHome) {
   const text = await readFile(join(memoraxCodeHome, "config.toml"), "utf8").catch(() => "");
   const selection = parseClientSelection(text);
-  if (selection.codex !== false || selection.claude !== true) {
-    throw new Error("Windows Claude E2E requires [clients] codex=false and claude=true");
+  if (selection.codex === true || selection.claude !== true) {
+    throw new Error("Windows Claude E2E requires [clients] claude=true with codex not enabled");
   }
 }
 

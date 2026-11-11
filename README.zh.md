@@ -129,6 +129,8 @@ memorax-code account --show-mark-id
 #### 3. 激活并验证
 
 两种安装引导都会自动检测受支持的 Coding Agent。完成后，请重启或刷新检测到的 Coding Agent。
+托管 Backend 运行期间，之后安装的 Agent 会在约 15 分钟内自动启用；如需排除某个 Agent，请参阅
+[安装后新增的客户端](docs/configuration.md#clients-installed-after-setup)。
 
 | 客户端 | 完成激活 |
 | --- | --- |
@@ -305,7 +307,8 @@ memorax-code update
 
 完成 setup 后，托管 Backend 运行期间也会自动检查并更新。更新会短暂停止运行中的托管 Backend，
 再按保留的客户端选择恢复。重新安装后的 setup 和更新都会保留明确的客户端选择，即使旧配置缺少
-`codex` 或 `claude` 字段。发布通道、自定义状态目录、客户端选择、Backend 恢复规则和关闭后台检查
+`codex` 或 `claude` 字段。升级后的首次 setup 会移除仍未安装的 Agent 对应的 `false`，以便它们安装后
+能够启用。发布通道、自定义状态目录、客户端选择、Backend 恢复规则和关闭后台检查
 的方法见[更新配置](docs/configuration.md#setup-automatic-update-and-package-transition-state)。
 如果更新修改了运行中客户端已加载的集成资产，请重启或刷新客户端。
 如果包替换失败，请按[更新恢复步骤](docs/troubleshooting.md#npm-package-transition-fails)

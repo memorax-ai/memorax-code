@@ -18,7 +18,8 @@ import {
   normalizeMemoraxMemoryOutputLanguage,
 } from "../lib/memorax-code-adapter-common/src/memorax-defaults.mjs";
 import { resolveCodeBuddyClientSelection } from "../lib/memorax-code-codebuddy-adapter/src/config.mjs";
-import { writeSetupCompletionRecord } from "../lib/memorax-code-adapter-common/src/setup-completion.mjs";
+import { readSetupCompletionRecord, writeSetupCompletionRecord } from "../lib/memorax-code-adapter-common/src/setup-completion.mjs";
+import { readJsonRuntimeRecord, writePrivateJsonRecord } from "../lib/memorax-code-adapter-common/src/runtime-record.mjs";
 import {
   activatePackagedClientHookRuntime,
   stagePackagedClientHookRuntime,
@@ -85,6 +86,12 @@ const skipQoderAdapterInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_QODER_AD
 const updateMode = truthyEnv(process.env.MEMORAX_CODE_SETUP_UPDATE);
 const reuseRestoredBackend = updateMode && truthyEnv(process.env.MEMORAX_CODE_SETUP_REUSE_RESTORED_BACKEND);
 const automaticUpdateMode = truthyEnv(process.env.MEMORAX_CODE_SETUP_AUTOMATIC_UPDATE);
+// An older updater leaves this unset and keeps its reconcile behavior. Empty
+// reconciles configured clients only; a list activates exactly those clients.
+const automaticNewClients = automaticUpdateMode
+  ? process.env.MEMORAX_CODE_SETUP_NEW_CLIENTS?.split(",").filter(Boolean)
+  : undefined;
+const clientActivationRun = (automaticNewClients?.length ?? 0) > 0;
 const setupMode = setupModeFromEnvironment(process.env.MEMORAX_CODE_SETUP_MODE);
 const nonInteractive = process.argv.includes("--non-interactive");
 if (!setupMode) {
@@ -223,7 +230,7 @@ const failedBuddyClients = [
   ["codebuddy", codebuddyPreflight],
   ["workbuddy", workbuddyPreflight],
 ].filter(([client, preflight]) => preflight.failed
-  && (!explicitClientChoices.includes(client) || previousClients.includes(client)));
+  && (!existingSetup || previousClients.includes(client)));
 if (failedBuddyClients.length > 0) {
   logRed(`Setup stopped because ${failedBuddyClients.map(([client]) => clientLabel(client)).join(" and ")} could not run. Correct the reported runtime problem and rerun \`memorax-code setup\`.`);
   printPostinstallSummary("not-verified");
@@ -241,8 +248,16 @@ const detectedClients = requestedClients.filter((client) => {
   return !skipQoderAdapterInstall && qoderPreflight.ok;
 });
 const newlyDetectedClients = existingSetup
-  ? detectedClients.filter((client) => !explicitClientChoices.includes(client))
+  ? detectedClients.filter((client) => (
+      !explicitClientChoices.includes(client)
+      && (automaticNewClients === undefined || automaticNewClients.includes(client))
+    ))
   : [];
+if (clientActivationRun && newlyDetectedClients.length === 0) {
+  // A config edit or another setup won the race; do not restart the Backend.
+  log("No requested client still needs activation.");
+  process.exit(0);
+}
 // Non-interactive setup accepts the same default choices as interactive setup.
 const selectedClients = !existingSetup
   ? detectedClients
@@ -251,11 +266,43 @@ const selectedClients = !existingSetup
         previousClients.includes(client) || newlyDetectedClients.includes(client)
       ))
     : await chooseUpdateClients(previousClients, newlyDetectedClients, scriptedAnswers);
+// An activation run persists its client only after verification, so a failed
+// attempt stays undecided and can be retried.
 const clientsWithPersistedIntent = existingSetup
   ? requestedClients.filter((client) => (
-      explicitClientChoices.includes(client) || newlyDetectedClients.includes(client)
+      explicitClientChoices.includes(client)
+      || (newlyDetectedClients.includes(client) && !clientActivationRun)
     ))
-  : requestedClients;
+  : detectedClients;
+const clientSelectionMigrationDue = readJsonRuntimeRecord(clientSelectionMigrationPath()).status === "absent";
+const earlierSetupCompleted = readSetupCompletionRecord(memoraxCodeHome()).status === "valid";
+const clientPreflights = {
+  codex: codexPreflight,
+  claude: claudePreflight,
+  opencode: opencodePreflight,
+  codebuddy: codebuddyPreflight,
+  workbuddy: workbuddyPreflight,
+  trae: traePreflight,
+  cursor: cursorPreflight,
+  qoder: qoderPreflight,
+};
+// A client missing from [clients] is undecided and can be activated when it
+// appears. Earlier first setups wrote false for every client they did not find,
+// which the config cannot distinguish from an opt-out, so once such a setup has
+// completed, a false for a client that is still not installed is cleared once.
+// A config that never completed setup was not written that way and keeps its
+// false entries. A skipped preflight reports ok; a failed one found the client,
+// so its false is kept.
+const undecidedClients = !existingSetup
+  ? requestedClients.filter((client) => !detectedClients.includes(client))
+  : clientSelectionMigrationDue && earlierSetupCompleted
+    ? requestedClients.filter((client) => (
+        explicitClientChoices.includes(client)
+        && !previousClients.includes(client)
+        && !clientPreflights[client].ok
+        && !clientPreflights[client].failed
+      ))
+    : [];
 const installClients = detectedClients.filter((client) => selectedClients.includes(client));
 if (existingSetup) {
   log(clientSelectionMessage(selectedClients, { dshSelected }));
@@ -294,10 +341,12 @@ if (requestedClients.includes("cursor") && !skipCursorAdapterInstall && !cursorP
 if (requestedClients.includes("qoder") && !skipQoderAdapterInstall && !qoderPreflight.ok) {
   log("Qoder runtime or data directory was not detected; skipping its adapter setup.");
 }
-if (writeClientSelectionConfig(selectedClients, clientsWithPersistedIntent) === "failed") {
+if (writeClientSelectionConfig(selectedClients, clientsWithPersistedIntent, undecidedClients) === "failed") {
   printPostinstallSummary("not-verified");
   process.exit(1);
 }
+if (clientSelectionMigrationDue) markClientSelectionMigrated();
+if (updateMode && !automaticUpdateMode) printLaterClientDisclosure();
 const lifecycleClients = automaticUpdateMode ? selectedClients : installClients;
 const clientMode = clientModeFor(lifecycleClients, {
   includeDsh: dshProfilesVerified && dshEnabledByConfig,
@@ -342,24 +391,28 @@ const codexClientNewlyEnabled = codexClientEnabled
   && !previousClients.includes("codex");
 const codexPluginRequiresActivation = codexClientEnabled
   && codexPreflight.pluginRegistration.ready !== true;
-const codexHooksBeforeUpdate = codexClientEnabled
+// Activating another client must not depend on Codex Hook trust, which the
+// version reconcile for this package already handled.
+const codexRegistrationRequired = codexClientEnabled
+  && (!clientActivationRun || newlyDetectedClients.includes("codex"));
+const codexHooksBeforeUpdate = codexRegistrationRequired
   && existingSetup
   && !codexClientNewlyEnabled
   && !codexPluginRequiresActivation
   ? inspectCodexPluginHooksForUpdate()
   : undefined;
-const result = codexClientEnabled
+const result = codexRegistrationRequired
   ? runNodeMemoraxCodeCommand(["codex-plugin", "install", "--json"], { print: verbose, printOnFailure: true })
   : { status: 0 };
 
-if (codexClientEnabled && result.status !== 0) {
+if (codexRegistrationRequired && result.status !== 0) {
   setupDeploymentFailure("codex", "plugin-register", result);
   logRed("MemoraX Code Codex plugin registration failed. Run `memorax-code setup` again after correcting the reported problem.");
   printPostinstallSummary("not-verified");
   process.exit(1);
 }
 
-if (codexClientEnabled && result.status === 0) {
+if (codexRegistrationRequired && result.status === 0) {
   if (existingSetup && (codexClientNewlyEnabled || codexPluginRequiresActivation)) {
     const activationResult = activateCodexPluginHooks();
     if (automaticUpdateMode && activationResult !== "activated") {
@@ -525,6 +578,9 @@ if (nonInteractive) {
     process.exit(1);
   }
 }
+if (clientActivationRun && recordActivatedClients(newlyDetectedClients) === "failed") {
+  process.exit(1);
+}
 try {
   const completion = writeSetupCompletionRecord({
     memoraxCodeHome: memoraxCodeHome(),
@@ -678,6 +734,11 @@ function printMemoraxDisclosure() {
   log("MemoraX Code requires MemoraX for its core remote-memory functionality.");
   log("After connection, trusted repository sessions automatically send selected user prompts and final assistant answers to MemoraX after replies.");
   log("Newly generated configuration enables automatic writeback. Existing configuration is never enabled implicitly; disable it with `[memory.writeback] enabled = false` or `MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED=false`.");
+  printLaterClientDisclosure();
+}
+
+function printLaterClientDisclosure() {
+  log("Supported coding agents installed later are enabled automatically while the Backend is running, and their sessions follow the same rules. Set `[clients].<client> = false` to keep one disabled.");
 }
 
 async function writeMemoraxConfigFromInput({
@@ -1030,12 +1091,41 @@ function readPersistedDshSelection() {
   }
 }
 
-function writeClientSelectionConfig(clients, configuredClients = SETUP_CLIENTS) {
+function clientSelectionMigrationPath() {
+  return join(memoraxCodeHome(), "runtime", "setup", "client-selection-migration.json");
+}
+
+function markClientSelectionMigrated() {
+  try {
+    writePrivateJsonRecord(clientSelectionMigrationPath(), { version: 1 }, { durableBoundary: memoraxCodeHome() });
+  } catch {
+    // The cleanup already succeeded; a later setup can only repeat it.
+    logRed("The client selection migration could not be recorded; a later setup will run it again.");
+  }
+}
+
+function writeClientSelectionConfig(clients, configuredClients = SETUP_CLIENTS, undecidedClients = []) {
   const path = memoraxCodeConfigPath();
   return updateConfigFileWithLock({
     path,
-    defaultText: setManagedClientSelection(defaultMemoraxCodeConfig(), clients, configuredClients),
-    transform: (text) => setManagedClientSelection(text, clients, configuredClients),
+    defaultText: setManagedClientSelection(defaultMemoraxCodeConfig(), clients, configuredClients, undecidedClients),
+    transform: (text) => setManagedClientSelection(text, clients, configuredClients, undecidedClients),
+    parseToml: parse,
+    warn: () => {},
+    onFailure: (details) => setupFailure("config", { details }),
+  });
+}
+
+// Activation was decided from the config read when setup started. A selection
+// changed since then wins, so only a field that is still absent becomes true.
+function recordActivatedClients(clients) {
+  return updateConfigFileWithLock({
+    path: memoraxCodeConfigPath(),
+    transform: (text, config) => setManagedClientSelection(
+      text,
+      clients,
+      clients.filter((client) => config.clients && !Object.hasOwn(config.clients, client)),
+    ),
     parseToml: parse,
     warn: () => {},
     onFailure: (details) => setupFailure("config", { details }),
@@ -1085,13 +1175,19 @@ function restoredLifecycleClientsMatch(restoredClients, lifecycleClients, includ
   ));
 }
 
-function setManagedClientSelection(text, clients, configuredClients = SETUP_CLIENTS) {
+function setManagedClientSelection(text, clients, configuredClients = SETUP_CLIENTS, undecidedClients = []) {
   let updated = text;
-  for (const client of ["opencode", "deepagents", "claude", "codebuddy", "workbuddy", "trae", "cursor", "qoder", "codex"]) {
-    if (!configuredClients.includes(client)) continue;
-    updated = setTomlField(updated, "clients", client, String(clients.includes(client)));
+      for (const client of ["opencode", "deepagents", "claude", "codebuddy", "workbuddy", "trae", "cursor", "qoder", "codex"]) {
+          if (undecidedClients.includes(client)) {
+              updated = setTomlField(updated, "clients", client, undefined);
+          } else if (configuredClients.includes(client)) {
+              updated = setTomlField(updated, "clients", client, String(clients.includes(client)));
+          }
+      }
   }
-  return updated;
+  // DSH stays enabled when omitted. Writing it keeps the selection recognizable
+  // after a first setup that found no other client.
+  return existingSetup ? updated : setTomlField(updated, "clients", "dsh", "true");
 }
 
 function writeMemoraxConfig({ userId, endpoint, outputLanguage, apiKey }) {

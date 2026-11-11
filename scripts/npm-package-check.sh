@@ -441,16 +441,10 @@ assert config_sections == {
 assert 'user_id = "package-check-user"' in config_text
 assert 'api_key = "package-check-key"' in config_text
 assert 'output_language = "' in config_text
-assert "codex = false" in config_text
-assert "claude = false" in config_text
-assert "deepagents = false" in config_text
 assert "dsh = false" in config_text
-assert "opencode = false" in config_text
-assert "codebuddy = false" in config_text
-assert "workbuddy = false" in config_text
-assert "trae = false" in config_text
-assert "cursor = false" in config_text
-assert "qoder = false" in config_text
+# First setup records only the clients it finds; the others stay undecided.
+clients_section = config_text.split("[clients]\n", 1)[1].split("\n[", 1)[0]
+assert {line.split(" = ", 1)[0] for line in clients_section.splitlines() if " = " in line} == {"dsh"}, clients_section
 assert memorax_code_config.stat().st_mode & 0o777 == 0o600
 completion = json.loads((home / ".memorax-code" / "runtime" / "setup" / "setup-completion.json").read_text())
 assert completion["version"] == 1
@@ -482,6 +476,7 @@ MEMORAX_CODE_SKIP_CODEBUDDY_ADAPTER_INSTALL=1 \
 MEMORAX_CODE_SKIP_WORKBUDDY_ADAPTER_INSTALL=1 \
 MEMORAX_CODE_SKIP_TRAE_ADAPTER_INSTALL=1 \
 MEMORAX_CODE_SKIP_QODER_ADAPTER_INSTALL=1 \
+MEMORAX_CODE_SKIP_CURSOR_ADAPTER_INSTALL=1 \
 "$prefix/bin/memorax-code" >/dev/null 2>&1
 cmp "$home_dir/legacy-config-before-migration.toml" "$MEMORAX_CODE_HOME/config.toml"
 test -f "$MEMORAX_CODE_HOME/runtime/setup/setup-completion.json"

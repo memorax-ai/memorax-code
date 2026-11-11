@@ -109,16 +109,33 @@ function findClaudeDesktopCodeCommand(roots, platform, env, spawnSyncImpl) {
       continue;
     }
     for (const version of versions) {
-      const command = join(root, version, ...runtimeSegments);
-      if (
-        isExecutableCommand(command, platform)
-        && claudeDesktopCodeCommandIsRunnable(command, env, spawnSyncImpl)
-      ) {
-        return command;
+      for (const command of claudeDesktopVersionCommands(join(root, version), runtimeSegments)) {
+        if (
+          isExecutableCommand(command, platform)
+          && claudeDesktopCodeCommandIsRunnable(command, env, spawnSyncImpl)
+        ) {
+          return command;
+        }
       }
     }
   }
   return undefined;
+}
+
+// Current desktop builds add a content-hash directory below each version.
+function claudeDesktopVersionCommands(versionRoot, runtimeSegments) {
+  let children = [];
+  try {
+    children = readdirSync(versionRoot, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() || entry.isSymbolicLink())
+      .map((entry) => entry.name);
+  } catch {
+    // An unreadable version directory has no candidates beyond the direct path.
+  }
+  return [
+    join(versionRoot, ...runtimeSegments),
+    ...children.map((child) => join(versionRoot, child, ...runtimeSegments)),
+  ];
 }
 
 function claudeDesktopCodeCommandIsRunnable(command, env, spawnSyncImpl) {

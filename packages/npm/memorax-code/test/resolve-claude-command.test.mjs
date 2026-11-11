@@ -70,6 +70,37 @@ test("Claude command resolution uses the newest macOS Claude Desktop Code runtim
   }
 });
 
+test("Claude command resolution finds a macOS Claude Desktop runtime under a build directory", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-claude-command-desktop-build-"));
+  try {
+    const desktopRoot = join(root, "Library", "Application Support", "Claude", "claude-code");
+    await mkdir(join(desktopRoot, "2.10.0", "not-a-runtime"), { recursive: true });
+    const expected = await executable(join(
+      desktopRoot,
+      "2.10.0",
+      "0123abcd",
+      "claude.app",
+      "Contents",
+      "MacOS",
+      "claude",
+    ));
+
+    const resolved = ensureClaudeCommandEnv({
+      env: { PATH: join(root, "empty-bin") },
+      homeDir: root,
+      platform: "darwin",
+      arch: "arm64",
+      desktopCodeRoots: [desktopRoot],
+      desktopCodeProbe: () => ({ status: 0, stdout: "2.10.0\n", stderr: "" }),
+      vscodeExtensionRoots: [],
+    });
+
+    assert.deepEqual(resolved, { command: expected, source: "app-bundled" });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("Claude command resolution uses the newest Windows Claude Desktop Code runtime", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-claude-command-windows-desktop-"));
   try {

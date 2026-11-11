@@ -69,6 +69,8 @@ not currently support attaching a Mark ID to an account that has already been
 registered.
 
 Both account and guest setup automatically detect supported coding agents.
+While the managed Backend is running, an agent you install later is enabled
+within about 15 minutes; `docs/configuration.md` explains how to exclude one.
 Default setup reuses a complete saved configuration; use
 `memorax-code setup --reconfigure` to replace it.
 

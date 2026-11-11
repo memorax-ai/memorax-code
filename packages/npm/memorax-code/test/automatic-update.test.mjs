@@ -386,6 +386,167 @@ test("recovery diagnostics retain only recognized outcomes and causes", async (t
   assert.equal(invalid.fields.causeDiagnosticId, undefined);
 });
 
+test("throttled checks activate new clients without touching the npm schedule", async (t) => {
+  const { api, memoraxCodeHome } = await fixture(t);
+  await api.runAutomaticUpdateCore(options(memoraxCodeHome, "08:00:00"));
+  const before = await readState(api, memoraxCodeHome);
+  const calls = [];
+  const result = await api.runAutomaticUpdateCore(options(memoraxCodeHome, "08:15:00", {
+    resolveTargetVersion: async () => record(calls, "check", "0.1.10"),
+    discoverClients: async (deferred) => record(calls, ["discover", deferred], ["claude", "trae"]),
+    reconcile: async (version, setupOptions) => record(calls, ["reconcile", version, setupOptions], true),
+  }));
+
+  assert.equal(result.disposition, "throttled");
+  assert.equal(result.clientActivationFailures, undefined);
+  assert.deepEqual(calls, [
+    ["discover", []],
+    ["reconcile", "0.1.9", { reuseRestoredBackend: false, newClients: ["claude"] }],
+    ["reconcile", "0.1.9", { reuseRestoredBackend: false, newClients: ["trae"] }],
+  ]);
+  assert.deepEqual(await readState(api, memoraxCodeHome), before);
+});
+
+test("client activation follows a registry check that finds no update", async (t) => {
+  const { api, memoraxCodeHome } = await fixture(t);
+  const calls = [];
+  const result = await api.runAutomaticUpdateCore(options(memoraxCodeHome, "08:00:00", {
+    discoverClients: async () => ["claude"],
+    reconcile: async (version, setupOptions) => record(calls, [version, setupOptions], true),
+  }));
+
+  assert.equal(result.disposition, "up-to-date");
+  assert.deepEqual(calls, [["0.1.9", { reuseRestoredBackend: false, newClients: ["claude"] }]]);
+  assert.equal((await readState(api, memoraxCodeHome)).nextCheckAt, "2026-08-30T16:00:00.000Z");
+});
+
+test("a failed client activation does not stop other clients and waits eight hours", async (t) => {
+  const { api, memoraxCodeHome } = await fixture(t);
+  await api.runAutomaticUpdateCore(options(memoraxCodeHome, "08:00:00"));
+  const deferred = [];
+  const activated = [];
+  const pass = (time) => api.runAutomaticUpdateCore(options(memoraxCodeHome, time, {
+    discoverClients: async (clients) => {
+      deferred.push(clients);
+      return ["claude", "trae"].filter((client) => !clients.includes(client));
+    },
+    reconcile: async (_version, { newClients: [client] }) => {
+      activated.push(client);
+      if (client === "claude") throw Object.assign(new Error("private-activation-canary"), { code: "EACCES" });
+      return true;
+    },
+  }));
+
+  const failed = await pass("08:15:00");
+  assert.equal(failed.ok, true);
+  assert.equal(failed.disposition, "throttled");
+  assert.equal(failed.clientActivationFailures.length, 1);
+  assert.equal(failed.clientActivationFailures[0].code, "UPDATE_RECONCILE_FAILED");
+  assert.equal(failed.clientActivationFailures[0].stage, "reconcile");
+  assert.doesNotMatch(JSON.stringify(failed), /private-activation-canary/);
+  assert.equal((await pass("16:14:59")).clientActivationFailures, undefined);
+  assert.equal((await pass("16:15:00")).clientActivationFailures.length, 1);
+
+  assert.deepEqual(activated, ["claude", "trae", "claude", "trae"]);
+  assert.deepEqual(deferred, [[], ["claude", "trae"], []]);
+});
+
+test("client activation is not attempted when its backoff cannot be saved", async (t) => {
+  const { api, memoraxCodeHome } = await fixture(t);
+  await api.runAutomaticUpdateCore(options(memoraxCodeHome, "08:00:00"));
+  await mkdir(join(memoraxCodeHome, "runtime", "install", "client-activation.json"));
+  const calls = [];
+  const result = await api.runAutomaticUpdateCore(options(memoraxCodeHome, "08:15:00", {
+    discoverClients: async () => ["claude"],
+    reconcile: async () => record(calls, "reconcile", true),
+  }));
+
+  assert.equal(result.ok, true);
+  assert.equal(result.clientActivationFailures[0].code, "UPDATE_STATE_WRITE_FAILED");
+  assert.equal(result.clientActivationFailures[0].stage, "update_state");
+  assert.deepEqual(calls, []);
+});
+
+test("a failed client discovery is reported without failing the update check", async (t) => {
+  const { api, memoraxCodeHome } = await fixture(t);
+  await api.runAutomaticUpdateCore(options(memoraxCodeHome, "08:00:00"));
+  const result = await api.runAutomaticUpdateCore(options(memoraxCodeHome, "08:15:00", {
+    discoverClients: async () => { throw new Error("private-discovery-canary"); },
+  }));
+
+  assert.equal(result.ok, true);
+  assert.equal(result.clientActivationFailures[0].code, "UPDATE_RECONCILE_FAILED");
+  assert.equal(result.clientActivationFailures[0].stage, "reconcile");
+  assert.doesNotMatch(JSON.stringify(result), /private-discovery-canary/);
+});
+
+test("an unusable activation record does not stop client activation", async (t) => {
+  const { api, memoraxCodeHome } = await fixture(t);
+  await api.runAutomaticUpdateCore(options(memoraxCodeHome, "08:00:00"));
+  const path = join(memoraxCodeHome, "runtime", "install", "client-activation.json");
+  for (const text of [
+    "{private-malformed-record-canary",
+    JSON.stringify({ version: 2, nextAttemptAt: { claude: "2099-01-01T00:00:00.000Z" } }),
+    JSON.stringify({ version: 1, nextAttemptAt: { claude: "not-a-date" } }),
+  ]) {
+    await writeFile(path, text);
+    const deferred = [];
+    await api.runAutomaticUpdateCore(options(memoraxCodeHome, "08:15:00", {
+      discoverClients: async (clients) => record(deferred, clients, []),
+    }));
+    assert.deepEqual(deferred, [[]]);
+  }
+});
+
+test("client activation waits for an unfinished version reconcile", async (t) => {
+  const { api, memoraxCodeHome } = await fixture(t);
+  await api.runAutomaticUpdateCore(options(memoraxCodeHome, "08:00:00"));
+  const calls = [];
+  const result = await api.runAutomaticUpdateCore(options(memoraxCodeHome, "08:15:00", {
+    completedByVersion: "0.1.8",
+    discoverClients: async () => record(calls, "discover", ["claude"]),
+    reconcile: async () => record(calls, "reconcile", true),
+  }));
+
+  assert.equal(result.disposition, "throttled");
+  assert.deepEqual(calls, []);
+});
+
+test("a package update leaves client discovery to the installed package", async (t) => {
+  const { api, memoraxCodeHome } = await fixture(t);
+  const calls = [];
+  const result = await api.runAutomaticUpdateCore(options(memoraxCodeHome, "08:00:00", {
+    resolveTargetVersion: async () => "0.1.10",
+    discoverClients: async () => record(calls, "discover", ["claude"]),
+    reconcile: async (_version, setupOptions) => record(calls, setupOptions, true),
+  }));
+
+  assert.equal(result.disposition, "updated");
+  assert.deepEqual(calls, [{ reuseRestoredBackend: false }]);
+});
+
+test("automatic setup names the clients an activation run may enable", async (t) => {
+  const { api, root, memoraxCodeHome } = await fixture(t);
+  const completionPath = join(memoraxCodeHome, "runtime", "setup", "setup-completion.json");
+  await mkdir(dirname(completionPath), { recursive: true });
+  await writeFile(completionPath, JSON.stringify({
+    version: 1, state: "complete", completedAt: "2026-08-30T08:00:00.000Z", completedByVersion: "0.1.9",
+  }));
+  await mkdir(join(root, "bin"));
+  await writeFile(join(root, "bin", "memorax-code-setup.mjs"), [
+    'import { appendFileSync } from "node:fs";',
+    'import { join } from "node:path";',
+    'appendFileSync(join(process.env.MEMORAX_CODE_HOME, "new-clients.jsonl"), JSON.stringify(process.env.MEMORAX_CODE_SETUP_NEW_CLIENTS) + "\\n");',
+  ].join("\n"));
+
+  for (const newClients of [undefined, ["claude"]]) {
+    assert.equal(await api.runAutomaticSetup({
+      env: process.env, memoraxCodeHome, packageRoot: root, targetVersion: "0.1.9", newClients,
+    }), true);
+  }
+  assert.equal(await readFile(join(memoraxCodeHome, "new-clients.jsonl"), "utf8"), '""\n"claude"\n');
+});
+
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-automatic-update-"));
   const files = [
