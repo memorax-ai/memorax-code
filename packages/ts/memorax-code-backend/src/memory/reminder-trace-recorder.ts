@@ -5,6 +5,7 @@ import {
 } from "./hook-command.js";
 import {
   traceContextFromClaudeHookBody,
+  traceContextFromDeepAgentsHookBody,
   traceContextFromDshSkillReminder,
   traceContextFromHookBody,
   traceContextFromOpenCodeHookBody,
@@ -72,6 +73,7 @@ export function createMemoryReminderTraceRecorder(
 function traceContextForReminder(command: SkillReminderCommand): TraceContext | undefined {
   if (command.client === "codex") return traceContextFromHookBody(command);
   if (command.client === "claude-code") return traceContextFromClaudeHookBody(command);
+  if (command.client === "deepagents") return traceContextFromDeepAgentsHookBody(command);
   if (command.client === "dsh") return traceContextFromDshSkillReminder(command);
   if (command.client === "codebuddy" || command.client === "workbuddy") return traceContextFromCodeBuddyHookBody(command);
   if (command.client === "trae") return traceContextFromTraeHookBody(command);
@@ -83,6 +85,7 @@ function traceContextForReminder(command: SkillReminderCommand): TraceContext | 
 function reminderSource(command: SkillReminderCommand): string {
   if (command.client === "codex") return "codex-hook";
   if (command.client === "claude-code") return "claude-hook";
+  if (command.client === "deepagents") return "deepagents-hook";
   if (command.client === "dsh") return "dsh-cordis";
   if (command.client === "codebuddy" || command.client === "workbuddy") return `${command.client}-hook`;
   if (command.client === "trae") return "trae-hook";

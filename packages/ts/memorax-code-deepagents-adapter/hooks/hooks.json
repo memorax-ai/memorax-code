@@ -1,0 +1,61 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear|compact|fork",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/runtime-hook.mjs\" ensure-backend",
+            "statusMessage": "Checking MemoraX Code backend",
+            "timeout": 35
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/runtime-hook.mjs\" capture-cwd",
+            "statusMessage": "Capturing MemoraX Code workspace"
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/runtime-hook.mjs\" memory-cli-session",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/runtime-hook.mjs\" capture-cwd",
+            "statusMessage": "Capturing MemoraX Code workspace"
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/runtime-hook.mjs\" memory-skill-reminder",
+            "statusMessage": "Recording MemoraX Code turn and checking reminders",
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/runtime-hook.mjs\" capture-cwd",
+            "statusMessage": "Capturing MemoraX Code workspace"
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/runtime-hook.mjs\" memory-turn",
+            "statusMessage": "Saving MemoraX Code memory",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

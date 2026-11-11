@@ -88,11 +88,11 @@ export function selectHookRuntime({
   pluginRoot,
   shellVersion,
   } = {}) {
-  if (client !== "codex" && client !== "claude-code") return undefined;
+  if (client !== "codex" && client !== "claude-code" && client !== "deepagents") return undefined;
   const event = hookEvent(input);
   if (!["SessionStart", "UserPromptSubmit", "Stop"].includes(event)) return undefined;
   const sessionId = stringOption(input?.session_id) ?? stringOption(input?.sessionId);
-  const turnId = client === "claude-code"
+  const turnId = client === "claude-code" || client === "deepagents"
     ? stringOption(input?.prompt_id) ?? stringOption(input?.promptId)
     : stringOption(input?.turn_id) ?? stringOption(input?.turnId);
   const fallback = bundledSelection({
@@ -257,7 +257,7 @@ function readPin(path) {
   const value = state.value;
   if (value.version !== PIN_RECORD_VERSION
     || value.runtimeAbi !== CLIENT_HOOK_RUNTIME_ABI
-    || !["codex", "claude-code"].includes(value.client)
+    || !["codex", "claude-code", "deepagents"].includes(value.client)
     || !/^[a-f0-9]{64}$/.test(value.sessionKey)
     || !/^[a-f0-9]{64}$/.test(value.turnKey)
     || !["durable", "bundled"].includes(value.generationSource)

@@ -362,6 +362,33 @@ automatic memory handling stops for that Session, including after resume; start 
 new Session in the intended workspace. The immutable Session header cannot
 rebind an existing memory scope to its new effective directory.
 
+## Deep Agents Code integration paths
+
+Deep Agents Code stores its user profile under `DEEPAGENTS_HOME`, which defaults
+to `~/.deepagents`. MemoraX Code honors the same value and installs its plugin
+through dcode's native plugin manager. The managed marketplace is materialized
+at:
+
+```text
+$MEMORAX_CODE_HOME/lib/memorax-code-deepagents-marketplace/
+```
+
+The adapter records its installed plugin, marketplace, and profile under
+`$MEMORAX_CODE_HOME/adapters/deepagents/`. `memorax-code start` runs
+`dcode plugin marketplace add`, `dcode plugin install`, and `dcode plugin enable`
+against that profile. MemoraX Code does not edit `~/.deepagents/hooks.json`,
+`config.toml`, or provider settings. Plugin-provided Hooks avoid dcode's
+workspace-trust gate and are loaded when a new session starts or after `/reload`.
+
+dcode strips credential-looking variables such as `MEMORAX_CODE_BACKEND_TOKEN`
+from Hook subprocess environments. Use the persisted local Backend token file,
+not an environment-only token, for Deep Agents Hook authentication. Native
+transcripts under `~/.deepagents/transcripts` are read locally and use
+`thread_id` plus `sequence` to align the user turn. Because dcode's projection
+does not carry a stop reason, the Stop Hook's `last_assistant_message` is the
+reply authority; the transcript supplies the user prompt and activity evidence.
+Neither file is uploaded as a transcript.
+
 ## OpenCode integration paths
 
 The managed OpenCode plugin loader and shared skill use OpenCode's automatic

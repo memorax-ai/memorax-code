@@ -88,7 +88,7 @@ export function runBackendCli(argv = process.argv): void {
       `Usage: ${usageName} [${commands}] [--backend-url URL] [--backend-token TOKEN] [--home DIR]`,
       "[--host HOST] [--port PORT] [--rotate] [--show]",
       "[--codex-command CMD]",
-      "[--codex-home DIR] [--claude-home DIR] [--dsh-home DIR] [--opencode-config-dir DIR] [--codebuddy-home DIR] [--workbuddy-home DIR] [--trae-home DIR] [--cursor-home DIR] [--qoder-home DIR]",
+      "[--codex-home DIR] [--claude-home DIR] [--deepagents-home DIR] [--dsh-home DIR] [--opencode-config-dir DIR] [--codebuddy-home DIR] [--workbuddy-home DIR] [--trae-home DIR] [--cursor-home DIR] [--qoder-home DIR]",
       "[--dsh-command CMD] [--dsh-adapter-root DIR] [--memorax-code-command CMD]",
       `[--clients ${LIFECYCLE_CLIENTS.map(({ id }) => id).join("|")}|CLIENT,...|all|none]`,
       "[--json]",
@@ -260,6 +260,7 @@ async function startRawBackendServer(
         memoraxCodeHome: state.sessionHome,
         codexHome: argValue(argv, "--codex-home"),
         claudeHome: argValue(argv, "--claude-home"),
+        deepAgentsHome: argValue(argv, "--deepagents-home"),
         dshHome: argValue(argv, "--dsh-home"),
         dshAdapterRoot: argValue(argv, "--dsh-adapter-root"),
         openCodeConfigDir: argValue(argv, "--opencode-config-dir"),
@@ -270,6 +271,7 @@ async function startRawBackendServer(
         qoderHome: argValue(argv, "--qoder-home"),
         codexCommand: argValue(argv, "--codex-command"),
         claudeCommand: argValue(argv, "--claude-command"),
+        deepAgentsCommand: argValue(argv, "--deepagents-command"),
         dshCommand: argValue(argv, "--dsh-command"),
       })
     : undefined;
@@ -842,6 +844,7 @@ function printAdapterReports(
 
 function adapterDisplayName(client: typeof LIFECYCLE_CLIENTS[number]): string {
   if (client.id === "claude") return "Claude";
+  if (client.id === "deepagents") return "Deep Agents";
   if (client.id === "codebuddy") return "CodeBuddy";
   return client.name;
 }

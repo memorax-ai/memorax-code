@@ -27,6 +27,17 @@ export function ensureClaudeMarketplaceEnv() {
   }
 }
 
+export function ensureDeepAgentsMarketplaceEnv() {
+  const marketplaceRoot = join(packageRoot, "lib", "memorax-code-deepagents-marketplace");
+  if (!process.env.MEMORAX_CODE_DEEPAGENTS_MARKETPLACE_ROOT?.trim()) {
+    process.env.MEMORAX_CODE_DEEPAGENTS_MARKETPLACE_ROOT = marketplaceRoot;
+  }
+  const skillsRoot = join(packageRoot, "lib", "memorax-code-deepagents-adapter", "skills");
+  if (!process.env.MEMORAX_CODE_DEEPAGENTS_SKILLS_ROOT?.trim()) {
+    process.env.MEMORAX_CODE_DEEPAGENTS_SKILLS_ROOT = skillsRoot;
+  }
+}
+
 export function installWatchPathsForPackageRoot(root = packageRoot) {
   return [
     join(root, "package.json"),
@@ -95,6 +106,13 @@ export async function runClaudeAdapterCli() {
   ensureClaudeCommandEnv();
   ensureClaudeMarketplaceEnv();
   const entrypoint = join(packageRoot, "lib", "memorax-code-claude-adapter", "src", "cli.mjs");
+  await import(pathToFileURL(entrypoint).href);
+}
+
+export async function runDeepAgentsAdapterCli() {
+  if (!ensureSupportedNodeRuntime()) return;
+  ensureDeepAgentsMarketplaceEnv();
+  const entrypoint = join(packageRoot, "lib", "memorax-code-deepagents-adapter", "src", "cli.mjs");
   await import(pathToFileURL(entrypoint).href);
 }
 

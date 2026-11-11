@@ -72,6 +72,17 @@ type QoderPluginInstaller = {
   removeQoderAdapter: (options: Record<string, unknown>) => Promise<QoderPluginRemovalReport>;
 };
 
+type DeepAgentsPluginRemovalReport = {
+  ok: boolean;
+  action: string;
+  reason?: string;
+  message?: string;
+};
+
+type DeepAgentsPluginInstaller = {
+  removeDeepAgentsPluginInstallation: (options: Record<string, unknown>) => Promise<DeepAgentsPluginRemovalReport>;
+};
+
 type DshPluginRemovalReport = {
   ok: boolean;
   action: string;
@@ -92,6 +103,7 @@ export type ClientPluginRemovalOptions = {
   homeDir?: string;
   codexHome?: string;
   claudeHome?: string;
+  deepAgentsHome?: string;
   dshHome?: string;
   dshAdapterRoot?: string;
   openCodeConfigDir?: string;
@@ -102,6 +114,7 @@ export type ClientPluginRemovalOptions = {
   qoderHome?: string;
   codexCommand?: string;
   claudeCommand?: string;
+  deepAgentsCommand?: string;
   dshCommand?: string;
 };
 
@@ -110,6 +123,7 @@ export type ClientPluginRemovalReport = {
   action: "client-plugin-removal-cleanup";
   codexPlugin: BackendRemovalCleanupReport | ClientPluginRemovalFailure;
   claudePlugin: ClaudePluginRemovalReport | ClientPluginRemovalFailure;
+  deepagentsPlugin: DeepAgentsPluginRemovalReport | ClientPluginRemovalFailure;
   dshPlugin: DshPluginRemovalReport | ClientPluginRemovalFailure;
   opencodePlugin: OpenCodePluginRemovalReport | ClientPluginRemovalFailure;
   codebuddyPlugin: CodeBuddyPluginRemovalReport | ClientPluginRemovalFailure;
@@ -136,10 +150,13 @@ export async function prepareClientPluginRemovalCleanup(
   const traePluginInstaller = await loadTraePluginInstaller();
   const cursorPluginInstaller = await loadCursorPluginInstaller();
   const qoderPluginInstaller = await loadQoderPluginInstaller();
+  const deepAgentsPluginInstaller = await loadDeepAgentsPluginInstaller();
   const home = resolveHome(options.homeDir);
   const memoraxCodeHome = resolve(options.memoraxCodeHome ?? process.env.MEMORAX_CODE_HOME ?? join(home, ".memorax-code"));
   const claudeState = await readJsonRecord(join(memoraxCodeHome, "adapters", "claude-code", "state.json"));
   const claudeHome = options.claudeHome ?? stringField(claudeState, "claudeHome");
+  const deepAgentsState = await readJsonRecord(join(memoraxCodeHome, "adapters", "deepagents", "state.json"));
+  const deepAgentsHome = options.deepAgentsHome ?? stringField(deepAgentsState, "deepAgentsHome");
   const traeState = await readJsonRecord(join(memoraxCodeHome, "adapters", "trae", "state.json"));
   const traeHome = options.traeHome ?? stringField(traeState, "traeHome");
   const cursorState = await readJsonRecord(join(memoraxCodeHome, "adapters", "cursor", "state.json"));
@@ -150,7 +167,7 @@ export async function prepareClientPluginRemovalCleanup(
   return async () => {
     try {
       return await withBackendLifecycleLock({ home: memoraxCodeHome }, async () => {
-        const [codexPlugin, claudePlugin, dshPlugin, opencodePlugin, codebuddyPlugin, workbuddyPlugin, traePlugin, cursorPlugin, qoderPlugin] = await Promise.all([
+        const [codexPlugin, claudePlugin, deepagentsPlugin, dshPlugin, opencodePlugin, codebuddyPlugin, workbuddyPlugin, traePlugin, cursorPlugin, qoderPlugin] = await Promise.all([
           cleanupCodexAfterBackendRemoval({
             memoraxCodeHome,
             homeDir: home,
@@ -164,6 +181,13 @@ export async function prepareClientPluginRemovalCleanup(
               ...(options.claudeCommand ? { claudeCommand: options.claudeCommand } : {}),
             }))
             .catch((error) => removalFailure("claude-plugin-remove", error)),
+          Promise.resolve()
+            .then(() => deepAgentsPluginInstaller.removeDeepAgentsPluginInstallation({
+              memoraxCodeHome,
+              ...(deepAgentsHome ? { deepAgentsHome } : {}),
+              ...(options.deepAgentsCommand ? { deepAgentsCommand: options.deepAgentsCommand } : {}),
+            }))
+            .catch((error) => removalFailure("deepagents-plugin-remove", error)),
           dshProfileLifecycle.withDshPluginLifecycleLock({
             memoraxCodeHome,
             homeDir: home,
@@ -207,10 +231,11 @@ export async function prepareClientPluginRemovalCleanup(
           }).catch((error) => removalFailure("qoder-adapter-remove", error)),
         ]);
         return {
-          ok: codexPlugin.ok && claudePlugin.ok && dshPlugin.ok && opencodePlugin.ok && codebuddyPlugin.ok && workbuddyPlugin.ok && traePlugin.ok && cursorPlugin.ok && qoderPlugin.ok,
+          ok: codexPlugin.ok && claudePlugin.ok && deepagentsPlugin.ok && dshPlugin.ok && opencodePlugin.ok && codebuddyPlugin.ok && workbuddyPlugin.ok && traePlugin.ok && cursorPlugin.ok && qoderPlugin.ok,
           action: "client-plugin-removal-cleanup" as const,
           codexPlugin,
           claudePlugin,
+          deepagentsPlugin,
           dshPlugin,
           opencodePlugin,
           codebuddyPlugin,
@@ -227,6 +252,7 @@ export async function prepareClientPluginRemovalCleanup(
         action: "client-plugin-removal-cleanup",
         codexPlugin: failure,
         claudePlugin: failure,
+        deepagentsPlugin: failure,
         dshPlugin: failure,
         opencodePlugin: failure,
         codebuddyPlugin: failure,
@@ -260,6 +286,10 @@ async function loadCursorPluginInstaller(): Promise<CursorPluginInstaller> {
 }
 async function loadQoderPluginInstaller(): Promise<QoderPluginInstaller> {
   return await import(new URL("../../../memorax-code-qoder-adapter/src/config.mjs", import.meta.url).href);
+}
+
+async function loadDeepAgentsPluginInstaller(): Promise<DeepAgentsPluginInstaller> {
+  return await import(new URL("../../../memorax-code-deepagents-adapter/src/plugin-install.mjs", import.meta.url).href);
 }
 
 async function loadDshProfileLifecycle(): Promise<DshProfileLifecycleModule> {

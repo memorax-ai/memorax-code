@@ -1,4 +1,4 @@
-.PHONY: test test-ts test-adapter-common test-shared-skill test-codex-adapter test-claude-adapter test-claude-e2e test-dsh-adapter test-dsh-e2e test-opencode-adapter test-opencode-e2e test-codebuddy-adapter test-codebuddy-e2e test-trae-adapter test-cursor-adapter test-qoder-adapter test-npm-package docs-check npm-package-build npm-package-check npm-publish-dry-run release-version-check clean
+.PHONY: test test-ts test-adapter-common test-shared-skill test-codex-adapter test-claude-adapter test-deepagents-adapter test-claude-e2e test-dsh-adapter test-dsh-e2e test-opencode-adapter test-opencode-e2e test-codebuddy-adapter test-codebuddy-e2e test-trae-adapter test-cursor-adapter test-qoder-adapter test-npm-package docs-check npm-package-build npm-package-check npm-publish-dry-run release-version-check clean
 
 NPM ?= npm
 
@@ -12,6 +12,7 @@ test-ts:
 	$(MAKE) test-shared-skill
 	$(MAKE) test-codex-adapter
 	$(MAKE) test-claude-adapter
+	$(MAKE) test-deepagents-adapter
 	$(MAKE) test-dsh-adapter
 	$(MAKE) test-opencode-adapter
 	$(MAKE) test-codebuddy-adapter
@@ -33,6 +34,9 @@ test-claude-adapter:
 
 test-claude-e2e: npm-package-check
 	node scripts/ci/claude/claude-e2e.mjs
+
+test-deepagents-adapter:
+	$(NPM) test --prefix packages/ts/memorax-code-deepagents-adapter
 
 test-dsh-adapter:
 	$(NPM) test --prefix packages/ts/memorax-code-dsh-adapter

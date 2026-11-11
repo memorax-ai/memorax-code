@@ -482,6 +482,7 @@ function memoryCliTraceEventType(event: MemoryObservabilityEvent): string {
 
 function traceClientLabel(client: TraceClient | undefined): string {
   if (client === "claude") return "Claude";
+  if (client === "deepagents") return "Deep Agents Code";
   if (client === "dsh") return "DSH";
   if (client === "opencode") return "OpenCode";
   if (client === "codebuddy") return "CodeBuddy CLI";

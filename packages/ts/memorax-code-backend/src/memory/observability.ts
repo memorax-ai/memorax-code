@@ -4,6 +4,7 @@ export type MemoryObservabilitySource =
   | "automatic_writeback"
   | "codex_hook_writeback"
   | "claude_hook_writeback"
+  | "deepagents_hook_writeback"
   | "dsh_native_writeback"
   | "opencode_plugin_writeback"
   | "codebuddy_hook_writeback"

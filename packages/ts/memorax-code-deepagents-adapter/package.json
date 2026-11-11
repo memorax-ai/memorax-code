@@ -1,0 +1,13 @@
+{
+  "name": "@memorax-code/deepagents-adapter",
+  "version": "0.1.22",
+  "private": true,
+  "type": "module",
+  "description": "Deep Agents Code plugin and Hook adapter for MemoraX Code memory services.",
+  "bin": {
+    "memorax-code-deepagents": "src/cli.mjs"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  }
+}

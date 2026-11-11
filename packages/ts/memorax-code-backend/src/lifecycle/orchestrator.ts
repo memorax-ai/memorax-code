@@ -39,6 +39,7 @@ import { LIFECYCLE_CLIENTS, lifecycleAdapterReports, isAdapterReady, type Client
 export { isAdapterReady } from "./client-reports.js";
 import { codexAdapterLifecycle } from "../clients/codex/lifecycle.js";
 import { claudeAdapterLifecycle } from "../clients/claude/lifecycle.js";
+import { deepAgentsAdapterLifecycle } from "../clients/deepagents/lifecycle.js";
 import {
   collectDshAdapterLifecycleStatus,
   withDshAdapterLifecycleLock,
@@ -78,6 +79,7 @@ export type MemoraxCodeLifecycleReport = ClientAdapterReports & {
   traePlugin?: Awaited<ReturnType<typeof traeAdapterLifecycle.remove>>;
   cursorPlugin?: Awaited<ReturnType<typeof cursorAdapterLifecycle.remove>>;
   qoderPlugin?: Awaited<ReturnType<typeof qoderAdapterLifecycle.remove>>;
+  deepagentsPlugin?: Awaited<ReturnType<typeof deepAgentsAdapterLifecycle.remove>>;
   npmPackageRemoval?: NpmPackageRemovalReport;
   removesPlugin?: boolean;
   removesUserState?: false;
@@ -154,6 +156,9 @@ export async function collectMemoraxCodeStatus(
   const claudeAdapter = clients.claude
     ? await claudeAdapterLifecycle.status({ argv, serviceOptions, backendUrl })
     : undefined;
+  const deepagentsAdapter = clients.deepagents
+    ? await deepAgentsAdapterLifecycle.status({ argv, serviceOptions, backendUrl })
+    : undefined;
   const dshAdapter = markOptionalDshAdapter(
     clients.dsh
       ? await collectDshAdapterLifecycleStatus({ argv, serviceOptions, backendUrl })
@@ -178,7 +183,7 @@ export async function collectMemoraxCodeStatus(
   const qoderAdapter = clients.qoder
     ? await qoderAdapterLifecycle.status({ argv, serviceOptions, backendUrl })
     : undefined;
-  const adapters = lifecycleAdapterReports({ codexAdapter, claudeAdapter, dshAdapter, opencodeAdapter, codebuddyAdapter, workbuddyAdapter, traeAdapter, cursorAdapter, qoderAdapter });
+  const adapters = lifecycleAdapterReports({ codexAdapter, claudeAdapter, deepagentsAdapter, dshAdapter, opencodeAdapter, codebuddyAdapter, workbuddyAdapter, traeAdapter, cursorAdapter, qoderAdapter });
   const optionalDshUnavailable = isOptionalUnavailableDshAdapter(dshAdapter);
   return {
     ok: backend.ok
@@ -191,6 +196,7 @@ export async function collectMemoraxCodeStatus(
     backend,
     ...(codexAdapter ? { codexAdapter } : {}),
     ...(claudeAdapter ? { claudeAdapter } : {}),
+    ...(deepagentsAdapter ? { deepagentsAdapter } : {}),
     ...(dshAdapter ? { dshAdapter } : {}),
     ...(opencodeAdapter ? { opencodeAdapter } : {}),
     ...(codebuddyAdapter ? { codebuddyAdapter } : {}),
@@ -354,6 +360,9 @@ async function executeMemoraxCodeStart(
   const deselectedClaude = previousClients?.claude && !clients.claude
     ? await claudeAdapterLifecycle.disable({ argv, serviceOptions })
     : undefined;
+  const deselectedDeepAgents = previousClients?.deepagents && !clients.deepagents
+    ? await deepAgentsAdapterLifecycle.disable({ argv, serviceOptions })
+    : undefined;
   const deselectedDsh = previousClients?.dsh && !clients.dsh && dshLifecycle
     ? await dshLifecycle.disable({ argv, serviceOptions })
     : undefined;
@@ -377,6 +386,7 @@ async function executeMemoraxCodeStart(
     : undefined;
   if (deselectedCodex?.ok === false
     || deselectedClaude?.ok === false
+    || deselectedDeepAgents?.ok === false
     || deselectedDsh?.ok === false
     || deselectedOpenCode?.ok === false
     || deselectedCodeBuddy?.ok === false
@@ -391,6 +401,7 @@ async function executeMemoraxCodeStart(
       backend: recovery.backend,
       ...(deselectedCodex ? { codexAdapter: deselectedCodex } : {}),
       ...(deselectedClaude ? { claudeAdapter: deselectedClaude } : {}),
+      ...(deselectedDeepAgents ? { deepagentsAdapter: deselectedDeepAgents } : {}),
       ...(recovery.dshAdapter || deselectedDsh
         ? { dshAdapter: recovery.dshAdapter ?? deselectedDsh }
         : {}),
@@ -435,6 +446,9 @@ async function executeMemoraxCodeStart(
   const claudeAdapter = clients.claude
     ? await claudeAdapterLifecycle.prepareEnable({ argv, serviceOptions, backendUrl })
     : undefined;
+  const deepagentsAdapter = clients.deepagents
+    ? await deepAgentsAdapterLifecycle.prepareEnable({ argv, serviceOptions, backendUrl })
+    : undefined;
   const opencodeAdapter = clients.opencode
     ? await openCodeAdapterLifecycle.prepareEnable({ argv, serviceOptions, backendUrl })
     : undefined;
@@ -453,6 +467,18 @@ async function executeMemoraxCodeStart(
   const qoderAdapter = clients.qoder
     ? await qoderAdapterLifecycle.prepareEnable({ argv, serviceOptions, backendUrl })
     : undefined;
+  if (deepagentsAdapter?.ok === false) {
+    const recovery = await recoverPreparationFailure("deepagents_adapter_enable_failed");
+    return {
+      ok: false,
+      action: "start",
+      backend: recovery.backend,
+      ...(codexAdapter ? { codexAdapter } : {}),
+      ...(claudeAdapter ? { claudeAdapter } : {}),
+      deepagentsAdapter,
+      ...(recovery.dshAdapter ? { dshAdapter: recovery.dshAdapter } : {}),
+    };
+  }
   if (opencodeAdapter?.ok === false) {
     const recovery = await recoverPreparationFailure("opencode_adapter_enable_failed");
     return {
@@ -461,6 +487,7 @@ async function executeMemoraxCodeStart(
       backend: recovery.backend,
       ...(codexAdapter ? { codexAdapter } : {}),
       ...(claudeAdapter ? { claudeAdapter } : {}),
+      ...(deepagentsAdapter ? { deepagentsAdapter } : {}),
       ...(recovery.dshAdapter ? { dshAdapter: recovery.dshAdapter } : {}),
       opencodeAdapter,
       ...(codebuddyAdapter ? { codebuddyAdapter } : {}),
@@ -478,6 +505,7 @@ async function executeMemoraxCodeStart(
       backend: recovery.backend,
       ...(codexAdapter ? { codexAdapter } : {}),
       ...(claudeAdapter ? { claudeAdapter } : {}),
+      ...(deepagentsAdapter ? { deepagentsAdapter } : {}),
       ...(recovery.dshAdapter ? { dshAdapter: recovery.dshAdapter } : {}),
       ...(opencodeAdapter ? { opencodeAdapter } : {}),
       codebuddyAdapter,
@@ -495,6 +523,7 @@ async function executeMemoraxCodeStart(
       backend: recovery.backend,
       ...(codexAdapter ? { codexAdapter } : {}),
       ...(claudeAdapter ? { claudeAdapter } : {}),
+      ...(deepagentsAdapter ? { deepagentsAdapter } : {}),
       ...(recovery.dshAdapter ? { dshAdapter: recovery.dshAdapter } : {}),
       ...(opencodeAdapter ? { opencodeAdapter } : {}),
       workbuddyAdapter,
@@ -512,6 +541,7 @@ async function executeMemoraxCodeStart(
       backend: recovery.backend,
       ...(codexAdapter ? { codexAdapter } : {}),
       ...(claudeAdapter ? { claudeAdapter } : {}),
+      ...(deepagentsAdapter ? { deepagentsAdapter } : {}),
       ...(recovery.dshAdapter ? { dshAdapter: recovery.dshAdapter } : {}),
       ...(opencodeAdapter ? { opencodeAdapter } : {}),
       ...(codebuddyAdapter ? { codebuddyAdapter } : {}),
@@ -529,6 +559,7 @@ async function executeMemoraxCodeStart(
       backend: recovery.backend,
       ...(codexAdapter ? { codexAdapter } : {}),
       ...(claudeAdapter ? { claudeAdapter } : {}),
+      ...(deepagentsAdapter ? { deepagentsAdapter } : {}),
       ...(recovery.dshAdapter ? { dshAdapter: recovery.dshAdapter } : {}),
       ...(opencodeAdapter ? { opencodeAdapter } : {}),
       ...(codebuddyAdapter ? { codebuddyAdapter } : {}),
@@ -546,6 +577,7 @@ async function executeMemoraxCodeStart(
       backend: recovery.backend,
       ...(codexAdapter ? { codexAdapter } : {}),
       ...(claudeAdapter ? { claudeAdapter } : {}),
+      ...(deepagentsAdapter ? { deepagentsAdapter } : {}),
       ...(recovery.dshAdapter ? { dshAdapter: recovery.dshAdapter } : {}),
       ...(opencodeAdapter ? { opencodeAdapter } : {}),
       ...(codebuddyAdapter ? { codebuddyAdapter } : {}),
@@ -571,6 +603,7 @@ async function executeMemoraxCodeStart(
       backend: recovery.backend,
       ...(codexAdapter ? { codexAdapter } : {}),
       ...(claudeAdapter ? { claudeAdapter } : {}),
+      ...(deepagentsAdapter ? { deepagentsAdapter } : {}),
       dshAdapter: recovery.dshAdapter ?? preparedDshAdapter,
       ...(opencodeAdapter ? { opencodeAdapter } : {}),
       ...(codebuddyAdapter ? { codebuddyAdapter } : {}),
@@ -584,6 +617,9 @@ async function executeMemoraxCodeStart(
   if (!backend.ok) {
     const disabledCodex = codexAdapter
       ? await codexAdapterLifecycle.disable({ argv, serviceOptions })
+      : undefined;
+    const disabledDeepAgents = deepagentsAdapter
+      ? await deepAgentsAdapterLifecycle.disable({ argv, serviceOptions })
       : undefined;
     const disabledOpenCode = opencodeAdapter
       ? await openCodeAdapterLifecycle.disable({ argv, serviceOptions })
@@ -609,6 +645,7 @@ async function executeMemoraxCodeStart(
       backend,
       ...(disabledCodex ? { codexAdapter: disabledCodex } : {}),
       ...(claudeAdapter ? { claudeAdapter } : {}),
+      ...(disabledDeepAgents ? { deepagentsAdapter: disabledDeepAgents } : {}),
       ...(preparedDshAdapter ? { dshAdapter: preparedDshAdapter } : {}),
       ...(disabledOpenCode ? { opencodeAdapter: disabledOpenCode } : {}),
       ...(disabledCodeBuddy ? { codebuddyAdapter: disabledCodeBuddy } : {}),
@@ -624,6 +661,7 @@ async function executeMemoraxCodeStart(
   const optionalDshUnavailable = isOptionalUnavailableDshAdapter(dshAdapter);
   return {
     ok: claudeAdapter?.ok !== false
+      && (!deepagentsAdapter || isAdapterReady(deepagentsAdapter))
       && (!codebuddyAdapter || isAdapterReady(codebuddyAdapter))
       && (!workbuddyAdapter || isAdapterReady(workbuddyAdapter))
       && (!cursorAdapter || isAdapterReady(cursorAdapter))
@@ -634,6 +672,7 @@ async function executeMemoraxCodeStart(
     backend,
     ...(codexAdapter ? { codexAdapter } : {}),
     ...(claudeAdapter ? { claudeAdapter } : {}),
+    ...(deepagentsAdapter ? { deepagentsAdapter } : {}),
     ...(dshAdapter ? { dshAdapter } : {}),
     ...(opencodeAdapter ? { opencodeAdapter } : {}),
     ...(codebuddyAdapter ? { codebuddyAdapter } : {}),
@@ -697,6 +736,7 @@ async function executeMemoraxCodeStop(
     ? {
       codex: activeClients.codex && !clients.codex,
       claude: activeClients.claude && !clients.claude,
+      deepagents: activeClients.deepagents && !clients.deepagents,
       dsh: activeClients.dsh && !clients.dsh,
       opencode: activeClients.opencode && !clients.opencode,
       codebuddy: activeClients.codebuddy && !clients.codebuddy,
@@ -754,6 +794,9 @@ async function executeMemoraxCodeStop(
   const claudeAdapter = clients.claude
     ? await claudeAdapterLifecycle.disable({ argv, serviceOptions })
     : undefined;
+  const deepagentsAdapter = clients.deepagents
+    ? await deepAgentsAdapterLifecycle.disable({ argv, serviceOptions })
+    : undefined;
   const dshAdapter = clients.dsh && dshLifecycle
     ? await dshLifecycle.disable({ argv, serviceOptions })
     : undefined;
@@ -775,7 +818,7 @@ async function executeMemoraxCodeStop(
   const qoderAdapter = clients.qoder
     ? await qoderAdapterLifecycle.disable({ argv, serviceOptions })
     : undefined;
-  const adaptersOk = lifecycleAdapterReports({ codexAdapter, claudeAdapter, dshAdapter, opencodeAdapter, codebuddyAdapter, workbuddyAdapter, traeAdapter, cursorAdapter, qoderAdapter })
+  const adaptersOk = lifecycleAdapterReports({ codexAdapter, claudeAdapter, deepagentsAdapter, dshAdapter, opencodeAdapter, codebuddyAdapter, workbuddyAdapter, traeAdapter, cursorAdapter, qoderAdapter })
     .every(({ report }) => report.ok !== false);
   const backend = stoppedBackend
     ?? (adaptersOk
@@ -789,6 +832,7 @@ async function executeMemoraxCodeStop(
       backend,
       ...(codexAdapter ? { codexAdapter } : {}),
       ...(claudeAdapter ? { claudeAdapter } : {}),
+      ...(deepagentsAdapter ? { deepagentsAdapter } : {}),
       ...(dshAdapter ? { dshAdapter } : {}),
       ...(opencodeAdapter ? { opencodeAdapter } : {}),
       ...(codebuddyAdapter ? { codebuddyAdapter } : {}),
@@ -918,6 +962,9 @@ async function executeMemoraxCodeUninstall(
   const claudePlugin = clients.claude
     ? await claudeAdapterLifecycle.remove({ argv, serviceOptions })
     : undefined;
+  const deepagentsPlugin = clients.deepagents
+    ? await deepAgentsAdapterLifecycle.remove({ argv, serviceOptions })
+    : undefined;
   const dshPlugin = clients.dsh && dshLifecycle
     ? await dshLifecycle.remove({ argv, serviceOptions })
     : undefined;
@@ -941,6 +988,7 @@ async function executeMemoraxCodeUninstall(
     : undefined;
   const pluginCleanupOk = codexPlugin?.ok !== false
     && claudePlugin?.ok !== false
+    && deepagentsPlugin?.ok !== false
     && dshPlugin?.ok !== false
     && opencodePlugin?.ok !== false
     && codebuddyPlugin?.ok !== false
@@ -956,6 +1004,9 @@ async function executeMemoraxCodeUninstall(
   const claudeAdapter = stopped.claudeAdapter && claudePlugin
     ? { ...stopped.claudeAdapter, pluginRemove: claudePlugin }
     : stopped.claudeAdapter;
+  const deepagentsAdapter = stopped.deepagentsAdapter && deepagentsPlugin
+    ? { ...stopped.deepagentsAdapter, pluginRemove: deepagentsPlugin }
+    : stopped.deepagentsAdapter;
   const dshAdapter = dshPlugin ?? stopped.dshAdapter;
   const opencodeAdapter = stopped.opencodeAdapter && opencodePlugin
     ? { ...stopped.opencodeAdapter, pluginRemove: opencodePlugin }
@@ -968,6 +1019,8 @@ async function executeMemoraxCodeUninstall(
     action: "uninstall",
     ...(codexPlugin ? { codexPlugin } : {}),
     ...(claudeAdapter ? { claudeAdapter } : {}),
+    ...(deepagentsAdapter ? { deepagentsAdapter } : {}),
+    ...(deepagentsPlugin ? { deepagentsPlugin } : {}),
     ...(dshAdapter ? { dshAdapter } : {}),
     ...(opencodeAdapter ? { opencodeAdapter } : {}),
     ...(codebuddyPlugin ? { codebuddyPlugin } : {}),
@@ -978,6 +1031,7 @@ async function executeMemoraxCodeUninstall(
     npmPackageRemoval,
     removesPlugin: codexPlugin?.ok === true
       || claudePlugin?.ok === true
+      || deepagentsPlugin?.ok === true
       || (dshPlugin?.ok === true && dshPlugin.skipped !== true)
       || opencodePlugin?.ok === true
       || codebuddyPlugin?.ok === true
@@ -1139,6 +1193,7 @@ function argValue(argv: string[], name: string): string | undefined {
 function includesManagedClients(selection: ManagedClients, required: ManagedClients): boolean {
   return (!required.codex || selection.codex)
     && (!required.claude || selection.claude)
+    && (!required.deepagents || selection.deepagents === true)
     && (!required.dsh || selection.dsh)
     && (!required.opencode || selection.opencode)
     && (!required.codebuddy || selection.codebuddy === true)

@@ -14,6 +14,10 @@ export const npmMainSourceTrees = Object.freeze([
     source: `packages/ts/memorax-code-claude-adapter/${name}`,
     destination: `lib/memorax-code-claude-adapter/${name}`,
   })),
+  ...["src", "hooks", "runtime-hooks", "scripts", ".claude-plugin"].map((name) => ({
+    source: `packages/ts/memorax-code-deepagents-adapter/${name}`,
+    destination: `lib/memorax-code-deepagents-adapter/${name}`,
+  })),
   ...["src", "hooks", ".codebuddy-plugin"].map((name) => ({
     source: `packages/ts/memorax-code-codebuddy-adapter/${name}`,
     destination: `lib/memorax-code-codebuddy-adapter/${name}`,
@@ -50,6 +54,10 @@ export const npmMainSourceTrees = Object.freeze([
   {
     source: "packages/ts/memorax-code-codex-adapter/skills/memorax-code",
     destination: "lib/memorax-code-claude-adapter/skills/memorax-code",
+  },
+  {
+    source: "packages/ts/memorax-code-codex-adapter/skills/memorax-code",
+    destination: "lib/memorax-code-deepagents-adapter/skills/memorax-code",
   },
   {
     source: "packages/ts/memorax-code-codex-adapter/skills/memorax-code",

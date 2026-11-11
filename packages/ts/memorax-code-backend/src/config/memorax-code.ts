@@ -15,6 +15,7 @@ export type MemoraxCodeConfig = Readonly<{
   clients?: Readonly<{
     codex?: boolean;
     claude?: boolean;
+    deepagents?: boolean;
     dsh?: boolean;
     opencode?: boolean;
     codebuddy?: boolean;
@@ -94,6 +95,13 @@ export type MemoraxCodeConfig = Readonly<{
       max_event_chars?: number;
       max_file_bytes?: number;
     }>;
+    deepagents?: Readonly<{
+      enabled?: boolean;
+      capture_content?: boolean;
+      retention_days?: number;
+      max_event_chars?: number;
+      max_file_bytes?: number;
+    }>;
     dsh?: Readonly<{
       enabled?: boolean;
       capture_content?: boolean;
@@ -165,6 +173,7 @@ export function renderDefaultMemoraxCodeConfig(): string {
     "[clients]",
     "codex = true",
     "claude = true",
+    "deepagents = true",
     "dsh = true",
     "opencode = true",
     "",
@@ -202,6 +211,10 @@ export function renderDefaultMemoraxCodeConfig(): string {
     "[trace.claude]",
     "enabled = true # Enable local Claude session memory trace collection.",
     "capture_content = true # Store content in local Claude trace events.",
+    "",
+    "[trace.deepagents]",
+    "enabled = true # Enable local Deep Agents Code session memory trace collection.",
+    "capture_content = true # Store content in local Deep Agents Code trace events.",
     "",
     "[trace.dsh]",
     "enabled = true # Enable local DSH session memory trace collection.",
@@ -312,6 +325,7 @@ function normalizeMemoraxCodeConfig(value: unknown): MemoraxCodeConfig {
   const repoUpdate = recordValue(memory?.repo_update);
   const traceCodex = recordValue(trace?.codex);
   const traceClaude = recordValue(trace?.claude);
+  const traceDeepAgents = recordValue(trace?.deepagents);
   const traceDsh = recordValue(trace?.dsh);
   const traceOpenCode = recordValue(trace?.opencode);
   const traceCodeBuddy = recordValue(trace?.codebuddy);
@@ -325,6 +339,7 @@ function normalizeMemoraxCodeConfig(value: unknown): MemoraxCodeConfig {
     clients: prune({
       codex: booleanField(clients, "codex"),
       claude: booleanField(clients, "claude"),
+      deepagents: booleanField(clients, "deepagents"),
       dsh: booleanField(clients, "dsh"),
       opencode: booleanField(clients, "opencode"),
       codebuddy: booleanField(clients, "codebuddy"),
@@ -398,6 +413,13 @@ function normalizeMemoraxCodeConfig(value: unknown): MemoraxCodeConfig {
         max_event_chars: numberField(traceClaude, "max_event_chars"),
         max_file_bytes: numberField(traceClaude, "max_file_bytes"),
       }),
+      deepagents: prune({
+        enabled: booleanField(traceDeepAgents, "enabled"),
+        capture_content: booleanField(traceDeepAgents, "capture_content"),
+        retention_days: numberField(traceDeepAgents, "retention_days"),
+        max_event_chars: numberField(traceDeepAgents, "max_event_chars"),
+        max_file_bytes: numberField(traceDeepAgents, "max_file_bytes"),
+      }),
       dsh: prune({
         enabled: booleanField(traceDsh, "enabled"),
         capture_content: booleanField(traceDsh, "capture_content"),
@@ -459,7 +481,7 @@ function validateRawLifecycleConfig(value: unknown, path: string): void {
   if (rawClients !== undefined) {
     const clients = tableValue(rawClients);
     if (!clients) throw invalidLifecycleConfig(path, "clients must be a table");
-    for (const field of ["codex", "claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor", "qoder"] as const) {
+    for (const field of ["codex", "claude", "deepagents", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor", "qoder"] as const) {
       if (clients[field] !== undefined && typeof clients[field] !== "boolean") {
         throw invalidLifecycleConfig(path, `clients.${field} must be a boolean`);
       }
