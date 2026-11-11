@@ -3,18 +3,17 @@ name: memorax-code
 description: >-
   Use this skill as the single router for persistent coding, repository-local,
   and user-global personal memory. Invoke it whenever a request may involve
-  prior-work knowledge, repository memory, reusable procedures or rules,
+  prior-work knowledge, indexed documents, business discussions, repository memory, reusable procedures or rules,
   durable profile or interaction preferences, or information worth retaining
   beyond the current task. This applies without memory wording, including
   habits, preferences, checklists, action sequences, prerequisites, gates,
   exceptions, validation rules, communication style, preferred language, or
   result presentation. Classify the request as coding memory, repository
-  memory, personal procedure memory, personal profile memory, or no persistent
-  memory, then route it to the matching operation. Invoking this router does
-  not require coding-memory search. Reuse a relevant coding-memory result
-  already retrieved in this conversation; otherwise let the matching operation
-  decide on search. Prefer this router over underlying memory workflows. Ask
-  one focused question only when memory authority remains ambiguous.
+  memory, personal procedure memory, personal profile memory, work memory, or
+  no persistent memory. Reuse relevant coding-memory results from this
+  conversation. Let the selected operation decide whether to search. Prefer this
+  router over underlying memory workflows. Ask one focused question only if the
+  memory authority is ambiguous.
 ---
 
 # MemoraX Code
@@ -44,6 +43,15 @@ Use repo memory for repository identity, architecture maps, module routing, loca
 - Read [references/repo-update.md](references/repo-update.md) for incremental updates to an existing bundle.
 - Read [references/repo-templates.md](references/repo-templates.md) only when the build or update operation needs to author repo memory files.
 
+### Work Memory and Document Evidence
+
+Use work memory for indexed office documents, business policies, and previous
+business discussions. Use document evidence when the task needs details from an
+indexed file. This authority does not replace Repo Memory for live code, or
+personal memory for the user's procedures and communication preferences.
+
+- Read [references/work-memory.md](references/work-memory.md) for document or business-memory Search and explicit multimodal Add.
+
 ### Personal Memory
 
 Use personal memory for user-owned procedures and durable profile or interaction
@@ -62,6 +70,7 @@ mention a repository, tool, or workflow, but the files are not repository-local.
 - Route task-learned repairs, coding pitfalls, project engineering conventions, and reusable design lessons to MemoraX Code coding memory.
 - Route prior project discussions, experiment conclusions, saved engineering findings, earlier fixes, and reusable project lessons to MemoraX Code coding memory. Do not route them to repo memory merely because they concern a project. Use repo memory for repository identity, architecture, module maps, commits, PRs, MRs, and issues.
 - Route repository architecture, module maps, commit history, PRs, MRs, and issues to repo memory. Verify claims about current behavior against live code.
+- Route indexed documents and business discussions to work memory. A file attachment does not by itself authorize persistent storage; use explicit Add when the user requests it.
 - Use both repo memory and MemoraX Code coding memory only when a request genuinely needs distinct repository evidence and reusable engineering lessons. This can apply to implementation, debugging, refactoring, migration planning, or validation when the answer may depend on repository module maps, commit/PR/issue evidence, and prior fixes, pitfalls, conventions, validation patterns, or design rationale. Do not use both authorities just because a request mentions a repository, file, module, or "previous".
 - Route current-task instructions and temporary plans to the current task only; do not persist them.
 - Current-task-only applies only when completing the request does not depend on prior project state. Do not select it merely because the requested action happens in the current turn. When implementation, debugging, review, experiment continuation, or validation depends on earlier project decisions, results, fixes, constraints, or plans that the user has not explicitly and completely supplied, route to MemoraX Code coding memory.

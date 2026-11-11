@@ -160,10 +160,10 @@ function writebackFixture({ sessionId: turnSessionId = sessionId, workspaceName 
   const hash = (text) => digest(text).toString("hex").slice(0, 16);
   const body = {
     messages: [{ role: "user", content: prompt, timestamp: 123 }, { role: "assistant", content: answer, timestamp: 124 }],
-    session_id: turnSessionId, user_id: userId,
+    session_id: turnSessionId, user_id: userId, content_type: "auto", mode: "default",
     metadata: { memorax_code_session_id: turnSessionId, memorax_code_base_user_id: baseUserId,
       memorax_code_workspace: workspaceName, memorax_code_memory_scope: scope,
-      idempotency_key: `automatic:cursor:${hash(userId)}:${turnSessionId}:${hash(prompt)}:${hash(answer)}` },
+      idempotency_key: `automatic:cursor:${hash(userId)}:${turnSessionId}:${hash(prompt)}:${hash(answer)}:auto` },
   };
   return { sessionId: turnSessionId, prompt, answer, apiKey, baseUserId, workspaceName, scope,
     requests: [{ method: "POST", path: "/v1/memories/add", authorization: `Token ${apiKey}`, body }] };
@@ -174,6 +174,7 @@ test("automatic Add preserves exact Unicode content, session, local or Git scope
     const input = writebackFixture({ scope }), before = structuredClone(input);
     assert.deepEqual(assertCursorAppWriteback(input), { automaticAdd: 1 });
     assert.deepEqual(input, before);
+    const legacyKey = input.requests[0].body.metadata.idempotency_key.slice(0, -":auto".length);
     for (const [mutate, suffix] of [
       [(request) => { request.method = "GET"; }, "TRANSPORT"],
       [(request) => { request.path += "?private"; }, "TRANSPORT"],
@@ -184,6 +185,9 @@ test("automatic Add preserves exact Unicode content, session, local or Git scope
       [(request) => { request.body.messages[1].role = "tool"; }, "CONTENT"],
       [(request) => { request.body.messages[0].content = input.prompt.normalize("NFD"); }, "CONTENT"],
       [(request) => { request.body.messages[1].content = input.answer.slice(0, -1); }, "CONTENT"],
+      [(request) => { request.body.content_type = "code"; request.body.metadata.idempotency_key = legacyKey; }, "ROUTE"],
+      [(request) => { request.body.mode = "raw"; }, "ROUTE"],
+      [(request) => { request.body.metadata.idempotency_key = legacyKey; }, "IDEMPOTENCY"],
       [(request) => { request.body.session_id = childId; }, "SESSION"],
       [(request) => { request.body.metadata.memorax_code_session_id = childId; }, "SESSION"],
       [(request) => { request.body.user_id = input.baseUserId; }, "SCOPE"],
@@ -194,7 +198,7 @@ test("automatic Add preserves exact Unicode content, session, local or Git scope
       mutate(invalid.requests[0]);
       rejects(() => assertCursorAppWriteback(invalid), `CURSOR_APP_ADD_${suffix}`);
     }
-    for (let part = 0; part < 6; part += 1) {
+    for (let part = 0; part < 7; part += 1) {
       const invalid = structuredClone(input), metadata = invalid.requests[0].body.metadata;
       const pieces = metadata.idempotency_key.split(":");
       pieces[part] = part === 1 ? "codex" : privateCanary;

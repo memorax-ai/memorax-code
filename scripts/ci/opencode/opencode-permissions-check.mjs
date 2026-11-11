@@ -254,7 +254,9 @@ async function verifyWriteback({ sessionId, user, terminal, completed }) {
   check(body.metadata.memorax_code_timestamp_sources?.slice(0, 2).every((source) => source === "native")
     && body.metadata.memorax_code_timestamp_sources.length === body.messages.length, "PERMISSION_TIME_AUTHORITY_MISMATCH");
   const hash = (text) => createHash("sha256").update(text).digest("hex").slice(0, 16);
-  check(body.metadata.idempotency_key === `automatic:opencode:${hash(body.user_id)}:${sessionId}:${hash(body.messages[0].content)}:${hash(body.messages[1].content)}`,
+  check(body.content_type === "auto" && body.mode === "default",
+    "PERMISSION_WRITEBACK_ROUTE_MISMATCH");
+  check(body.metadata.idempotency_key === `automatic:opencode:${hash(body.user_id)}:${sessionId}:${hash(body.messages[0].content)}:${hash(body.messages[1].content)}:auto`,
     "PERMISSION_WRITEBACK_IDEMPOTENCY_MISMATCH");
   const serialized = JSON.stringify(body);
   for (const test of cases.filter((test) => test.id !== current.test.id)) {

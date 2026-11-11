@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   hasMeaningfulMemoryPayloadText,
+  redactBoundedMemoryPayloadText,
   redactMemoryPayloadText,
 } from "../../dist/memory/payload-redaction.js";
 
@@ -121,4 +122,16 @@ test("meaningful memory payload text keeps useful context after redaction", () =
   assert.equal(hasMeaningfulMemoryPayloadText("  \n\t"), false);
   assert.equal(hasMeaningfulMemoryPayloadText("[REDACTED:EMAIL], [REDACTED:API_KEY]"), false);
   assert.equal(hasMeaningfulMemoryPayloadText("Use [REDACTED:API_KEY] through the credential store."), true);
+});
+
+test("bounded redaction keeps unspaced prose and withholds incomplete sensitive fields", () => {
+  const sentence = "返还款项后，更新记录。📝";
+  const text = sentence.repeat(5_000);
+  const limit = 12_000;
+  assert.equal(redactBoundedMemoryPayloadText(text, limit).text, [...text].slice(0, limit).join(""));
+  const secret = "postgres://user:" + "口令".repeat(5_000) + "@host/db";
+  const prefix = redactBoundedMemoryPayloadText("Keep plan. " + secret, 100).text;
+  assert.ok(prefix.startsWith("Keep plan."));
+  assert.ok(!prefix.includes("口令"));
+  assert.equal(redactBoundedMemoryPayloadText("Keep [REDACTED:EMAIL] safe", 12).text, "Keep");
 });
