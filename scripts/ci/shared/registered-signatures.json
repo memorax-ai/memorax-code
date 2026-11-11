@@ -15,6 +15,16 @@
       "id": "S8",
       "signature": "claude|windows-2025|claude-install-interruption-check|unknown|EXIT_1",
       "status": "open"
+    },
+    {
+      "id": "S37",
+      "signature": "codex|macos-15|codex-native-check|unknown|EXIT_1",
+      "status": "open"
+    },
+    {
+      "id": "S38",
+      "signature": "claude|windows-2025|claude-native-check|unknown|EXIT_1",
+      "status": "open"
     }
   ]
 }
