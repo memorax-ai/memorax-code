@@ -918,6 +918,11 @@ if (args[0] === "plugin" && args[1] === "list" && args.includes("--json")) {
   const registered = existsSync(${JSON.stringify(registrationPath)});
   const available = existsSync(${JSON.stringify(marketplaceRegistrationPath)});
   const includeAvailable = args.includes("--available");
+  const marketplaceIndex = args.indexOf("--marketplace");
+  // Like Codex, a marketplace filter lists only that marketplace, and an
+  // unregistered marketplace lists nothing with a successful exit.
+  const listed = marketplaceIndex === -1
+    || (args[marketplaceIndex + 1] === "memorax-code" && available);
   const entry = {
     pluginId: "memorax-code-codex-adapter@memorax-code",
     name: "memorax-code-codex-adapter",
@@ -927,8 +932,8 @@ if (args[0] === "plugin" && args[1] === "list" && args.includes("--json")) {
     enabled: registered
   };
   console.log(JSON.stringify({
-    installed: registered ? [entry] : [],
-    available: includeAvailable && !registered && available ? [entry] : []
+    installed: listed && registered ? [entry] : [],
+    available: listed && includeAvailable && !registered && available ? [entry] : []
   }));
   process.exit(0);
 }
@@ -1126,7 +1131,7 @@ test("codex-plugin activate installs through Codex CLI and trusts MemoraX Code h
   )).length, 1);
   assert.equal(activationCalls.filter((args) => args[0] === "plugin" && args[1] === "add").length, 1);
   const registrationInspections = activationCalls.filter((args) => args[0] === "plugin" && args[1] === "list");
-  assert.deepEqual(registrationInspections, Array.from({ length: 2 }, () => ["plugin", "list", "--available", "--json"]));
+  assert.deepEqual(registrationInspections, Array.from({ length: 2 }, () => ["plugin", "list", "--marketplace", "memorax-code", "--available", "--json"]));
 });
 
 test("codex-plugin activate preserves registered plugins and repairs the versioned marketplace", async (t) => {
@@ -1167,7 +1172,7 @@ test("codex-plugin activate preserves registered plugins and repairs the version
     .split(/\r?\n/)
     .map((line) => JSON.parse(line));
   assert.deepEqual(repeatedCalls.filter((args) => args[0] === "plugin" && args[1] === "list"),
-    Array.from({ length: 2 }, () => ["plugin", "list", "--available", "--json"]));
+    Array.from({ length: 2 }, () => ["plugin", "list", "--marketplace", "memorax-code", "--available", "--json"]));
   assert.equal(repeatedCalls.filter((args) => (
     args[0] === "plugin" && args[1] === "marketplace" && args[2] === "add"
   )).length, 0);
@@ -1245,7 +1250,7 @@ test("codex-plugin activate repairs missing native registration without readding
   ));
   assert.equal(registrationInspections.length, 2);
   assert(registrationInspections.every((args) => (
-    args.join(" ") === "plugin list --available --json"
+    args.join(" ") === "plugin list --marketplace memorax-code --available --json"
   )));
   assert.equal(repairedCalls.filter((args) => (
     args[0] === "plugin" && args[1] === "marketplace" && args[2] === "add"

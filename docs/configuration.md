@@ -263,6 +263,13 @@ marketplace identity or unverifiable Hook set prevents reconciliation from
 completing. The standalone `memorax-code codex-plugin trust-hooks` command
 still performs explicit review.
 
+Manual setup and update do not block installation on Codex Hook trust. When
+Codex Hook activation or that incremental trust does not complete, they finish
+the remaining steps, write the completion record, and exit with status 0. The
+summary then reports `Backend and selected adapters: Enabled (degraded)` and
+`Codex Hooks: Not authorized`; review and authorize the current Hooks with
+`memorax-code codex-plugin trust-hooks`.
+
 The installed version and next check deadline are stored in another private
 record:
 

@@ -397,6 +397,9 @@ if (codexRegistrationRequired && result.status !== 0) {
   process.exit(1);
 }
 
+// Manual setup does not block installation on Codex Hook trust; the summary
+// reports untrusted Hooks instead.
+let codexHooksUntrusted = false;
 if (codexRegistrationRequired && result.status === 0) {
   if (existingSetup && (codexClientNewlyEnabled || codexPluginRequiresActivation)) {
     const activationResult = activateCodexPluginHooks();
@@ -405,6 +408,7 @@ if (codexRegistrationRequired && result.status === 0) {
       printPostinstallSummary("not-verified");
       process.exit(1);
     }
+    codexHooksUntrusted = activationResult !== "activated";
   } else if (existingSetup) {
     const trustResult = maybeTrustUpdatedCodexPluginHooks(codexHooksBeforeUpdate);
     if (automaticUpdateMode && trustResult !== "trusted" && trustResult !== "unchanged") {
@@ -412,8 +416,9 @@ if (codexRegistrationRequired && result.status === 0) {
       printPostinstallSummary("not-verified");
       process.exit(1);
     }
+    codexHooksUntrusted = trustResult !== "trusted" && trustResult !== "unchanged";
   } else {
-    activateCodexPluginHooks();
+    codexHooksUntrusted = activateCodexPluginHooks() !== "activated";
   }
 }
 const skipCodexAdapter = !codexClientEnabled;
@@ -529,6 +534,7 @@ if (backendAndAdaptersStatus === "enabled") {
 printPostinstallSummary(
   backendAndAdaptersStatus,
   backendAndAdapters.dshAdapterUnavailable,
+  codexHooksUntrusted,
 );
 if (backendAndAdaptersStatus !== "enabled") process.exit(1);
 if (!updateMode && readMemoraxInstallStatus({ diagnose: true })?.configured !== true) {
@@ -1513,7 +1519,8 @@ function installedPluginCache() {
 function inspectCodexPluginRegistrationForSetup() {
   const result = runNodeMemoraxCodeCommand(["codex-plugin", "registration", "--json"], {
     print: false,
-    timeout: 10_000,
+    // Outlast the Backend's 10 s Codex plugin list timeout plus Node startup.
+    timeout: 20_000,
   });
   if (result.status !== 0) {
     return { verified: false, ready: false, registered: false, enabled: false };
@@ -2165,14 +2172,17 @@ function statusCommandText({
   return `${commands.slice(0, -1).join(", ")}, and ${commands.at(-1)}`;
 }
 
-function printPostinstallSummary(backendAndAdaptersStatus, degraded = false) {
+function printPostinstallSummary(backendAndAdaptersStatus, degraded = false, codexHooksUntrusted = false) {
   log("Package: Installed");
   const backendStatusLabel = backendAndAdaptersStatus === "enabled"
-    ? blueBold(degraded ? "Enabled (degraded)" : "Enabled")
+    ? blueBold(degraded || codexHooksUntrusted ? "Enabled (degraded)" : "Enabled")
     : backendAndAdaptersStatus === "unavailable"
       ? redBold("Unavailable")
       : "Not verified";
   log(`Backend and selected adapters: ${backendStatusLabel}`);
+  if (codexHooksUntrusted) {
+    log(`Codex Hooks: ${redBold("Not authorized")}. Review and authorize them with \`memorax-code codex-plugin trust-hooks\`.`);
+  }
   const memoraxStatus = readMemoraxInstallStatus();
   if (!memoraxStatus) {
     logRed("MemoraX memory: Status unavailable");
