@@ -156,7 +156,9 @@ not required.
 Setup writes
 `$MEMORAX_CODE_HOME/runtime/setup/setup-completion.json` only after
 configuration, client and Hook reconciliation, Backend start, and final
-readiness checks succeed. A default `config.toml` alone is not proof of
+readiness checks succeed. Manual setup does not wait for Codex Hook trust; it
+reports untrusted Codex Hooks as [degraded](#codex-plugin-or-hook-is-inactive)
+instead. A default `config.toml` alone is not proof of
 completion. Existing-account stdin mode also requires the saved API key to
 match its input. If setup has not completed, rerun the appropriate setup mode
 and resolve the reported failure; do not print the configuration to check a
@@ -629,6 +631,13 @@ memorax-code codex-plugin trust-hooks
 memorax-code start --clients codex
 memorax-code-codex doctor
 ```
+
+If manual setup or update ends with
+`Backend and selected adapters: Enabled (degraded)` and
+`Codex Hooks: Not authorized`, Codex Hook activation or incremental trust did
+not complete, but the rest of setup finished. Run
+`memorax-code codex-plugin trust-hooks` to review and authorize the current
+Hooks.
 
 MemoraX Code update reconciliation silently trusts only the exact new or changed
 Hook hashes returned by Codex after the marketplace identity is verified.

@@ -158,6 +158,15 @@ async function assertSetupIncomplete(run) {
   );
 }
 
+// Untrusted Codex Hooks do not block manual setup; the summary names the remedy.
+async function assertSetupDegradedByUntrustedCodexHooks(run) {
+  assert.equal(run.result.code, 0, run.result.stderr);
+  assert.match(run.result.stderr, /Backend and selected adapters: .*Enabled \(degraded\)/);
+  assert.match(run.result.stderr, /Codex Hooks: .*Not authorized.*\. Review and authorize them with `memorax-code codex-plugin trust-hooks`\./);
+  assert.match(run.log, /^memorax-code start/m);
+  await assertSetupComplete(run);
+}
+
 async function startMockMemorax({ status = 200, body = { success: true, data: { items: [] } } } = {}) {
   const requests = [];
   const server = createServer((request, response) => {
@@ -427,6 +436,8 @@ async function runSetup({ existingCache = false, explicitCache = false, codexReg
     "  process.exit(7);",
     "}",
     "if (process.argv[2] === 'codex-plugin' && process.argv[3] === 'registration') {",
+    "  const delay = Number(process.env.MEMORAX_CODE_TEST_CODEX_REGISTRATION_DELAY_MS ?? 0);",
+    "  if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));",
     `  const registered = ${JSON.stringify(codexRegistered ?? (existingCache || explicitCache))};`,
     "  console.log(JSON.stringify({ ok: true, action: 'codex-plugin-registration', available: registered, registered, enabled: registered, version: registered ? '0.1.0' : undefined }));",
     "  process.exit(0);",
@@ -949,6 +960,9 @@ test("setup reports Codex install and activation failures without verbose output
         assert.equal(run.result.code, 1);
         await assertSetupIncomplete(run);
         assert.doesNotMatch(run.log, /^memorax-code start/m);
+      } else {
+        assert.match(run.result.stderr, /Codex hook activation failed; run `memorax-code codex-plugin activate --yes`/);
+        await assertSetupDegradedByUntrustedCodexHooks(run);
       }
     } finally {
       await rm(run.root, { recursive: true, force: true });
@@ -1090,6 +1104,7 @@ test("setup update retains the original diagnostic when the pre-update Hook insp
     assert.match(run.result.stderr, /CLIENT_HOOKS_READ_FAILED/);
     assert.match(run.result.stderr, /Existing Codex hooks could not be inspected/);
     assert.doesNotMatch(run.log, /^memorax-code codex-plugin trust-hooks/m);
+    await assertSetupDegradedByUntrustedCodexHooks(run);
     const directory = join(run.memoraxCodeHome, "runtime", "diagnostics");
     const files = await readdir(directory);
     assert.equal(files.length, 1);
@@ -1097,6 +1112,90 @@ test("setup update retains the original diagnostic when the pre-update Hook insp
     assert.equal(record.operation, "client.deploy");
     assert.ok(run.result.stderr.includes(record.id));
   } finally { await rm(run.root, { recursive: true, force: true }); }
+});
+
+test("manual setup finishes degraded when Codex Hooks are not activated or trusted", async (t) => {
+  const trustGuidance = /Review and authorize the current MemoraX Code Codex Hooks with `memorax-code codex-plugin trust-hooks`/;
+  const changedHooks = { hookSnapshot: [], hookUpdatePlan: [codexHook("changed", "sha256:changed")] };
+  for (const scenario of [
+    {
+      name: "activation",
+      options: { codexRegistered: false, memoraxEnv: { MEMORAX_CODE_TEST_PLUGIN_FAIL_ACTION: "activate" } },
+      guidance: /Codex hook activation failed; run `memorax-code codex-plugin activate --yes`/,
+    },
+    {
+      name: "incremental trust write",
+      options: { updateMode: true, ...changedHooks, hookTrustFails: true },
+      guidance: trustGuidance,
+    },
+    {
+      name: "incremental trust check",
+      options: { updateMode: true, ...changedHooks, hookCheckFails: true },
+      guidance: trustGuidance,
+    },
+    {
+      name: "changed marketplace identity",
+      options: {
+        updateMode: true,
+        hookFullReview: true,
+        hookSnapshot: [codexHook("existing", "sha256:existing", { trustStatus: "trusted" })],
+        hookUpdatePlan: [codexHook("changed", "sha256:changed")],
+      },
+      guidance: trustGuidance,
+    },
+  ]) await t.test(scenario.name, async () => {
+    const run = await runSetup({
+      existingCache: true,
+      memoraxCodeConfig: "[clients]\ncodex = true\nclaude = false\n",
+      ...scenario.options,
+    });
+    try {
+      assert.match(run.result.stderr, scenario.guidance);
+      await assertSetupDegradedByUntrustedCodexHooks(run);
+    } finally {
+      await rm(run.root, { recursive: true, force: true });
+    }
+  });
+});
+
+test("automatic update setup still stops when Codex Hook activation fails", async () => {
+  const run = await runSetup({
+    existingCache: true,
+    codexRegistered: false,
+    updateMode: true,
+    interactive: false,
+    memoraxCodeConfig: "[clients]\ncodex = true\nclaude = false\n",
+    memoraxEnv: { MEMORAX_CODE_SETUP_AUTOMATIC_UPDATE: "1", MEMORAX_CODE_TEST_PLUGIN_FAIL_ACTION: "activate" },
+  });
+  try {
+    assert.equal(run.result.code, 1, run.result.stderr);
+    assert.match(run.result.stderr, /Automatic update stopped because the current MemoraX Code Codex Hooks could not be activated and trusted\./);
+    assert.match(run.result.stderr, /Backend and selected adapters: Not verified/);
+    assert.doesNotMatch(run.log, /^memorax-code start/m);
+    await assertSetupIncomplete(run);
+  } finally {
+    await rm(run.root, { recursive: true, force: true });
+  }
+});
+
+test("setup waits for a Codex plugin registration check that outlasts the Backend list timeout", async () => {
+  // The Backend gives `codex plugin list` 10 s after its own startup; a shorter
+  // wait here reports a slow but successful check as unverified.
+  const run = await runSetup({
+    existingCache: true,
+    updateMode: true,
+    memoraxCodeConfig: "[clients]\ncodex = true\nclaude = false\n",
+    memoraxEnv: { MEMORAX_CODE_TEST_CODEX_REGISTRATION_DELAY_MS: "10500" },
+  });
+  try {
+    assert.equal(run.result.code, 0, run.result.stderr);
+    assert.match(run.result.stderr, /Codex plugin state: enabled \(0\.1\.0\)\./);
+    assert.doesNotMatch(run.log, /^memorax-code codex-plugin activate /m);
+    assert.match(run.log, /^memorax-code codex-plugin trust-hooks --check .*--json$/m);
+    await assertSetupComplete(run);
+  } finally {
+    await rm(run.root, { recursive: true, force: true });
+  }
 });
 
 test("setup repairs missing Codex registration even when the plugin cache exists", async () => {
