@@ -29,11 +29,18 @@ import {
   resolveBackendInstallWatchdogConfig,
   startBackendInstallWatchdog,
 } from "../lifecycle/install-watchdog.js";
-import { activateCodexPlugin, installCodexPlugin } from "../clients/codex/plugin-install.js";
+import {
+  startBackendAutomaticUpdateScheduler,
+  type AutomaticUpdateScheduler,
+} from "../lifecycle/automatic-update-scheduler.js";
+import {
+  activateCodexPlugin,
+  inspectCodexPluginRegistration,
+  installCodexPlugin,
+} from "../clients/codex/plugin-install.js";
 import { inspectCodexPluginHooks, trustCodexPluginHooks, type CodexHook } from "../clients/codex/plugin-hooks.js";
 import {
   collectMemoraxCodeStatus,
-  isAdapterReady,
   isOptionalUnavailableDshAdapter,
   isOptionalUnconfiguredClaudeAdapter,
   restartMemoraxCodeService,
@@ -45,7 +52,14 @@ import {
   type MemoraxCodeStatusReport,
   type NpmPackageRemovalReport,
 } from "../lifecycle/orchestrator.js";
+import {
+  LIFECYCLE_CLIENTS,
+  isAdapterReady,
+  lifecycleAdapterReports,
+  summarizeAdapterReport,
+} from "../lifecycle/client-reports.js";
 import { backendEnv } from "../config/backend-env.js";
+import { jevConfigStatus } from "../provider/jev/config.js";
 import {
   backendServiceHome,
   BackendLifecycleLockError,
@@ -56,6 +70,9 @@ import {
   type BackendShutdownRequestWatcher,
 } from "../lifecycle/backend/shutdown-request.js";
 import { runtimeRecordDurabilityWarning } from "../lifecycle/backend/result.js";
+import { diagnoseLifecycleReport, lifecycleDiagnosticLines, diagnoseClientDeployment, clientDeploymentDiagnosticLines, type LifecycleCliReport } from "../lifecycle/cli-diagnostics.js";
+import { deploymentFailure } from "../../../memorax-code-adapter-common/src/deployment-failure.mjs";
+import { readDiagnosticHistory, type DiagnosticHistory } from "../lifecycle/diagnostic-history.js";
 
 // Keep process-facing CLI orchestration outside the HTTP server module.
 // This preserves server.ts as the importable route factory used by tests and tools.
@@ -71,10 +88,13 @@ export function runBackendCli(argv = process.argv): void {
       `Usage: ${usageName} [${commands}] [--backend-url URL] [--backend-token TOKEN] [--home DIR]`,
       "[--host HOST] [--port PORT] [--rotate] [--show]",
       "[--codex-command CMD]",
-      "[--codex-home DIR] [--claude-home DIR] [--dsh-home DIR] [--opencode-config-dir DIR]",
+      "[--codex-home DIR] [--claude-home DIR] [--dsh-home DIR] [--opencode-config-dir DIR] [--codebuddy-home DIR] [--workbuddy-home DIR] [--trae-home DIR] [--cursor-home DIR] [--qoder-home DIR]",
       "[--dsh-command CMD] [--dsh-adapter-root DIR] [--memorax-code-command CMD]",
-      "[--clients codex|claude|dsh|opencode|CLIENT,...|all|none]",
+      `[--clients ${LIFECYCLE_CLIENTS.map(({ id }) => id).join("|")}|CLIENT,...|all|none]`,
       "[--json]",
+      "Diagnostics: logs --diagnostics [--limit 1..1000] [--id ID] [--json] [--home DIR]",
+      "logs --id ID or --limit N also selects diagnostics; plain logs preserves Backend log output.",
+      "status includes recent failure history independently of current service health.",
       "[--marketplace-path FILE] [--plugin-source-path DIR] [--claude-command CMD] [--help]",
       "[--yes]",
       "",
@@ -95,6 +115,10 @@ export function runBackendCli(argv = process.argv): void {
     && command !== "logs") {
     console.error(`${usageName}: unknown command '${command}'. Run '${usageName} --help' for usage.`);
     process.exit(1);
+  }
+  if (command === "logs" && argv.some((arg) => ["--diagnostics", "--id", "--limit"].some((name) => arg === name || arg.startsWith(`${name}=`)))) {
+    runDiagnosticLogs(argv);
+    return;
   }
   let serviceOptions: BackendServiceOptions;
   let pendingClientHookRuntime: PendingClientHookRuntime | undefined;
@@ -119,14 +143,13 @@ export function runBackendCli(argv = process.argv): void {
       }).token;
     } catch (error) {
       const status = backendConnectionStatusFailure(error, serviceOptions);
-      if (argv.includes("--json")) console.log(JSON.stringify(status, null, 2));
-      else printMemoraxCodeStatus(status);
-      process.exit(1);
+      printStatusWithDiagnostics(status, serviceOptions, argv);
+      process.exitCode = 1;
+      return;
     }
     collectMemoraxCodeStatus(backendUrl, backendToken, serviceOptions, argv).then((status) => {
-      if (argv.includes("--json")) console.log(JSON.stringify(status, null, 2));
-      else printMemoraxCodeStatus(status);
-      process.exit(status.ok ? 0 : 1);
+      printStatusWithDiagnostics(status, serviceOptions, argv);
+      process.exitCode = status.ok ? 0 : 1;
     }).catch((error) => {
       console.error(error instanceof Error ? error.message : String(error));
       process.exit(1);
@@ -137,48 +160,57 @@ export function runBackendCli(argv = process.argv): void {
       else printCodexPluginInstallResult(result);
       process.exit(result.ok ? 0 : 1);
     }).catch((error) => {
-      console.error(error instanceof Error ? error.message : String(error));
+      const stage = argv[3] === "activate" ? "plugin-enable"
+        : argv[3] === "trust-hooks" ? "hooks-write"
+          : ["hooks", "registration"].includes(argv[3] ?? "") ? "verify-native" : "plugin-install";
+      const detail = diagnoseClientDeployment("codex", deploymentFailure(error, stage), "deploy", serviceOptions);
+      if (argv.includes("--json")) console.log(JSON.stringify({ ok: false, action: "codex-plugin", clientFailures: [detail] }, null, 2));
+      else for (const line of clientDeploymentDiagnosticLines(detail)) console.error(`${BACKEND_PREFIX} ${line}`);
       process.exit(1);
     });
   } else if (command === "start") {
     startMemoraxCodeService(serviceOptions, argv, () => {
       activatePendingClientHookRuntime(pendingClientHookRuntime);
     }).then((result) => {
-      if (argv.includes("--json")) console.log(JSON.stringify(result, null, 2));
-      else printLifecycleResult(result);
-      process.exit(result.ok ? 0 : 1);
+      // Let pending output and child-process handles drain before exiting.
+      const report = diagnoseLifecycleReport(result, serviceOptions);
+      if (argv.includes("--json")) console.log(JSON.stringify(report, null, 2));
+      else printLifecycleResult(report);
+      process.exitCode = result.ok ? 0 : 1;
     }).catch((error) => {
       console.error(error instanceof Error ? error.message : String(error));
-      process.exit(1);
+      process.exitCode = 1;
     });
   } else if (command === "stop") {
     stopMemoraxCodeService(serviceOptions, argv).then((result) => {
-      if (argv.includes("--json")) console.log(JSON.stringify(result, null, 2));
-      else printLifecycleResult(result);
-      process.exit(result.ok ? 0 : 1);
+      const report = diagnoseLifecycleReport(result, serviceOptions);
+      if (argv.includes("--json")) console.log(JSON.stringify(report, null, 2));
+      else printLifecycleResult(report);
+      process.exitCode = result.ok ? 0 : 1;
     }).catch((error) => {
       console.error(error instanceof Error ? error.message : String(error));
-      process.exit(1);
+      process.exitCode = 1;
     });
   } else if (command === "restart") {
     restartMemoraxCodeService(serviceOptions, argv, () => {
       activatePendingClientHookRuntime(pendingClientHookRuntime);
     }).then((result) => {
-      if (argv.includes("--json")) console.log(JSON.stringify(result, null, 2));
-      else printLifecycleResult(result);
-      process.exit(result.ok ? 0 : 1);
+      const report = diagnoseLifecycleReport(result, serviceOptions);
+      if (argv.includes("--json")) console.log(JSON.stringify(report, null, 2));
+      else printLifecycleResult(report);
+      process.exitCode = result.ok ? 0 : 1;
     }).catch((error) => {
       console.error(error instanceof Error ? error.message : String(error));
-      process.exit(1);
+      process.exitCode = 1;
     });
   } else if (command === "uninstall") {
     uninstallMemoraxCodeService(serviceOptions, argv).then((result) => {
       if (argv.includes("--json")) console.log(JSON.stringify(result, null, 2));
       else printLifecycleResult(result);
-      process.exit(result.ok ? 0 : 1);
+      process.exitCode = result.ok ? 0 : 1;
     }).catch((error) => {
       console.error(error instanceof Error ? error.message : String(error));
-      process.exit(1);
+      process.exitCode = 1;
     });
   } else if (command === "logs") {
     const result = backendServiceLogs(serviceOptions);
@@ -231,12 +263,18 @@ async function startRawBackendServer(
         dshHome: argValue(argv, "--dsh-home"),
         dshAdapterRoot: argValue(argv, "--dsh-adapter-root"),
         openCodeConfigDir: argValue(argv, "--opencode-config-dir"),
+        codeBuddyHome: argValue(argv, "--codebuddy-home"),
+        workBuddyHome: argValue(argv, "--workbuddy-home"),
+        traeHome: argValue(argv, "--trae-home"),
+        cursorHome: argValue(argv, "--cursor-home"),
+        qoderHome: argValue(argv, "--qoder-home"),
         codexCommand: argValue(argv, "--codex-command"),
         claudeCommand: argValue(argv, "--claude-command"),
         dshCommand: argValue(argv, "--dsh-command"),
       })
     : undefined;
   const server = createBackendServer(state);
+  let automaticUpdateScheduler: AutomaticUpdateScheduler | undefined;
   let installRemovalStarted = false;
   const installWatchdog = startBackendInstallWatchdog(installWatchdogConfig, async (event) => {
     if (installRemovalStarted) return;
@@ -265,7 +303,10 @@ async function startRawBackendServer(
     });
   });
   installBackendShutdownControls(server, state);
-  server.once("close", () => installWatchdog?.close());
+  server.once("close", () => {
+    automaticUpdateScheduler?.close();
+    installWatchdog?.close();
+  });
   server.on("error", (error: NodeJS.ErrnoException) => {
     if (error.code === "EADDRINUSE") {
       console.error(`memorax-code-backend failed to listen on http://${host}:${port}: address already in use`);
@@ -277,6 +318,15 @@ async function startRawBackendServer(
   });
   server.listen(port, host, () => {
     console.log(`memorax-code-backend listening on http://${host}:${port}`);
+    if (backendEnv("INSTANCE_ID")) {
+      automaticUpdateScheduler = startBackendAutomaticUpdateScheduler({
+        env: process.env,
+        memoraxCodeHome: state.sessionHome,
+        packageRoot: process.env.MEMORAX_CODE_NPM_PACKAGE_ROOT,
+        packageVersion: process.env.MEMORAX_CODE_NPM_PACKAGE_VERSION,
+        debug: (message) => backendDebug("automatic_update.scheduler_failed", { message }),
+      });
+    }
   });
 }
 
@@ -413,7 +463,7 @@ function isClientHookRuntimeGeneration(
 }
 
 type CodexPluginCommandReport = Awaited<ReturnType<
-  typeof installCodexPlugin | typeof activateCodexPlugin | typeof inspectCodexPluginHooks | typeof trustCodexPluginHooks
+  typeof installCodexPlugin | typeof activateCodexPlugin | typeof inspectCodexPluginRegistration | typeof inspectCodexPluginHooks | typeof trustCodexPluginHooks
 >>;
 
 async function runCodexPluginCommand(argv: string[]): Promise<CodexPluginCommandReport> {
@@ -421,11 +471,19 @@ async function runCodexPluginCommand(argv: string[]): Promise<CodexPluginCommand
   if (subcommand === "activate") {
     return await activateCodexPlugin({
       codexHome: argValue(argv, "--codex-home"),
+      memoraxCodeHome: argValue(argv, "--home"),
       marketplacePath: argValue(argv, "--marketplace-path"),
       pluginSourcePath: argValue(argv, "--plugin-source-path"),
       codexCommand: argValue(argv, "--codex-command"),
       workspace: argValue(argv, "--workspace"),
       yes: argv.includes("--yes"),
+    });
+  }
+  if (subcommand === "registration") {
+    return await inspectCodexPluginRegistration({
+      codexHome: argValue(argv, "--codex-home"),
+      codexCommand: argValue(argv, "--codex-command"),
+      workspace: argValue(argv, "--workspace"),
     });
   }
   if (subcommand === "hooks") {
@@ -449,6 +507,7 @@ async function runCodexPluginCommand(argv: string[]): Promise<CodexPluginCommand
   if (subcommand !== "install") throw new Error(`memorax-code codex-plugin: unknown command '${subcommand}'. Run 'memorax-code --help' for usage.`);
   return await installCodexPlugin({
     codexHome: argValue(argv, "--codex-home"),
+    memoraxCodeHome: argValue(argv, "--home"),
     marketplacePath: argValue(argv, "--marketplace-path"),
     pluginSourcePath: argValue(argv, "--plugin-source-path"),
     codexCommand: argValue(argv, "--codex-command"),
@@ -469,6 +528,14 @@ function printCodexPluginInstallResult(report: CodexPluginCommandReport): void {
     console.log(`trusted hooks: ${report.trustedHooks}`);
     if (report.requiresFullReview) console.log("incremental trust: blocked by plugin marketplace identity change");
     console.log(`config: ${report.configPath}`);
+    console.log("backend: not started");
+    return;
+  }
+  if (report.action === "codex-plugin-registration") {
+    console.log(`codex home: ${report.codexHome}`);
+    console.log(`registered: ${report.registered ? "yes" : "no"}`);
+    console.log(`enabled: ${report.enabled ? "yes" : "no"}`);
+    if (report.version) console.log(`version: ${report.version}`);
     console.log("backend: not started");
     return;
   }
@@ -514,7 +581,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function printMemoraxCodeStatus(report: MemoraxCodeStatusReport): void {
+export function printMemoraxCodeStatus(report: MemoraxCodeStatusReport): void {
   const backend = report.backend;
   const degraded = report.degraded === true;
   backendLog(`MemoraX Code Backend status: ${report.ok ? blueBold(degraded ? "Enabled (degraded)" : "Enabled") : redBold("Unavailable")}`);
@@ -524,14 +591,121 @@ function printMemoraxCodeStatus(report: MemoraxCodeStatusReport): void {
   backendLog(`Backend status: ${backend.ok ? blueBold("Enabled") : redBold("Unavailable")} ${backend.url}${backend.status ? ` status=${backend.status}` : ""}${backendIdentityDetail(backend.identity)}${backend.error ? ` error=${backend.error}` : ""}`);
   if (backend.service) backendLog(`Backend service: ${backend.service}`);
   if (typeof backend.authRequired === "boolean") backendLog(`Client auth: ${backend.authRequired ? "required" : "not required"}`);
-  if (report.codexAdapter) {
-    backendLog(`Codex adapter: ${adapterStatusLine(report.codexAdapter)}`);
+  printAdapterReports(report, true);
+  if (report.jev) {
+    const detail = {
+      disabled: "disabled",
+      missing_key: "enabled; API key missing",
+      configured: "configured (API key not validated)",
+      invalid_config: "invalid configuration; Jev calls disabled",
+    }[report.jev.state];
+    backendLog(`Jev configuration: ${detail}`);
   }
-  if (report.claudeAdapter) backendLog(`Claude adapter: ${claudeAdapterStatusLine(report.claudeAdapter, report.codexAdapter)}`);
-  if (report.dshAdapter) backendLog(`DSH adapter: ${dshAdapterStatusLine(report.dshAdapter)}`);
-  if (report.opencodeAdapter) backendLog(`OpenCode adapter: ${adapterStatusLine(report.opencodeAdapter)}`);
   if (!suppressBackendGuidance()) {
     for (const line of statusGuidance(report)) backendLog(line);
+  }
+}
+
+
+// Historical failures are a local CLI projection, never a readiness condition.
+// Keep the collector and its exit status independent of diagnostic availability.
+function printStatusWithDiagnostics(report: MemoraxCodeStatusReport, options: BackendServiceOptions, argv: string[]): void {
+  const diagnostics = readDiagnosticHistory(backendServiceHome(options), { limit: 3 });
+  if (argv.includes("--json")) console.log(JSON.stringify({ ...report, diagnostics }, null, 2));
+  else {
+    printMemoraxCodeStatus(report);
+    backendLog("Recent failures (retained history; not current service health):");
+    for (const record of diagnostics.records) {
+      backendLog(`  ${record.timestamp} | ${record.client ?? record.source} | ${record.operation}/${record.stage} | ${record.errorCode} | ${record.id}`);
+    }
+    if (diagnostics.ok && diagnostics.records.length === 0 && !diagnostics.skipped) backendLog("  None retained.");
+    if (diagnostics.errorCode) backendLog(`  ${diagnostics.errorCode}${diagnostics.systemCode ? ` (${diagnostics.systemCode})` : ""}: ${diagnosticReadGuidance(diagnostics.errorCode)}`);
+    if (diagnostics.skipped) backendLog(`  Skipped ${diagnostics.skipped} unreadable or invalid diagnostic record(s).`);
+    if (diagnostics.records.length) backendLog("Details: memorax-code logs --id ID (use the same --home or MEMORAX_CODE_HOME).");
+  }
+}
+
+function runDiagnosticLogs(argv: string[]): void {
+  let query: { limit?: number; id?: string };
+  let home: string;
+  try {
+    query = parseDiagnosticQuery(argv);
+    home = backendServiceHome(parseServiceOptions(argv));
+  }
+  catch {
+    const failure = { ok: false, action: "diagnostics", errorCode: "DIAGNOSTIC_ARGUMENT_INVALID", error: "Use logs --diagnostics [--limit 1..1000] [--id ID] [--json] [--home DIR]." };
+    if (argv.includes("--json")) console.log(JSON.stringify(failure, null, 2));
+    else console.error(`${failure.errorCode}: ${failure.error}`);
+    process.exitCode = 2;
+    return;
+  }
+  const result = readDiagnosticHistory(home, query);
+  if (argv.includes("--json")) console.log(JSON.stringify({ action: "diagnostics", ...result }, null, 2));
+  else printDiagnosticHistory(result);
+  // Large history output can still be buffered in a pipe after console.log.
+  // Let Node drain it before exiting so successful exports remain complete.
+  process.exitCode = result.ok ? 0 : 1;
+}
+
+function parseDiagnosticQuery(argv: string[]): { limit?: number; id?: string } {
+  const query: { limit?: number; id?: string } = {};
+  const seen = new Set<string>();
+  for (let index = 3; index < argv.length; index += 1) {
+    const arg = argv[index]!;
+    if (arg === "--diagnostics" || arg === "--json") continue;
+    const equal = arg.indexOf("=");
+    const name = equal < 0 ? arg : arg.slice(0, equal);
+    if (!["--id", "--limit", "--home", "--host", "--port", "--clients", "--backend-url", "--backend-token"].includes(name) || seen.has(name)) throw new Error("Invalid diagnostic option");
+    seen.add(name);
+    const value = equal < 0 ? argv[++index] : arg.slice(equal + 1);
+    if (!value?.trim() || value.startsWith("--")) throw new Error("Missing diagnostic option value");
+    if (name === "--id") {
+      if (!/^mc-\d{13}-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(value)) throw new Error("Invalid diagnostic ID");
+      query.id = value;
+    }
+    if (name === "--limit") {
+      if (!/^(?:[1-9]\d{0,2}|1000)$/.test(value)) throw new Error("Invalid diagnostic limit");
+      query.limit = Number(value);
+    }
+  }
+  if (query.id && query.limit !== undefined) throw new Error("Diagnostic ID and limit cannot be combined");
+  return query;
+}
+
+function printDiagnosticHistory(history: DiagnosticHistory): void {
+  console.log("MemoraX Code diagnostic history (recorded failures and available recovery outcomes; not current service health).");
+  if (history.errorCode) console.log(`${history.errorCode}${history.systemCode ? ` (${history.systemCode})` : ""}: ${diagnosticReadGuidance(history.errorCode)}`);
+  if (history.skipped) console.log(`Skipped ${history.skipped} unreadable or invalid diagnostic record(s).`);
+  if (history.ok && !history.records.length && !history.skipped) console.log("No retained failure records found. This does not confirm Hook execution or writeback success.");
+  for (const record of history.records) {
+    console.log(`\nDiagnostic ID: ${record.id}`);
+    console.log(`Time: ${record.timestamp}\nVersion: ${record.version}\nPlatform: ${record.platform}\nRuntime: ${record.runtimeVersion}`);
+    console.log(`Source: ${record.source}`);
+    if (record.client) console.log(`Client: ${record.client}`);
+    console.log(`Operation: ${record.operation}\nStage: ${record.stage}\nError code: ${record.errorCode}\nError: ${record.error}`);
+    for (const key of ["systemCode", "httpStatus", "failureReason", "recordReason", "credentialReason", "configState", "commandExitCode", "commandSignal", "retryAfterMs", "processState", "cleanupErrorCode", "cleanupSystemCode", "recoveryErrorCode", "recoveryStage", "recoverySystemCode", "recoveryStatus", "installedVersion", "targetVersion", "causeDiagnosticId", "causeErrorCode", "causeStage", "recoveryDiagnosticId", "sessionHash", "turnHash"] as const) {
+      if (record[key] !== undefined) console.log(`${key}: ${record[key]}`);
+    }
+    console.log(`Impact: ${record.impact}\nNext step: ${record.userAction}`);
+  }
+}
+
+function diagnosticReadGuidance(code: string): string {
+  switch (code) {
+    case "DIAGNOSTIC_NOT_FOUND": return "No retained record has this ID. Check the ID and state home; retention may have removed it.";
+    case "DIAGNOSTIC_DIRECTORY_INVALID": return "The diagnostic directory is not a normal directory. Inspect runtime/diagnostics and its parent; symbolic links are not followed.";
+    case "DIAGNOSTIC_DIRECTORY_UNREADABLE": return "The diagnostic directory could not be read. Check the reported system code and directory access permissions.";
+    case "DIAGNOSTIC_RECORD_UNREADABLE": return "A diagnostic file could not be read. Check the reported system code and file access permissions.";
+    case "DIAGNOSTIC_DIRECTORY_CHANGED": return "The diagnostic directory changed during inspection. Retry the read after other local file operations finish.";
+    case "DIAGNOSTIC_RECORD_DISAPPEARED": return "A record disappeared during inspection, possibly during retention cleanup. Retry the query.";
+    case "DIAGNOSTIC_RECORD_CHANGED": return "A diagnostic file changed during inspection. Retry the query after other local file operations finish.";
+    case "DIAGNOSTIC_RECORD_INVALID_FILE": return "A diagnostic entry is not a regular file. Symbolic links and special files are not read.";
+    case "DIAGNOSTIC_RECORD_TOO_LARGE": return "A diagnostic exceeds the supported file-size limit. The record was not displayed.";
+    case "DIAGNOSTIC_SCHEMA_UNSUPPORTED": return "A diagnostic uses an unsupported schema. Use a compatible MemoraX Code version to inspect it.";
+    case "DIAGNOSTIC_RECORD_IDENTITY_MISMATCH": return "A diagnostic ID or timestamp does not match its filename. The record was not displayed.";
+    case "DIAGNOSTIC_RECORD_INVALID_JSON": return "A diagnostic contains malformed JSON. Preserve the original file for local inspection.";
+    case "DIAGNOSTIC_RECORD_INVALID": return "A diagnostic contains invalid fields. Preserve the original file for local inspection.";
+    default: return "Diagnostic history could not be read. Check the query arguments and state directory. Current service health is reported separately.";
   }
 }
 
@@ -549,6 +723,7 @@ function backendConnectionStatusFailure(
   return {
     ok: false,
     action: "status",
+    jev: jevConfigStatus({ ...process.env, MEMORAX_CODE_HOME: backendServiceHome(serviceOptions) }),
     backend: {
       ok: false,
       url: state?.url ?? "",
@@ -619,7 +794,7 @@ export async function runBackendTokenCommand(
   }
 }
 
-function printLifecycleResult(report: MemoraxCodeLifecycleReport): void {
+export function printLifecycleResult(report: LifecycleCliReport): void {
   const degraded = report.degraded === true || report.backend?.degraded === true;
   backendLog(`${lifecycleActionLabel(report.action)}: ${report.ok ? green(degraded ? "ok (degraded)" : "ok") : red("needs attention")}`);
   if (report.message) backendLog(report.message);
@@ -634,19 +809,41 @@ function printLifecycleResult(report: MemoraxCodeLifecycleReport): void {
       backendLog(`Warning: ${warning.message}${warning.errorCode ? ` code=${warning.errorCode}` : ""}`);
     }
   }
-  if (report.codexAdapter) backendLog(`Codex adapter: ${adapterStatusLine(report.codexAdapter)}`);
-  if (report.claudeAdapter) backendLog(`Claude adapter: ${adapterStatusLine(report.claudeAdapter)}`);
-  if (report.dshAdapter) backendLog(`DSH adapter: ${dshAdapterStatusLine(report.dshAdapter)}`);
-  if (report.opencodeAdapter) backendLog(`OpenCode adapter: ${adapterStatusLine(report.opencodeAdapter)}`);
+  printAdapterReports(report);
   if (report.codexPlugin) {
     const removed = report.codexPlugin.removedPaths.length;
     const marketplace = report.codexPlugin.marketplaceChanged ? " marketplace=updated" : " marketplace=unchanged";
     backendLog(`Codex plugin: ${codexPluginRemoveStatusLine(report.codexPlugin.pluginRemove)} paths=${removed}${marketplace}`);
   }
   if (report.npmPackageRemoval) backendLog(`npm package: ${npmPackageRemovalStatusLine(report.npmPackageRemoval)}`);
-  if (!suppressBackendGuidance()) {
+  if (report.diagnostic) {
+    for (const line of lifecycleDiagnosticLines(report)) console.error(`${BACKEND_PREFIX} ${line}`);
+  } else if (!suppressBackendGuidance()) {
     for (const line of lifecycleGuidance(report)) backendLog(line);
   }
+  for (const detail of report.clientFailures ?? []) {
+    for (const line of clientDeploymentDiagnosticLines(detail)) console.error(`${BACKEND_PREFIX} ${line}`);
+  }
+}
+
+function printAdapterReports(
+  report: MemoraxCodeLifecycleReport | MemoraxCodeStatusReport,
+  status = false,
+): void {
+  for (const { client, report: adapter } of lifecycleAdapterReports(report)) {
+    const detail = client.id === "dsh"
+      ? dshAdapterStatusLine(adapter)
+      : client.id === "claude" && status
+        ? claudeAdapterStatusLine(adapter, report.codexAdapter)
+        : adapterStatusLine(adapter);
+    backendLog(`${adapterDisplayName(client)} adapter: ${detail}`);
+  }
+}
+
+function adapterDisplayName(client: typeof LIFECYCLE_CLIENTS[number]): string {
+  if (client.id === "claude") return "Claude";
+  if (client.id === "codebuddy") return "CodeBuddy";
+  return client.name;
 }
 
 const BACKEND_PREFIX = "[MemoraX Code Backend]:";
@@ -689,6 +886,7 @@ function lifecycleActionLabel(action: MemoraxCodeLifecycleReport["action"]): str
 }
 
 function lifecycleGuidance(report: MemoraxCodeLifecycleReport): string[] {
+  const adapters = lifecycleAdapterReports(report);
   if (report.action === "start") {
     if (report.backend?.ok === false) {
       return [
@@ -696,24 +894,18 @@ function lifecycleGuidance(report: MemoraxCodeLifecycleReport): string[] {
         "Run `memorax-code logs` for details, then retry `memorax-code start`.",
       ];
     }
-    if (!report.codexAdapter && !report.claudeAdapter && !report.dshAdapter && !report.opencodeAdapter) {
+    if (adapters.length === 0) {
       return [
         green("Backend is running."),
         "Adapters were not changed for this command.",
       ];
     }
     const optionalDshUnavailable = isOptionalUnavailableDshAdapter(report.dshAdapter);
-    if ((!report.codexAdapter || isAdapterReady(report.codexAdapter))
-      && (!report.claudeAdapter || isAdapterReady(report.claudeAdapter))
-      && (!report.dshAdapter
-        || isAdapterReady(report.dshAdapter)
-        || optionalDshUnavailable)
-      && (!report.opencodeAdapter || isAdapterReady(report.opencodeAdapter))) {
+    if (adapters.every(({ client, report: adapter }) => (
+      isAdapterReady(adapter) || (client.id === "dsh" && optionalDshUnavailable)
+    ))) {
       return [
-        green(optionalDshUnavailable
-          && !report.codexAdapter
-          && !report.claudeAdapter
-          && !report.opencodeAdapter
+        green(optionalDshUnavailable && adapters.length === 1
           ? "Backend is running; the optional DSH integration is unavailable."
           : "Backend is running and available client integrations are enabled."),
         ...(optionalDshUnavailable
@@ -722,11 +914,14 @@ function lifecycleGuidance(report: MemoraxCodeLifecycleReport): string[] {
         ...(report.codexAdapter || report.claudeAdapter || report.opencodeAdapter
           ? [
               green("Existing sessions with the stable plugin shell select the active runtime on their next user prompt."),
-              "Restart or refresh a client only if its plugin shell changed or MemoraX Code is not active on the next prompt.",
+              ...conditionalClientRefreshGuidance(report, "only if its plugin shell changed or MemoraX Code is not active on the next prompt"),
             ]
-          : optionalDshUnavailable
-            ? []
-            : [green("New DSH sessions can use MemoraX Code through the active Profile integration.")]),
+          : adapters.some(({ client }) => client.id !== "dsh")
+            ? conditionalClientRefreshGuidance(report, "if MemoraX Code is not active on the next prompt")
+            : optionalDshUnavailable
+              ? []
+              : [green("New DSH sessions can use MemoraX Code through the active Profile integration.")]),
+        ...activationGuidance(report),
       ];
     }
     return [
@@ -742,10 +937,9 @@ function lifecycleGuidance(report: MemoraxCodeLifecycleReport): string[] {
         green(backendKeptRunning
           ? "Backend remains running for the other active client integrations."
           : "Backend is stopped."),
-        ...(report.codexAdapter ? [green("Codex Hook integration is stopped; provider config was not changed.")] : []),
-        ...(report.claudeAdapter ? [green("Claude Code Hook integration is stopped; provider config was not changed.")] : []),
-        ...(report.dshAdapter ? [green("DSH Profile integration is stopped.")] : []),
-        ...(report.opencodeAdapter ? [green("OpenCode plugin integration is stopped; provider config was not changed.")] : []),
+        ...adapters.map(({ client }) => green(client.id === "dsh"
+          ? "DSH Profile integration is stopped."
+          : `${client.name} ${client.id === "opencode" ? "plugin" : "Hook"} integration is stopped; provider config was not changed.`)),
       ]
       : [
         red("Backend did not stop cleanly."),
@@ -757,7 +951,8 @@ function lifecycleGuidance(report: MemoraxCodeLifecycleReport): string[] {
       ? [
         green("Backend restarted."),
         green("Available client integrations were reconciled with the restarted Backend."),
-        "Restart or refresh a client only if MemoraX Code is not active on the next prompt.",
+        ...activationGuidance(report),
+        ...conditionalClientRefreshGuidance(report, "only if MemoraX Code is not active on the next prompt"),
       ]
       : [
         red("Backend restart needs attention."),
@@ -792,12 +987,10 @@ function lifecycleGuidance(report: MemoraxCodeLifecycleReport): string[] {
 }
 
 function statusGuidance(report: MemoraxCodeStatusReport): string[] {
+  const adapters = lifecycleAdapterReports(report);
   if (report.ok) {
     const optionalDshUnavailable = isOptionalUnavailableDshAdapter(report.dshAdapter);
-    if (report.dshAdapter
-      && !report.codexAdapter
-      && !report.claudeAdapter
-      && !report.opencodeAdapter) {
+    if (report.dshAdapter && adapters.length === 1) {
       if (optionalDshUnavailable) {
         return [
           green("Backend is running; the optional DSH integration is unavailable."),
@@ -810,11 +1003,14 @@ function statusGuidance(report: MemoraxCodeStatusReport): string[] {
       ];
     }
     return [
-      green("MemoraX Code is ready; sessions with the stable plugin shell use the active Hook runtime on their next user prompt."),
+      green(adapters.length === 0 || report.codexAdapter || report.claudeAdapter || report.opencodeAdapter
+        ? "MemoraX Code is ready; sessions with the stable plugin shell use the active Hook runtime on their next user prompt."
+        : "MemoraX Code is ready for new client sessions."),
+      ...activationGuidance(report),
       ...(optionalDshUnavailable
         ? [`DSH integration is unavailable: ${report.dshAdapter?.reason ?? "not available"}.`]
         : []),
-      "Restart or refresh a client only if its plugin shell was installed, changed, or newly enabled, or MemoraX Code is not active on the next prompt.",
+      ...conditionalClientRefreshGuidance(report, "only if its plugin shell was installed, changed, or newly enabled, or MemoraX Code is not active on the next prompt"),
     ];
   }
   if (!report.backend.ok) {
@@ -833,36 +1029,58 @@ function statusGuidance(report: MemoraxCodeStatusReport): string[] {
       "Run `memorax-code start`, then `memorax-code status`.",
     ];
   }
-  if (report.codexAdapter && !isAdapterReady(report.codexAdapter)) {
+  const unavailable = adapters.find(({ client, report: adapter }) => (
+    !isAdapterReady(adapter)
+      && !(client.id === "claude" && isOptionalUnconfiguredClaudeAdapter(adapter, report.codexAdapter))
+      && !(client.id === "dsh" && isOptionalUnavailableDshAdapter(adapter))
+  ));
+  if (unavailable) {
+    const { client } = unavailable;
+    const guidance = client.id === "codex"
+      ? "Run `memorax-code start`, restart or refresh Codex, then enable the MemoraX Code Codex Adapter plugin."
+      : client.id === "dsh"
+        ? "Run `memorax-code start`, then retry `memorax-code status`."
+        : client.id === "trae"
+          ? "Run `memorax-code start --clients trae`, then enable Global Hooks in Trae Settings if this is the first setup."
+          : `Run \`memorax-code start\`, then restart or refresh ${client.name}.`;
     return [
-      red("Codex adapter is not enabled."),
-      "Run `memorax-code start`, restart or refresh Codex, then enable the MemoraX Code Codex Adapter plugin.",
-    ];
-  }
-  if (report.claudeAdapter && !isAdapterReady(report.claudeAdapter) && !isOptionalUnconfiguredClaudeAdapter(report.claudeAdapter, report.codexAdapter)) {
-    return [
-      red("Claude adapter is not enabled."),
-      "Run `memorax-code start`, then restart or refresh Claude Code.",
-    ];
-  }
-  if (report.dshAdapter
-    && !isAdapterReady(report.dshAdapter)
-    && !isOptionalUnavailableDshAdapter(report.dshAdapter)) {
-    return [
-      red("DSH adapter is not enabled."),
-      "Run `memorax-code start`, then retry `memorax-code status`.",
-    ];
-  }
-  if (report.opencodeAdapter && !isAdapterReady(report.opencodeAdapter)) {
-    return [
-      red("OpenCode adapter is not enabled."),
-      "Run `memorax-code start`, then restart or refresh OpenCode.",
+      red(`${adapterDisplayName(client)} adapter is not enabled.`),
+      guidance,
     ];
   }
   return [
     red("MemoraX Code needs attention."),
     "Run `memorax-code status` and `memorax-code logs` for details.",
   ];
+}
+
+function activationGuidance(report: MemoraxCodeLifecycleReport | MemoraxCodeStatusReport): string[] {
+  return [
+    ...(report.traeAdapter && summarizeAdapterReport(report.traeAdapter).activationRequired
+      ? ["Trae requires one manual step: open Trae Settings and enable Global Hooks, then start a new Trae session."]
+      : []),
+    ...(qoderActivationRequired(report)
+      ? ["Restart Qoder and open a new task to load the managed Hooks, Skill, and background subagent."]
+      : []),
+  ];
+}
+
+function qoderActivationRequired(report: MemoraxCodeLifecycleReport | MemoraxCodeStatusReport): boolean {
+  const adapter = report.qoderAdapter;
+  return adapter !== undefined && isAdapterReady(adapter)
+    && (adapter.changed === true || summarizeAdapterReport(adapter).runtimeObserved !== true);
+}
+
+function conditionalClientRefreshGuidance(
+  report: MemoraxCodeLifecycleReport | MemoraxCodeStatusReport,
+  condition: string,
+): string[] {
+  if (qoderActivationRequired(report)) {
+    return lifecycleAdapterReports(report).some(({ client }) => client.id !== "qoder")
+      ? [`Restart or refresh another client ${condition}.`]
+      : [];
+  }
+  return [`Restart or refresh a client ${condition}.`];
 }
 
 function backendIdentityDetail(identity: MemoraxCodeStatusReport["backend"]["identity"]): string {
@@ -894,23 +1112,15 @@ function adapterStatusLine(report: AdapterReport): string {
   if (report.backendUrlMatches === false) {
     return `not ok endpoint_mismatch configured=${report.configuredBackendUrl ?? "missing"} expected=${report.expectedBackendUrl ?? "unknown"}`;
   }
-  const enabled = isAdapterReady(report);
-  const skillStatus = report.codexSkills?.status
-    ?? report.claudeSkills?.status
-    ?? report.opencodeSkills?.status;
+  const { ready, integration, skillStatus, hookStatus } = summarizeAdapterReport(report);
   const skills = skillStatus ? ` skills=${skillStatus}` : "";
+  const hooks = hookStatus ? ` hook-runtime=${hookStatus}` : "";
   const changed = report.changed === true ? " changed" : "";
-  const integration = report.integration ?? report.state?.integration ?? "hooks";
-  return `${enabled ? "ok" : "not enabled"} integration=${integration}${skills}${changed}`;
+  return `${ready ? "ok" : "not enabled"} integration=${integration ?? "hooks"}${skills}${hooks}${changed}`;
 }
 
 function selectedLifecycleClientNames(report: MemoraxCodeLifecycleReport): string[] {
-  return [
-    report.codexAdapter ? "Codex" : undefined,
-    report.claudeAdapter ? "Claude Code" : undefined,
-    report.dshAdapter ? "DSH" : undefined,
-    report.opencodeAdapter ? "OpenCode" : undefined,
-  ].filter((name): name is string => name !== undefined);
+  return lifecycleAdapterReports(report).map(({ client }) => client.name);
 }
 
 function lifecycleClientName(report: MemoraxCodeLifecycleReport): string | undefined {
@@ -932,10 +1142,7 @@ function dshAdapterStatusLine(report: AdapterReport): string {
     return `unavailable ${report.reason ?? "not-detected"}`;
   }
   const version = report.version ?? report.dshVersion;
-  const tested = version && report.dshVersionTested !== undefined
-    ? ` version=${version} tested=${report.dshVersionTested}`
-    : "";
-  return `${adapterStatusLine(report)}${tested}`;
+  return `${adapterStatusLine(report)}${version ? ` version=${version}` : ""}`;
 }
 
 function argValue(argv: string[], name: string): string | undefined {

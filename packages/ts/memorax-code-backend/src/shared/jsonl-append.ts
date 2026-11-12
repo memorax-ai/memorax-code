@@ -7,11 +7,11 @@ export async function appendRepairingJsonl(path: string, text: string): Promise<
   await serializePath(path, async () => {
     const handle = await open(path, "a+", 0o600);
     try {
-      const { rollbackSize, separator } = await prepareTailForAppend(handle);
+      const { rollbackSize, separator } = await prepareTailForAppend(path, handle);
       try {
         await handle.writeFile(`${separator}${text}`, "utf8");
       } catch (error) {
-        await handle.truncate(rollbackSize).catch(() => undefined);
+        await truncateJsonl(path, handle, rollbackSize).catch(() => undefined);
         throw error;
       }
     } finally {
@@ -32,6 +32,7 @@ async function serializePath<T>(path: string, operation: () => Promise<T>): Prom
 }
 
 async function prepareTailForAppend(
+  path: string,
   handle: FileHandle,
 ): Promise<{ rollbackSize: number; separator: "" | "\n" }> {
   const size = (await handle.stat()).size;
@@ -48,7 +49,7 @@ async function prepareTailForAppend(
     JSON.parse(tail.toString("utf8"));
     return { rollbackSize: size, separator: "\n" };
   } catch {
-    await handle.truncate(tailStart);
+    await truncateJsonl(path, handle, tailStart);
     return { rollbackSize: tailStart, separator: "" };
   }
 }
@@ -72,5 +73,20 @@ async function readExactAt(handle: FileHandle, buffer: Buffer, position: number)
     const { bytesRead } = await handle.read(buffer, offset, buffer.length - offset, position + offset);
     if (bytesRead === 0) throw new Error("failed to read JSONL tail");
     offset += bytesRead;
+  }
+}
+
+async function truncateJsonl(path: string, original: FileHandle, size: number): Promise<void> {
+  // Windows append handles cannot truncate. Keep append semantics for normal writes
+  // and open a writable handle only when repairing or rolling back a partial line.
+  const writable = await open(path, "r+");
+  try {
+    const [before, current] = await Promise.all([original.stat(), writable.stat()]);
+    if (before.dev !== current.dev || before.ino !== current.ino) {
+      throw new Error("JSONL file changed before truncation");
+    }
+    await writable.truncate(size);
+  } finally {
+    await writable.close();
   }
 }

@@ -55,6 +55,8 @@ export type ProcessCommandLineProbeRuntime = {
   ) => ProcessCommandLineProbeSpawnResult;
 };
 
+// A signalable PID is not proof of Backend ownership; callers must also verify
+// the recorded instance before authorizing termination.
 export function isProcessAlive(pid: number): boolean {
   if (!Number.isSafeInteger(pid) || pid <= 0) return false;
   try {
@@ -65,6 +67,8 @@ export function isProcessAlive(pid: number): boolean {
   }
 }
 
+// The caller owns the identity check and must still wait for actual exit.
+// POSIX sends SIGTERM to the Backend so its shutdown handler can drain work.
 export function terminateProcessTree(pid: number): boolean {
   if (!Number.isSafeInteger(pid) || pid <= 0) return false;
   if (!isProcessAlive(pid)) return true;

@@ -72,6 +72,7 @@ function collectSharedSkill(adapterRoot, sources) {
     return;
   }
 
+  // Only the canonical shared Skill may be linked in source; artifact files are materialized.
   const expectedSkillPath = join(
     adapterRoot,
     "..",

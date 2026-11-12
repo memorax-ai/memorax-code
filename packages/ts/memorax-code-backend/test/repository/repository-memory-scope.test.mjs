@@ -313,6 +313,34 @@ test("repository naming uses origin, then a sole remote, then the canonical comm
   assert.equal(fallback.scope.identitySource, "git-common-dir");
 });
 
+test("repository naming distinguishes SCP remotes from explicit URLs and local paths", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-workspace-remote-formats-"));
+  t.after(() => fsPromises.rm(root, { recursive: true, force: true }));
+  const workspace = join(root, "Local-Folder");
+  const cases = [
+    ["fixture-host:owner/Project.git", "Project"],
+    ["git@fixture-host:owner/Project.git", "Project"],
+    ["ssh://git@fixture-host/owner/Project.git", "Project"],
+    ["ftp://fixture-host/owner/Project.git", "Local-Folder"],
+    ["https://[broken]/owner/Project.git", "Local-Folder"],
+    ["file:///owner/Project.git", "Local-Folder"],
+    ["file:/owner/Project.git", "Local-Folder"],
+    ["hg::https://fixture-host/owner/Project.git", "Local-Folder"],
+    ["./owner:Project.git", "Local-Folder"],
+    ["C:\\owner\\Project.git", "Local-Folder"],
+    ["C:Project.git", "Local-Folder"],
+  ];
+  for (const [url, repositorySlug] of cases) {
+    await createGitRepository(workspace, [["origin", url]]);
+    const result = await resolveRepositoryMemoryScope({ workspaceRoot: workspace, baseUserId: "alice" });
+
+    assert.equal(result.ok, true, url);
+    assert.equal(result.scope.scopeKind, "git-repository", url);
+    assert.equal(result.scope.effectiveUserId, `alice@${repositorySlug}`, url);
+    assert.equal(result.scope.identitySource, repositorySlug === "Project" ? "origin-remote" : "git-common-dir", url);
+  }
+});
+
 test("Git containment rechecks the readable repository name after a remote rename", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-workspace-remote-rename-"));
   const workspace = join(root, "workspace");
@@ -600,7 +628,7 @@ test("different non-Git workspace folder names use different MemoraX namespaces"
   assert.equal(worktreeScope.scope.effectiveUserId, "alice@memorax-code-feature");
 });
 
-test("explicit Codex projectless work keeps the fixed Codex-General namespace", async () => {
+test("default chats share General memory while retaining distinct local workspace identities", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-workspace-projectless-"));
   const firstTask = join(root, "2026-07-13", "first-task");
   const secondTask = join(root, "2026-07-14", "second-task");
@@ -625,16 +653,41 @@ test("explicit Codex projectless work keeps the fixed Codex-General namespace", 
   assert.equal(first.ok, true);
   assert.equal(second.ok, true);
   assert.equal(withoutPath.ok, true);
-  assert.equal(first.scope.effectiveUserId, "alice@Codex-General");
+  assert.equal(first.scope.effectiveUserId, "alice@General");
   assert.equal(second.scope.effectiveUserId, first.scope.effectiveUserId);
   assert.equal(withoutPath.scope.effectiveUserId, first.scope.effectiveUserId);
-  assert.equal(first.scope.repositoryKey, second.scope.repositoryKey);
-  assert.equal(second.scope.repositoryKey, withoutPath.scope.repositoryKey);
+  assert.equal(first.scope.scopeKind, "general");
+  assert.equal(first.scope.identitySource, "general");
+  assert.notEqual(first.scope.repositoryKey, second.scope.repositoryKey);
+  assert.notEqual(second.scope.repositoryKey, withoutPath.scope.repositoryKey);
+
+  const missing = await resolveRepositoryMemoryScope({
+    workspaceRoot: join(root, "missing"), workspaceKind: "projectless", baseUserId: "alice",
+  });
+  assert.equal(missing.ok, false);
+  assert.equal(missing.reason, "workspace_scope_unavailable");
+
+  // A native default-directory hint cannot replace actual Git authority.
+  await createGitRepository(firstTask, [["origin", "https://github.com/example-org/project.git"]]);
+  const git = await resolveRepositoryMemoryScope({
+    workspaceRoot: firstTask, workspaceKind: "projectless", baseUserId: "alice",
+  });
+  assert.equal(git.ok, true);
+  assert.equal(git.scope.scopeKind, "git-repository");
+  assert.equal(git.scope.effectiveUserId, "alice@project");
+  assert.equal(await repositoryMemoryScopeContainsWorkspace(first.scope, firstTask), false);
+
+  await writeFile(join(secondTask, ".git"), "gitdir: missing\n", "utf8");
+  const invalid = await resolveRepositoryMemoryScope({
+    workspaceRoot: secondTask, workspaceKind: "projectless", baseUserId: "alice",
+  });
+  assert.equal(invalid.ok, false);
+  assert.equal(invalid.reason, "workspace_scope_unavailable");
 });
 
-test("a real Codex-General folder intentionally shares the projectless namespace", async () => {
+test("a real General folder intentionally shares the projectless namespace", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-workspace-projectless-collision-"));
-  const workspace = join(root, "Codex-General");
+  const workspace = join(root, "General");
   await mkdir(workspace, { recursive: true });
 
   const local = await resolveRepositoryMemoryScope({ workspaceRoot: workspace, baseUserId: "alice" });
@@ -642,7 +695,7 @@ test("a real Codex-General folder intentionally shares the projectless namespace
 
   assert.equal(local.ok, true);
   assert.equal(projectless.ok, true);
-  assert.equal(local.scope.effectiveUserId, "alice@Codex-General");
+  assert.equal(local.scope.effectiveUserId, "alice@General");
   assert.equal(projectless.scope.effectiveUserId, local.scope.effectiveUserId);
   assert.notEqual(projectless.scope.repositoryKey, local.scope.repositoryKey);
 });
@@ -973,11 +1026,11 @@ test("session binding reuses its workspace root from nested paths and sticks aft
   assert.equal(stillBlocked.reason, "workspace_scope_mismatch");
 });
 
-test("projectless and real Codex-General scopes cannot be exchanged inside a session", async () => {
+test("projectless and real General scopes cannot be exchanged inside a session", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-workspace-projectless-session-"));
   const home = join(root, "home");
   const projectlessWorkspace = join(root, "task");
-  const realWorkspace = join(root, "Codex-General");
+  const realWorkspace = join(root, "General");
   await mkdir(projectlessWorkspace, { recursive: true });
   await mkdir(realWorkspace, { recursive: true });
   const env = memoryEnv(home);
@@ -1012,7 +1065,7 @@ test("projectless and real Codex-General scopes cannot be exchanged inside a ses
   });
 
   assert.equal(projectless.ok, true);
-  assert.equal(projectless.memory.scope.effectiveUserId, "alice@Codex-General");
+  assert.equal(projectless.memory.scope.effectiveUserId, "alice@General");
   assert.equal(movedToRealWorkspace.ok, false);
   assert.equal(movedToRealWorkspace.reason, "workspace_scope_mismatch");
   assert.equal(remainsBlocked.ok, false);
@@ -1038,42 +1091,42 @@ test("projectless and real Codex-General scopes cannot be exchanged inside a ses
   });
 
   assert.equal(real.ok, true);
-  assert.equal(real.memory.scope.effectiveUserId, "alice@Codex-General");
+  assert.equal(real.memory.scope.effectiveUserId, "alice@General");
   assert.equal(movedToProjectless.ok, false);
   assert.equal(movedToProjectless.reason, "workspace_scope_mismatch");
 });
 
-test("same-name physical workspaces cannot bypass session pinning", async () => {
+test("ordinary and General workspaces preserve nested cwd but cannot bypass physical session pinning", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-workspace-same-name-session-"));
   const home = join(root, "home");
   const first = join(root, "one", "demo");
+  const nested = join(first, "src");
   const second = join(root, "two", "demo");
-  await mkdir(first, { recursive: true });
+  await mkdir(nested, { recursive: true });
   await mkdir(second, { recursive: true });
   const env = memoryEnv(home);
-  const owner = {};
 
-  const initial = await resolveConfiguredRepositoryMemoryForSession({
-    owner,
-    client: "codex",
-    sessionId: "same-name-session",
-    workspaceRoot: first,
-    memoraxCodeHome: home,
-    env,
-  });
-  const mismatch = await resolveConfiguredRepositoryMemoryForSession({
-    owner,
-    client: "codex",
-    sessionId: "same-name-session",
-    workspaceRoot: second,
-    memoraxCodeHome: home,
-    env,
-  });
+  for (const workspaceKind of [undefined, "projectless"]) {
+    const input = {
+      owner: {}, client: "codex", sessionId: "same-name-session", memoraxCodeHome: home, env,
+    };
+    const initial = await resolveConfiguredRepositoryMemoryForSession({
+      ...input, workspaceRoot: first, workspaceKind,
+    });
+    const nestedTurn = await resolveConfiguredRepositoryMemoryForSession({
+      ...input, workspaceRoot: nested,
+    });
+    const mismatch = await resolveConfiguredRepositoryMemoryForSession({
+      ...input, workspaceRoot: second, workspaceKind,
+    });
 
-  assert.equal(initial.ok, true);
-  assert.equal(initial.memory.scope.effectiveUserId, "alice@demo");
-  assert.equal(mismatch.ok, false);
-  assert.equal(mismatch.reason, "workspace_scope_mismatch");
+    assert.equal(initial.ok, true);
+    assert.equal(initial.memory.scope.effectiveUserId, workspaceKind ? "alice@General" : "alice@demo");
+    assert.equal(nestedTurn.ok, true);
+    assert.equal(nestedTurn.memory.scope.repositoryKey, initial.memory.scope.repositoryKey);
+    assert.equal(mismatch.ok, false);
+    assert.equal(mismatch.reason, "workspace_scope_mismatch");
+  }
 });
 
 test("Codex and Claude can bind the same session id independently across same-name non-Git scopes", async () => {

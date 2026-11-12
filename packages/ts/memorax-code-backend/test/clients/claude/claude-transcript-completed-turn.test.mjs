@@ -15,17 +15,19 @@ import {
 
 test("Claude transcript resolves one exact completed prompt branch", () => {
   const transcript = jsonLines([
-    userRecord({ uuid: "user-visible", content: "Materialized Claude prompt." }),
+    userRecord({ uuid: "user-visible", content: "Materialized Claude prompt.", timestamp: "2026-09-01T08:00:00.000Z" }),
     assistantRecord({ uuid: "assistant-tool", parentUuid: "user-visible", stopReason: "tool_use", content: [{ type: "tool_use", id: "tool-1", name: "Read", input: {} }] }),
     userRecord({
       uuid: "user-tool-result",
       parentUuid: "assistant-tool",
+      timestamp: "2026-09-01T08:01:00.000Z",
       content: [{ type: "tool_result", tool_use_id: "tool-1", content: "tool output must not become the prompt" }],
     }),
     userRecord({ uuid: "user-meta", parentUuid: "user-tool-result", content: "hidden metadata", isMeta: true }),
     assistantRecord({
       uuid: "assistant-final",
       parentUuid: "user-meta",
+      timestamp: "2026-09-01T08:03:00.000Z",
       stopReason: "end_turn",
       content: [
         { type: "thinking", thinking: "private" },
@@ -35,6 +37,7 @@ test("Claude transcript resolves one exact completed prompt branch", () => {
     assistantRecord({
       uuid: "assistant-sidechain",
       parentUuid: "user-visible",
+      timestamp: "2026-09-01T08:04:00.000Z",
       stopReason: "end_turn",
       content: [{ type: "text", text: "Sidechain answer must be ignored." }],
       isSidechain: true,
@@ -52,6 +55,8 @@ test("Claude transcript resolves one exact completed prompt branch", () => {
       sessionTurnIndex: 1,
       userPrompt: "Materialized Claude prompt.",
       assistantReply: "Materialized Claude answer.",
+      userTimestamp: Date.parse("2026-09-01T08:00:00.000Z"),
+      assistantTimestamp: Date.parse("2026-09-01T08:03:00.000Z"),
       activities: [],
     },
   });
@@ -290,7 +295,7 @@ test("Claude transcript coalesces ancestor and descendant end_turn snapshots", (
         id: "tool-lineage-search",
         name: "Bash",
         input: {
-          command: "memorax-cli search --query private-lineage-query",
+          command: "memorax-cli.cmd search --query private-lineage-query",
           description: "private lineage reason",
         },
       }],
@@ -307,6 +312,7 @@ test("Claude transcript coalesces ancestor and descendant end_turn snapshots", (
     assistantRecord({
       uuid: "assistant-terminal-ancestor",
       parentUuid: "user-lineage-result",
+      timestamp: "2026-07-27T10:00:02.000Z",
       messageId: "message-terminal-snapshot",
       stopReason: "end_turn",
       content: [{ type: "text", text: "Earlier terminal snapshot." }],
@@ -314,6 +320,7 @@ test("Claude transcript coalesces ancestor and descendant end_turn snapshots", (
     assistantRecord({
       uuid: "assistant-terminal-descendant",
       parentUuid: "assistant-terminal-ancestor",
+      timestamp: Date.parse("2026-07-27T10:00:05.000Z"),
       messageId: "message-terminal-snapshot",
       stopReason: "end_turn",
       content: [{ type: "text", text: "Final terminal snapshot." }],
@@ -331,6 +338,7 @@ test("Claude transcript coalesces ancestor and descendant end_turn snapshots", (
       sessionTurnIndex: 1,
       userPrompt: "Recover one terminal lineage.",
       assistantReply: "Final terminal snapshot.",
+      assistantTimestamp: Date.parse("2026-07-27T10:00:05.000Z"),
       activities: [{ index: 1, type: "memory_cli_search" }],
     },
   });

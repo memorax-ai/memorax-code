@@ -1,17 +1,22 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import {
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   readdirSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, join, resolve } from "node:path";
 import test from "node:test";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -20,7 +25,243 @@ import {
   withDshPluginLifecycleLock,
 } from "../src/profile-lifecycle.mjs";
 
+const npmCommand = process.platform === "win32"
+  ? [process.execPath, process.env.npm_execpath ?? join(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js")]
+  : ["npm"];
+
 const HEADLESS_BUNDLE_NAME = "@deepseek-ai/dsh-headless";
+
+test("CLI and Desktop coexist with separate authority, reject version drift, and reconcile upgrades", async (t) => {
+  const fixture = await createReconciliationFixture(t);
+  const { root, initialOptions, profilesRoot, installAdapter, removeAdapter, statePath } = fixture;
+  const desktop = writeDesktopLauncher(root);
+  const cliBin = join(root, "npm-bin");
+  mkdirSync(cliBin, { recursive: true });
+  writeFileSync(join(cliBin, "dsh"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  writeProfile(profilesRoot, "desktop");
+  const mutations = [];
+  let desktopVersion = "0.2.0-rc.2";
+  const options = {
+    ...initialOptions,
+    homeDir: root,
+    env: { HOME: root, PATH: [cliBin, dirname(desktop)].join(delimiter) },
+    windowsCliResolution: { platform: "darwin" },
+    runDsh(invocation) {
+      if (invocation.args[0] === "--version") {
+        return { status: 0, stdout: invocation.command === desktop ? desktopVersion : "0.1.0-rc.6" };
+      }
+      const [, , name, operation, spec] = invocation.args;
+      assert.equal(invocation.command, name === "desktop" ? desktop : "dsh");
+      mutations.push({ name, operation, command: invocation.command });
+      if (operation === "add") installAdapter(name, spec.slice("file:".length));
+      else removeAdapter(name);
+      return { status: 0 };
+    },
+  };
+  const installed = await withDshPluginLifecycleLock(options, (lifecycle) => lifecycle.ensureInstalled());
+  assert.equal(installed.ok, true, JSON.stringify(installed));
+  const state = JSON.parse(readFileSync(statePath, "utf8"));
+  assert.equal(state.dshCommand, "dsh");
+  assert.deepEqual(state.desktopRuntime, { version: 1, command: desktop, dshVersion: "0.2.0-rc.2" });
+  assert.deepEqual(mutations.map(({ name }) => name), ["desktop", "web"]);
+  assert.deepEqual(
+    JSON.parse(readFileSync(join(state.runtimeBundleRoot, ".memorax-code-package.json"), "utf8")).desktopRuntime,
+    state.desktopRuntime,
+  );
+  const noDesktopOnPath = { ...options, env: { HOME: root, PATH: cliBin } };
+  const status = collectDshAdapterStatus(noDesktopOnPath);
+  assert.equal(status.enabled, true, JSON.stringify(status));
+  assert.equal(status.version, "0.1.0-rc.6");
+  assert.equal(status.desktopVersion, "0.2.0-rc.2");
+  const beforeUpgrade = readFileSync(statePath, "utf8");
+  desktopVersion = "0.2.1-alpha.4";
+  const drift = collectDshAdapterStatus(noDesktopOnPath);
+  assert.equal(drift.ok, false);
+  assert.equal(drift.enabled, false);
+  assert.equal(drift.reason, "dsh_desktop_version_changed");
+  assert.equal(drift.desktopVersion, desktopVersion);
+  const activation = await withDshPluginLifecycleLock(noDesktopOnPath, (lifecycle) => lifecycle.activate());
+  assert.equal(activation.ok, false);
+  assert.equal(activation.reason, "dsh_desktop_version_changed");
+  assert.equal(readFileSync(statePath, "utf8"), beforeUpgrade);
+  const upgraded = await withDshPluginLifecycleLock(noDesktopOnPath, (lifecycle) => lifecycle.ensureInstalled());
+  assert.equal(upgraded.ok, true, JSON.stringify(upgraded));
+  for (const report of [installed, status, drift, activation, upgraded]) {
+    assert.deepEqual(Object.keys(report).filter((key) => /tested/i.test(key)), []);
+  }
+  assert.equal(JSON.parse(readFileSync(statePath, "utf8")).desktopRuntime.dshVersion, desktopVersion);
+  assert.equal(collectDshAdapterStatus(noDesktopOnPath).enabled, true);
+  mutations.length = 0;
+  const removed = await withDshPluginLifecycleLock(noDesktopOnPath, (lifecycle) => lifecycle.disable());
+  assert.equal(removed.ok, true, JSON.stringify(removed));
+  assert.deepEqual(mutations.map(({ name, operation }) => `${operation}:${name}`), [
+    "remove:desktop", "remove:web",
+  ]);
+});
+
+test("Desktop-only installation initializes a regular headless Profile using native bundled config", async (t) => {
+  const fixture = await createReconciliationFixture(t);
+  const { root, initialOptions, profilesRoot, installAdapter, removeAdapter, statePath, memoraxCodeHome } = fixture;
+  rmSync(memoraxCodeHome, { recursive: true, force: true });
+  rmSync(profilesRoot, { recursive: true, force: true });
+  writeProfile(profilesRoot, "desktop", [HEADLESS_BUNDLE_NAME]);
+  rmSync(join(profilesRoot, "node_modules"), { recursive: true, force: true });
+  const desktop = writeDesktopLauncher(root);
+  const commands = [];
+  const options = {
+    ...initialOptions,
+    homeDir: root,
+    env: { HOME: root, PATH: "", MEMORAX_CODE_DSH_DESKTOP_COMMAND: desktop },
+    windowsCliResolution: { platform: "darwin" },
+    runDsh(invocation) {
+      if (invocation.command === "dsh") return { status: 1, error: { code: "ENOENT" } };
+      assert.equal(invocation.command, desktop);
+      if (invocation.args[0] === "--version") return { status: 0, stdout: "0.2.0-rc.2\n" };
+      commands.push(invocation.args);
+      if (invocation.args.includes("--dump-default-config")) {
+        assert.deepEqual(invocation.args, ["--profile", "headless", "--dump-default-config"]);
+        return { status: 0, stdout: `# == ${HEADLESS_BUNDLE_NAME} ==\n` };
+      }
+      const [, , name, operation, spec] = invocation.args;
+      if (operation === "add") {
+        if (!existsSync(join(profilesRoot, name))) {
+          writeProfile(profilesRoot, name, [HEADLESS_BUNDLE_NAME]);
+          rmSync(join(profilesRoot, "node_modules"), { recursive: true, force: true });
+        }
+        installAdapter(name, spec.slice("file:".length));
+      } else removeAdapter(name);
+      return { status: 0 };
+    },
+  };
+  const installed = await withDshPluginLifecycleLock(options, (lifecycle) => lifecycle.ensureInstalled());
+  assert.equal(installed.ok, true, JSON.stringify(installed));
+  const state = JSON.parse(readFileSync(statePath, "utf8"));
+  assert.equal(state.dshCommand, desktop);
+  assert.deepEqual(state.profiles, ["desktop", "headless"]);
+  assert.equal(commands.some((args) => args[0] === "--profile" && args[1] === "desktop"), false);
+  const persistedOptions = { ...options, env: { HOME: root, PATH: "" } };
+  const status = collectDshAdapterStatus(persistedOptions);
+  assert.equal(status.installed, true, JSON.stringify(status));
+  assert.equal(status.enabled, true, JSON.stringify(status));
+  const removed = await withDshPluginLifecycleLock(persistedOptions, (lifecycle) => lifecycle.remove());
+  assert.equal(removed.ok, true, JSON.stringify(removed));
+});
+
+test("missing or stale Desktop authority fails closed without routing desktop to the npm CLI", async (t) => {
+  const fixture = await createReconciliationFixture(t);
+  const { root, initialOptions, profilesRoot, statePath, installAdapter, removeAdapter } = fixture;
+  writeProfile(profilesRoot, "desktop");
+  const desktop = writeDesktopLauncher(root);
+  const mutations = [];
+  const options = {
+    ...initialOptions,
+    homeDir: root,
+    env: { HOME: root, PATH: "" },
+    windowsCliResolution: { platform: "darwin" },
+    dshDesktopCommand: desktop,
+    runDsh(invocation) {
+      if (invocation.args[0] === "--version") return { status: 0, stdout: "0.2.0-rc.2\n" };
+      const [, , name, operation, spec] = invocation.args;
+      assert.equal(invocation.command, name === "desktop" ? desktop : "dsh");
+      mutations.push(`${operation}:${name}`);
+      if (operation === "add") installAdapter(name, spec.slice("file:".length));
+      else removeAdapter(name);
+      return { status: 0 };
+    },
+  };
+  const missing = await withDshPluginLifecycleLock({
+    ...options, dshDesktopCommand: join(root, "missing-desktop"),
+  }, (lifecycle) => lifecycle.ensureInstalled());
+  assert.equal(missing.ok, false);
+  assert.equal(missing.reason, "dsh_desktop_command_unavailable");
+  assert.deepEqual(mutations, []);
+  assert.equal(JSON.parse(readFileSync(statePath, "utf8")).enabled, false);
+
+  const installed = await withDshPluginLifecycleLock(options, (lifecycle) => lifecycle.ensureInstalled());
+  assert.equal(installed.ok, true, JSON.stringify(installed));
+  rmSync(desktop);
+  const persisted = { ...options, dshDesktopCommand: undefined };
+  const status = collectDshAdapterStatus(persisted);
+  assert.equal(status.enabled, false);
+  assert.equal(status.reason, "dsh_desktop_command_unavailable");
+  mutations.length = 0;
+  const restarted = await withDshPluginLifecycleLock(persisted, (lifecycle) => lifecycle.ensureInstalled());
+  assert.equal(restarted.ok, false);
+  assert.equal(restarted.reason, "dsh_desktop_command_unavailable");
+  assert.deepEqual(mutations, []);
+  const stopped = await withDshPluginLifecycleLock(persisted, (lifecycle) => lifecycle.disable());
+  assert.equal(stopped.ok, false);
+  assert.deepEqual(stopped.failedProfiles.map(({ name, reason }) => ({ name, reason })), [
+    { name: "desktop", reason: "dsh_desktop_command_unavailable" },
+  ]);
+  assert.deepEqual(mutations, ["remove:web"]);
+  assert.deepEqual(JSON.parse(readFileSync(statePath, "utf8")).profiles, ["desktop"]);
+});
+
+test("failed Desktop reconciliation restores each Profile through its prior native authority", async (t) => {
+  const fixture = await createReconciliationFixture(t);
+  const { root, initialOptions, profilesRoot, statePath, installAdapter } = fixture;
+  writeProfile(profilesRoot, "desktop");
+  const desktop = writeDesktopLauncher(join(root, "old-install"));
+  const replacement = writeDesktopLauncher(join(root, "new-install"));
+  const mutations = [];
+  let failUpdate = false;
+  let desktopVersion = "0.2.0-rc.2";
+  const options = {
+    ...initialOptions,
+    dshDesktopCommand: desktop,
+    windowsCliResolution: { platform: "darwin" },
+    runDsh(invocation) {
+      if (invocation.args[0] === "--version") {
+        return { status: 0, stdout: invocation.command === desktop ? desktopVersion : "0.2.0-rc.2" };
+      }
+      const [, , name, operation, spec] = invocation.args;
+      mutations.push({ name, operation, command: invocation.command, spec });
+      if (failUpdate && name === "zulu") return { status: 1 };
+      installAdapter(name, spec.slice("file:".length));
+      return { status: 0 };
+    },
+  };
+  const installed = await withDshPluginLifecycleLock(options, (lifecycle) => lifecycle.ensureInstalled());
+  assert.equal(installed.ok, true, JSON.stringify(installed));
+  const priorState = JSON.parse(readFileSync(statePath, "utf8"));
+  writeProfile(profilesRoot, "zulu");
+  mutations.length = 0;
+  failUpdate = true;
+  const failed = await withDshPluginLifecycleLock({
+    ...options, dshDesktopCommand: replacement,
+  }, (lifecycle) => lifecycle.ensureInstalled());
+  assert.equal(failed.ok, false);
+  assert.equal(failed.enabled, true, JSON.stringify(failed));
+  assert.deepEqual(JSON.parse(readFileSync(statePath, "utf8")), priorState);
+  assert.deepEqual(mutations.filter(({ name }) => name === "desktop").map(({ command }) => command), [
+    replacement, desktop,
+  ]);
+  assert.equal(mutations.at(-1).spec, `file:${priorState.runtimeBundleRoot}`);
+
+  desktopVersion = "0.2.1-alpha.4";
+  const cannotRestore = await withDshPluginLifecycleLock(options, (lifecycle) => lifecycle.ensureInstalled());
+  assert.equal(cannotRestore.ok, false);
+  assert.equal(cannotRestore.enabled, false);
+  assert.equal(cannotRestore.rollbackFailedProfiles[0].reason, "dsh_desktop_version_changed");
+  assert.equal(JSON.parse(readFileSync(statePath, "utf8")).enabled, false);
+});
+
+function writeDesktopLauncher(root, platform = "darwin") {
+  const resources = platform === "win32"
+    ? join(root, "DeepSeek Harness", "resources")
+    : join(root, "DeepSeek Harness.app", "Contents", "Resources");
+  const command = join(resources, "runtime", "cli", "bin", platform === "win32" ? "dsh.cmd" : "dsh");
+  const executable = platform === "win32"
+    ? resolve(resources, "..", "DeepSeek Harness.exe")
+    : resolve(resources, "..", "MacOS", "DeepSeek Harness");
+  mkdirSync(dirname(command), { recursive: true });
+  mkdirSync(dirname(executable), { recursive: true });
+  writeFileSync(command, "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+  writeFileSync(executable, "");
+  writeFileSync(join(resources, "app.asar"), "");
+  return realpathSync(command);
+}
 
 test("failed reconciliation restores the prior authority and removes newly installed Profiles", async (t) => {
   const fixture = await createReconciliationFixture(t);
@@ -57,7 +298,7 @@ test("failed reconciliation restores the prior authority and removes newly insta
   }, (lifecycle) => lifecycle.ensureInstalled());
 
   assert.equal(failed.ok, false);
-  assert.deepEqual(failed.failedProfiles, [
+  assert.deepEqual(failed.failedProfiles.map(({ failure, ...profile }) => profile), [
     { name: "zulu", reason: "dsh_command_failed", status: 1 },
   ]);
   assert.deepEqual(JSON.parse(readFileSync(statePath, "utf8")), priorState);
@@ -100,6 +341,218 @@ test("failed reconciliation restores the prior authority and removes newly insta
   assert.deepEqual(status.profiles.map(({ name }) => name), ["web"]);
 });
 
+
+test("Windows DSH plugin installation and rollback preserve pnpm arguments without a shell", async (t) => {
+  const fixture = await createReconciliationFixture(t);
+  const {
+    root, profilesRoot, statePath, initialOptions, installAdapter, removeAdapter,
+  } = fixture;
+  const dshEntrypoint = join(root, "dsh bin.mjs");
+  const nodePath = "C:\\test node\\node.exe";
+  const preloads = [];
+  const mutations = [];
+  let failUpdate = false;
+  const options = {
+    ...initialOptions,
+    dshCommand: dshEntrypoint,
+    windowsCliResolution: { platform: "win32", nodePath },
+    runDsh(invocation) {
+      assert.equal(invocation.command, nodePath);
+      if (invocation.args.at(-1) === "--version") {
+        assert.deepEqual(invocation.args, [dshEntrypoint, "--version"]);
+        return { status: 0, stdout: "0.1.5-rc.1\n" };
+      }
+      assert.equal(invocation.args[0], "--import");
+      assert.match(invocation.args[1], /^data:text\/javascript;base64,/);
+      assert.equal(invocation.args[2], dshEntrypoint);
+      preloads.push(invocation.args[1]);
+      const args = invocation.args.slice(3);
+      const profileName = args[2];
+      const operation = args[3];
+      mutations.push({ operation, profileName, spec: args[4] });
+      if (failUpdate && operation === "add" && profileName === "zulu") return { status: 1 };
+      if (operation === "add") installAdapter(profileName, args[4].slice("file:".length));
+      else removeAdapter(profileName);
+      return { status: 0 };
+    },
+  };
+  const installed = await withDshPluginLifecycleLock(options, (lifecycle) => (
+    lifecycle.ensureInstalled()
+  ));
+  assert.equal(installed.ok, true, JSON.stringify(installed));
+  assert.equal(preloads.length, 1);
+  const priorState = JSON.parse(readFileSync(statePath, "utf8"));
+
+  writeProfile(profilesRoot, "alpha");
+  writeProfile(profilesRoot, "zulu");
+  mutations.length = 0;
+  failUpdate = true;
+  const failed = await withDshPluginLifecycleLock({
+    ...options,
+    memoraxCodeCommand: join(root, "memorax-code-v2.mjs"),
+  }, (lifecycle) => lifecycle.ensureInstalled());
+  assert.equal(failed.ok, false);
+  assert.deepEqual(failed.failedProfiles.map(({ name }) => name), ["zulu"]);
+  assert.deepEqual(mutations.map(({ operation, profileName }) => operation + ":" + profileName), [
+    "add:alpha", "add:web", "add:zulu", "remove:alpha", "add:web",
+  ]);
+  assert.equal(mutations.at(-1).spec, "file:" + priorState.runtimeBundleRoot);
+  assert.deepEqual(JSON.parse(readFileSync(statePath, "utf8")), priorState);
+  assert.equal(preloads.length, 6);
+  assert.equal(new Set(preloads).size, 1);
+
+  const scriptPath = join(root, "verify-windows-pnpm-preload.mjs");
+  writeFileSync(scriptPath, "await (" + verifyWindowsDshPnpmPreload.toString() + ")(process.argv[2]);\n");
+  const checked = spawnSync(process.execPath, [scriptPath, preloads[0]], {
+    cwd: root,
+    env: { HOME: root, MEMORAX_CODE_HOME: initialOptions.memoraxCodeHome },
+    encoding: "utf8",
+    timeout: 10_000,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  assert.equal(checked.status, 0, checked.stderr || checked.error?.message);
+});
+
+// Execute the emitted preload in a child so builtin and platform mocks cannot
+// affect the test runner or other lifecycle tests.
+async function verifyWindowsDshPnpmPreload(preload) {
+  const { default: assert } = await import("node:assert/strict");
+  const { default: childProcess } = await import("node:child_process");
+  const { default: fs } = await import("node:fs");
+  const { default: path } = await import("node:path");
+  const { syncBuiltinESMExports } = await import("node:module");
+  Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+  path.dirname = path.win32.dirname;
+  path.join = path.win32.join;
+  path.resolve = path.win32.resolve;
+  const calls = [];
+  const available = new Set();
+  const shims = new Map();
+  const result = { status: 17, signal: null, stdout: "native output", stderr: "native error" };
+  const spawn = (command, args, options) => {
+    calls.push({ command, args, options });
+    return result;
+  };
+  childProcess.spawnSync = spawn;
+  fs.existsSync = (candidate) => available.has(candidate);
+  fs.statSync = (candidate) => {
+    if (available.has(candidate)) return { isFile: () => true };
+    throw Object.assign(new Error("missing fixture file"), { code: "ENOENT" });
+  };
+  const readFile = fs.readFileSync;
+  fs.readFileSync = (candidate, ...args) => shims.has(candidate)
+    ? shims.get(candidate)
+    : readFile(candidate, ...args);
+  syncBuiltinESMExports();
+  const args = [
+    "add",
+    "file:C:\\MemoraX home & %MEMORAX_DSH_PATH_PROBE%\\generation",
+    "--reporter=append-only",
+  ];
+  process.argv = [process.execPath, "fake-dsh.js", "plugin", "--profile", "headless", ...args];
+  await import(preload);
+  const { spawnSync } = await import("node:child_process");
+  const originalArgs = [...args];
+  const prefix = "C:\\MemoraX Windows 验证 & %MEMORAX_DSH_PATH_PROBE%";
+  const nativeCommand = path.join(prefix, "pnpm.exe");
+  const shimCommand = path.join(prefix, "pnpm.cmd");
+  const pnpmEntrypoint = path.join(prefix, "node_modules", "pnpm", "bin", "pnpm.cjs");
+  const options = {
+    shell: true,
+    cwd: "C:\\DSH 验证 home & %MEMORAX_DSH_PATH_PROBE%",
+    env: {
+      MEMORAX_DSH_PATH_PROBE: "DECOY",
+      Path: '"' + prefix + '";C:\\后备工具',
+      Pathext: ".CMD;.EXE",
+    },
+    stdio: "inherit",
+    encoding: "utf8",
+    timeout: 1234,
+    windowsHide: true,
+  };
+  for (const fixture of [
+    {
+      command: shimCommand,
+      entrypoint: pnpmEntrypoint,
+      shim: '"%_prog%" "%dp0%\\node_modules\\pnpm\\bin\\pnpm.cjs" %*',
+    },
+    {
+      command: shimCommand,
+      entrypoint: path.join(prefix, "node_modules", "corepack", "dist", "pnpm.js"),
+      shim: '"%_prog%" "%~dp0\\node_modules\\corepack\\dist\\pnpm.js" %*',
+      otherEntrypoint: pnpmEntrypoint,
+    },
+    {
+      command: shimCommand,
+      entrypoint: path.join(prefix, "node_modules", "pnpm", "pnpm.exe"),
+      shim: '"%dp0%\\node_modules\\pnpm\\pnpm.exe" %*',
+    },
+    { command: nativeCommand },
+  ]) {
+    calls.length = 0;
+    available.clear();
+    shims.clear();
+    available.add(fixture.command);
+    available.add(nativeCommand);
+    available.add("C:\\后备工具\\pnpm.exe");
+    if (fixture.entrypoint) available.add(fixture.entrypoint);
+    if (fixture.otherEntrypoint) available.add(fixture.otherEntrypoint);
+    if (fixture.shim) shims.set(fixture.command, fixture.shim);
+    assert.equal(spawnSync("pnpm", args, options), result);
+    assert.deepEqual(calls, [{
+      command: fixture.entrypoint && !/\.exe$/i.test(fixture.entrypoint) ? process.execPath : fixture.entrypoint ?? fixture.command,
+      args: fixture.entrypoint && !/\.exe$/i.test(fixture.entrypoint) ? [fixture.entrypoint, ...args] : args,
+      options: { ...options, shell: false },
+    }]);
+    assert.equal(calls[0].options.env, options.env);
+    assert.deepEqual(args, originalArgs);
+    assert.equal(options.shell, true);
+  }
+
+  const cwdCommand = path.join(options.cwd, "pnpm.exe");
+  available.add(cwdCommand);
+  calls.length = 0;
+  assert.equal(spawnSync("pnpm", args, options), result);
+  assert.equal(calls[0].command, cwdCommand);
+  options.env.NoDefaultCurrentDirectoryInExePath = "1";
+  calls.length = 0;
+  assert.equal(spawnSync("pnpm", args, options), result);
+  assert.equal(calls[0].command, nativeCommand);
+  delete options.env.NoDefaultCurrentDirectoryInExePath;
+
+  for (const [command, invocationArgs, invocationOptions] of [
+    ["pnpm", args, { ...options, shell: false }],
+    ["other-command", args, options],
+    ["pnpm", args.map((value) => '"' + value + '"'), options],
+  ]) {
+    calls.length = 0;
+    assert.equal(spawnSync(command, invocationArgs, invocationOptions), result);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].command, command);
+    assert.equal(calls[0].args, invocationArgs);
+    assert.equal(calls[0].options, invocationOptions);
+  }
+
+  calls.length = 0;
+  available.clear();
+  const missing = spawnSync("pnpm", args, options);
+  assert.equal(missing.error.code, "ENOENT");
+  assert.equal(missing.status, null);
+  assert.equal(calls.length, 0);
+
+  available.add(shimCommand);
+  shims.set(shimCommand, '"node" "unknown-launcher.js" %*');
+  const unresolved = spawnSync("pnpm", args, options);
+  assert.equal(unresolved.error.code, "ENOEXEC");
+  assert.equal(calls.length, 0);
+
+  Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+  childProcess.spawnSync = spawn;
+  syncBuiltinESMExports();
+  await import(preload + "#non-windows");
+  assert.equal(childProcess.spawnSync, spawn);
+}
+
 test("failed rollback removal retains ownership of the residual Profile", async (t) => {
   const fixture = await createReconciliationFixture(t);
   const {
@@ -136,12 +589,13 @@ test("failed rollback removal retains ownership of the residual Profile", async 
   }, (lifecycle) => lifecycle.ensureInstalled());
 
   assert.equal(failed.ok, false);
-  assert.deepEqual(failed.failedProfiles, [
+  assert.deepEqual(failed.failedProfiles.map(({ failure, ...profile }) => profile), [
     { name: "zulu", reason: "dsh_command_failed", status: 1 },
   ]);
-  assert.deepEqual(failed.rollbackFailedProfiles, [
+  assert.deepEqual(failed.rollbackFailedProfiles.map(({ failure, ...profile }) => profile), [
     { name: "alpha", reason: "dsh_command_failed", status: 1 },
   ]);
+  assert.equal(failed.failure.cleanupErrorCode, "CLIENT_CLEANUP_FAILED");
   const state = JSON.parse(readFileSync(statePath, "utf8"));
   assert.equal(state.enabled, true);
   assert.equal(state.runtimeBundleRoot, priorState.runtimeBundleRoot);
@@ -236,6 +690,7 @@ test("quiesce publishes the inert authority without invoking DSH or removing Pro
     dshHome,
     memoraxCodeHome,
     adapterRoot: join(root, "removed-package", "lib", "memorax-code-dsh-adapter"),
+    windowsCliResolution: { resolvedCommand: "fixture-dsh.exe" },
     runDsh: (invocation) => {
       removalInvocation = invocation;
       const manifest = JSON.parse(readFileSync(profileManifestPath, "utf8"));
@@ -374,6 +829,93 @@ test("does not accept a stale headless bundle declaration without an installed m
   assert.equal(activation.reason, "managed_profiles_not_installed");
 });
 
+test("uses the selected DSH installation before the legacy Profile module tree", async (t) => {
+  const root = mkdtempSync(join(tmpdir(), "memorax-code-dsh-install-anchor-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const adapterRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const dshHome = join(root, "dsh-home");
+  const profilesRoot = join(dshHome, "profiles");
+  const installRoot = join(root, "native", "node_modules", "@deepseek-ai", "dsh");
+  const entrypoint = join(installRoot, "lib", "bin.js");
+  const headlessRoot = join(installRoot, "node_modules", ...HEADLESS_BUNDLE_NAME.split("/"));
+  mkdirSync(dirname(entrypoint), { recursive: true });
+  writeJson(join(installRoot, "package.json"), {
+    name: "@deepseek-ai/dsh", version: "0.1.2-rc.1", bin: { dsh: "lib/bin.js" },
+  });
+  writeFileSync(entrypoint, "#!/usr/bin/env node\n");
+  chmodSync(entrypoint, 0o755);
+  mkdirSync(headlessRoot, { recursive: true });
+  writeJson(join(headlessRoot, "package.json"), { name: HEADLESS_BUNDLE_NAME, main: "index.js" });
+  writeFileSync(join(headlessRoot, "index.js"), "module.exports = {};\n");
+  writeProfile(profilesRoot, "web", ["@deepseek-ai/dsh-base"]);
+  const binRoot = join(root, "bin");
+  mkdirSync(binRoot);
+  // Exercise the same symlink resolution as a POSIX npm global command.
+  if (process.platform !== "win32") symlinkSync(entrypoint, join(binRoot, "dsh"));
+  const calls = [];
+  const options = {
+    adapterRoot, dshHome, memoraxCodeHome: join(root, "state"),
+    dshCommand: process.platform === "win32" ? entrypoint : "dsh",
+    env: { PATH: binRoot },
+    runDsh(invocation) {
+      const args = dshArguments(invocation);
+      if (args[0] === "--version") return { status: 0, stdout: "0.1.2-rc.1\n" };
+      assert.deepEqual([args[0], args[1], args[3]], ["plugin", "--profile", "add"]);
+      calls.push(args[2]);
+      const profileRoot = join(profilesRoot, args[2]);
+      if (!existsSync(join(profileRoot, "package.json"))) {
+        writeProfile(profilesRoot, args[2], []);
+        const manifest = JSON.parse(readFileSync(join(profileRoot, "package.json"), "utf8"));
+        manifest.dsh.profile.bundles.push(HEADLESS_BUNDLE_NAME);
+        writeJson(join(profileRoot, "package.json"), manifest);
+      }
+      const runtimeRoot = args[4].slice("file:".length);
+      const packageName = JSON.parse(readFileSync(join(runtimeRoot, "package.json"), "utf8")).name;
+      const installedRoot = join(profileRoot, "node_modules", ...packageName.split("/"));
+      mkdirSync(dirname(installedRoot), { recursive: true });
+      cpSync(runtimeRoot, installedRoot, { recursive: true });
+      const manifest = JSON.parse(readFileSync(join(profileRoot, "package.json"), "utf8"));
+      manifest.dependencies[packageName] = args[4];
+      manifest.dsh.profile.bundles.push(packageName);
+      writeJson(join(profileRoot, "package.json"), manifest);
+      return { status: 0 };
+    },
+  };
+  const result = await withDshPluginLifecycleLock(options, (lifecycle) => {
+    const installed = lifecycle.ensureInstalled({ enabled: false });
+    assert.equal(installed.ok, true, JSON.stringify(installed));
+    assert.equal(lifecycle.status().installed, true);
+    assert.equal(lifecycle.activate().ok, true);
+    return installed;
+  });
+  assert.deepEqual(result.installedProfiles, ["headless", "web"]);
+  assert.equal(existsSync(join(profilesRoot, "node_modules")), false);
+  assert.equal(collectDshAdapterStatus(options).enabled, true);
+  await withDshPluginLifecycleLock(options, (lifecycle) => {
+    assert.equal(lifecycle.ensureInstalled().ok, true);
+  });
+  assert.deepEqual(calls, ["headless", "web"]);
+
+  // A valid legacy copy must not mask a broken copy selected by modern DSH.
+  const legacyRoot = join(profilesRoot, "node_modules", ...HEADLESS_BUNDLE_NAME.split("/"));
+  mkdirSync(dirname(legacyRoot), { recursive: true });
+  cpSync(headlessRoot, legacyRoot, { recursive: true });
+  rmSync(join(headlessRoot, "index.js"));
+  assert.equal(collectDshAdapterStatus(options).installed, false);
+  await withDshPluginLifecycleLock(options, (lifecycle) => {
+    assert.equal(lifecycle.status().installed, false);
+    assert.equal(lifecycle.activate().reason, "managed_profiles_not_installed");
+  });
+
+  // Older DSH installations expose built-ins only through this shared tree.
+  rmSync(headlessRoot, { recursive: true });
+  assert.equal(collectDshAdapterStatus(options).installed, true);
+  await withDshPluginLifecycleLock(options, (lifecycle) => {
+    assert.equal(lifecycle.status().installed, true);
+    assert.equal(lifecycle.activate().ok, true);
+  });
+});
+
 test("migrates the managed legacy package identity and restores it if reconciliation fails", async (t) => {
   const fixture = await createReconciliationFixture(t);
   const {
@@ -450,7 +992,7 @@ test("migrates the managed legacy package identity and restores it if reconcilia
     lifecycle.ensureInstalled()
   ));
   assert.equal(failed.ok, false);
-  assert.deepEqual(failed.failedProfiles, [
+  assert.deepEqual(failed.failedProfiles.map(({ failure, ...profile }) => profile), [
     { name: "web", reason: "dsh_command_failed", status: 1 },
   ]);
   assert.equal(failed.rollbackFailedProfiles, undefined);
@@ -551,12 +1093,17 @@ test("managed DSH discovery failures are not optional skips", async (t) => {
     adapterRoot,
     dshHome,
     memoraxCodeHome,
+    windowsCliResolution: { resolvedCommand: "fixture-dsh.exe" },
     runDsh: () => ({ status: 1, error: Object.assign(new Error("missing dsh"), { code: "ENOENT" }) }),
   }, (lifecycle) => lifecycle.ensureInstalled({ enabled: false }));
   assert.equal(unavailable.ok, false);
   assert.equal(unavailable.managed, true);
   assert.equal(unavailable.skipped, undefined);
   assert.equal(unavailable.reason, "dsh_version_unavailable");
+  assert.deepEqual(unavailable.failure, {
+    errorCode: "CLIENT_NATIVE_COMMAND_FAILED", stage: "native-command", systemCode: "ENOENT",
+    commandExitCode: 1, failureReason: "not_found",
+  });
   assert.equal(JSON.parse(readFileSync(statePath, "utf8")).enabled, false);
 });
 
@@ -575,6 +1122,7 @@ test("an unmanaged existing Profile does not hide an unavailable DSH command", a
     adapterRoot: join(root, "adapter"),
     dshHome,
     memoraxCodeHome: join(root, "memorax-code-home"),
+    windowsCliResolution: { resolvedCommand: "fixture-dsh.exe" },
     runDsh: () => ({ status: 1, error: Object.assign(new Error("missing dsh"), { code: "ENOENT" }) }),
   }, (lifecycle) => lifecycle.ensureInstalled({ enabled: false }));
   assert.equal(report.ok, false);
@@ -595,6 +1143,7 @@ test("reports pnpm missing from DSH's native Profile plugin manager", async (t) 
     adapterRoot,
     dshHome,
     memoraxCodeHome,
+    windowsCliResolution: { resolvedCommand: "fixture-dsh.exe" },
     runDsh(invocation) {
       return invocation.args[0] === "--version"
         ? { status: 0, stdout: "0.1.0-rc.6\n" }
@@ -607,9 +1156,49 @@ test("reports pnpm missing from DSH's native Profile plugin manager", async (t) 
 
   assert.equal(report.ok, false);
   assert.equal(report.reason, "pnpm_not_found");
-  assert.deepEqual(report.failedProfiles, [
+  assert.deepEqual(report.failedProfiles.map(({ failure, ...profile }) => profile), [
     { name: "web", reason: "pnpm_not_found", status: 127 },
   ]);
+  assert.deepEqual(report.failure, {
+    errorCode: "CLIENT_NATIVE_COMMAND_FAILED", stage: "native-command", commandExitCode: 127,
+    failureReason: "exit_status",
+  });
+  assert.equal(JSON.stringify(report.failure).includes("pnpm not found"), false);
+
+  const originalRename = fs.renameSync;
+  const originalRemove = fs.rmSync;
+  const runtimeRoot = join(memoraxCodeHome, "adapters", "dsh", "runtime", "generations");
+  const publishError = Object.assign(new Error(`private publication failure ${root}`), { code: "EPERM" });
+  fs.renameSync = (source, destination) => {
+    if (dirname(destination) === runtimeRoot && source.endsWith(".tmp")) throw publishError;
+    return originalRename(source, destination);
+  };
+  fs.rmSync = (target, ...args) => {
+    if (dirname(target) === runtimeRoot && target.endsWith(".tmp")) {
+      throw Object.assign(new Error("private cleanup failure"), { code: "EIO" });
+    }
+    return originalRemove(target, ...args);
+  };
+  syncBuiltinESMExports();
+  try {
+    await assert.rejects(withDshPluginLifecycleLock({
+      adapterRoot, dshHome, memoraxCodeHome, memoraxCodeCommand: join(root, "next-cli.mjs"),
+      windowsCliResolution: { resolvedCommand: "fixture-dsh.exe" },
+      runDsh: () => ({ status: 0, stdout: "0.1.0-rc.6\n" }),
+    }, (lifecycle) => lifecycle.ensureInstalled({ enabled: false })), (error) => {
+      assert.equal(error, publishError);
+      assert.deepEqual(error.failure, {
+        errorCode: "CLIENT_RUNTIME_PUBLISH_FAILED", stage: "runtime-publish", systemCode: "EPERM",
+        cleanupErrorCode: "CLIENT_CLEANUP_FAILED", cleanupSystemCode: "EIO",
+      });
+      assert.equal(JSON.stringify(error.failure).includes(root), false);
+      return true;
+    });
+  } finally {
+    fs.renameSync = originalRename;
+    fs.rmSync = originalRemove;
+    syncBuiltinESMExports();
+  }
 });
 
 test("uses the DSH runtime already linked by Profiles and refreshes it on reconciliation", async (t) => {
@@ -659,8 +1248,9 @@ test("uses the DSH runtime already linked by Profiles and refreshes it on reconc
     dshHome,
     memoraxCodeHome,
     memoraxCodeCommand: join(root, "memorax-code.mjs"),
+    windowsCliResolution: { whereOutput: "fixture-dsh.exe" },
     runDsh(invocation) {
-      if (invocation.command === "dsh") {
+      if (invocation.command === "dsh" || invocation.command === "fixture-dsh.exe" && invocation.args[0] === "--version") {
         directProbeCalls += 1;
         assert.deepEqual(invocation.args, ["--version"]);
         if (directDshVersion) {
@@ -672,8 +1262,8 @@ test("uses the DSH runtime already linked by Profiles and refreshes it on reconc
         };
       }
       assert.equal(invocation.command, process.execPath);
-      assert.equal(invocation.args[0], dshEntrypoint);
-      const dshArgs = invocation.args.slice(1);
+      const dshArgs = dshArguments(invocation);
+      assert(invocation.args.includes(dshEntrypoint));
       assert.deepEqual(
         [dshArgs[0], dshArgs[1], dshArgs[3]],
         ["plugin", "--profile", "add"],
@@ -690,7 +1280,8 @@ test("uses the DSH runtime already linked by Profiles and refreshes it on reconc
       addCalls += 1;
       const runtimeBundleRoot = dshArgs[4].slice("file:".length);
       if (packedFiles === undefined) {
-        const pack = spawnSync("npm", [
+        const pack = spawnSync(npmCommand[0], [
+          ...npmCommand.slice(1),
           "pack",
           runtimeBundleRoot,
           "--json",
@@ -699,7 +1290,8 @@ test("uses the DSH runtime already linked by Profiles and refreshes it on reconc
         assert.equal(pack.status, 0, pack.stderr);
         packedFiles = JSON.parse(pack.stdout)[0].files.map(({ path }) => path).sort();
       }
-      const install = spawnSync("npm", [
+      const install = spawnSync(npmCommand[0], [
+        ...npmCommand.slice(1),
         "install",
         "--ignore-scripts",
         "--no-audit",
@@ -742,13 +1334,25 @@ test("uses the DSH runtime already linked by Profiles and refreshes it on reconc
     "src",
     "windows-cli-invocation.mjs",
   )), true);
+  assert.equal(existsSync(join(
+    firstState.runtimeBundleRoot,
+    "memorax-code-adapter-common",
+    "src",
+    "backend-command.mjs",
+  )), true);
   assert.deepEqual(packedFiles, ["package.json", ...adapterManifest.files].sort());
+  const workMemoryReference = "skills/memorax-code/references/work-memory.md";
+  assert.ok(packedFiles.includes(workMemoryReference));
   const installedRoot = join(
     profilesRoot,
     "headless",
     "node_modules",
     "@memorax-code",
     "dsh-memorax-code",
+  );
+  assert.deepEqual(
+    readFileSync(join(installedRoot, workMemoryReference)),
+    readFileSync(join(adapterRoot, "..", "memorax-code-codex-adapter", workMemoryReference)),
   );
   const installed = await import(pathToFileURL(join(installedRoot, "src", "index.mjs")).href);
   assert.equal(installed.name, "memorax-code");
@@ -859,7 +1463,10 @@ async function createReconciliationFixture(t) {
     adapterRoot,
     dshHome,
     memoraxCodeHome,
+    homeDir: root,
+    env: { HOME: root, PATH: "" },
     memoraxCodeCommand: join(root, "memorax-code-v1.mjs"),
+    windowsCliResolution: { resolvedCommand: "fixture-dsh.exe" },
     runDsh(invocation) {
       if (invocation.args[0] === "--version") return { status: 0, stdout: "0.1.0-rc.6\n" };
       installAdapter(invocation.args[2], invocation.args[4].slice("file:".length));
@@ -908,4 +1515,14 @@ function writeProfile(profilesRoot, name, bundles = []) {
     });
     writeFileSync(join(headlessRoot, "index.js"), "module.exports = {};\n");
   }
+}
+
+function dshArguments(invocation) {
+  if (invocation.command !== process.execPath) return invocation.args;
+  const args = invocation.args;
+  if (args[0] === "--import") {
+    assert.match(args[1], /^data:text\/javascript;base64,/);
+    return args.slice(3);
+  }
+  return args.slice(1);
 }

@@ -27,6 +27,9 @@ import {
 } from "../../repository/scope.js";
 import type { TraceContext } from "../../trace/context.js";
 import { isRecord } from "../../shared/record.js";
+import { parseNativeMessageTimestamp } from "../../shared/message-time.js";
+import { normalizeContentParts, observedMessageContent, type MemoraxMessageContent } from "./content-parts.js";
+import { countAddTextChars, MEMORAX_AUTO_MAX_TEXT_CHARS } from "./add-limits.js";
 
 const SLOT_RESULT_SCHEMA_VERSION = "slot-invocation-result.preview.v1";
 const FORWARDED_WRITEBACK_METADATA_KEYS = [
@@ -88,14 +91,18 @@ type MemoraxSearchPayload = {
   k_sparse: number;
   filters?: unknown;
   min_semantic_similarity?: number;
+  sources?: Array<"dialogue" | "document">;
+  document_ids?: string[];
+  mode?: "fast";
+  output_mode?: "facts";
 };
 
 type MemoraxAddPayload = {
-  messages: Array<{ role: "user" | "assistant"; content: string; timestamp: number }>;
+  messages: Array<{ role: "user" | "assistant"; content: MemoraxMessageContent; timestamp: number }>;
   user_id: string;
   memory_output_language: "zh" | "en";
   mode?: MemoraxAddOptions["mode"];
-  content_type?: "dialogue" | "code";
+  content_type?: MemoraxAddOptions["contentType"];
   chunk?: {
     group_id: string;
     index: number;
@@ -105,6 +112,13 @@ type MemoraxAddPayload = {
   metadata: Record<string, unknown>;
   async_mode: true;
   timestamp: number;
+};
+
+type MemoraxWritebackMessage = {
+  role: "user" | "assistant";
+  content: MemoraxMessageContent;
+  timestamp?: number;
+  timestampSource?: "native" | "observed";
 };
 
 type MemoraxRunContext = {
@@ -124,7 +138,7 @@ export async function invokeMemoraxMemoryProvider(
   const providerId = request.provider_id?.trim() || MEMORAX_PROVIDER_ID;
   if (providerId !== MEMORAX_PROVIDER_ID) return { ok: false, error: `unsupported MemoraX provider id ${providerId}` };
   const operation = request.operation;
-  if (operation !== "query" && operation !== "retrieve" && operation !== "writeback") {
+  if (operation !== "query" && operation !== "writeback") {
     return { ok: false, error: `unsupported MemoraX memory operation ${operation}` };
   }
   if (operation === "writeback") {
@@ -135,14 +149,14 @@ export async function invokeMemoraxMemoryProvider(
 
   const query = typeof request.query === "string" && request.query.trim()
     ? request.query.trim()
-    : operation === "retrieve"
-      ? run.prompt.trim()
-      : "";
+    : "";
   if (!query) return { ok: false, error: "query is required" };
 
   const context = isRecord(request.context) ? request.context : {};
   const repositoryScope = repositoryScopeForConfig(config, options.repositoryScope);
   if (!repositoryScope.ok) return repositoryScope;
+  const selectionError = validateSearchSelection(context);
+  if (selectionError) return { ok: false, error: selectionError };
   const payload = buildMemoraxSearchPayload(config, query, context, repositoryScope.scope);
   try {
     const { body: raw, quota } = await callMemoSearch(config, payload, options.fetchImpl);
@@ -222,20 +236,76 @@ export function buildMemoraxSearchPayload(
     : typeof context.min_score === "number"
       ? parseScore(context.min_score)
       : config.minScore;
-  const topK = clampInteger(limit ?? config.topK, 1, 100);
-  const kDense = typeof context.k_dense === "number" ? clampInteger(context.k_dense, 0, 100) : config.kDense ?? topK;
-  const kSparse = typeof context.k_sparse === "number" ? clampInteger(context.k_sparse, 0, 100) : config.kSparse ?? topK;
+  const topK = clampInteger(limit ?? config.topK, 1, 50);
+  const kDense = typeof context.k_dense === "number" ? clampInteger(context.k_dense, 0, 50) : clampInteger(config.kDense ?? topK, 0, 50);
+  const kSparse = typeof context.k_sparse === "number" ? clampInteger(context.k_sparse, 0, 50) : clampInteger(config.kSparse ?? topK, 0, 50);
   return {
     query,
     user_id: repositoryScope.effectiveUserId,
     top_k: topK,
     k_dense: kDense,
     k_sparse: kSparse,
+    ...(context.sources === undefined ? {} : { sources: context.sources as Array<"dialogue" | "document">, mode: "fast" as const, output_mode: "facts" as const }),
+    ...(context.document_ids === undefined ? {} : { document_ids: context.document_ids as string[] }),
     ...(isRecord(context.filters) ? { filters: context.filters } : {}),
     ...(minSemanticSimilarity === undefined
       ? {}
       : { min_semantic_similarity: minSemanticSimilarity }),
   };
+}
+
+function validateSearchSelection(context: Record<string, unknown>): string | undefined {
+  const sources = context.sources;
+  if (sources !== undefined && (!Array.isArray(sources) || sources.length < 1 || sources.length > 2
+    || sources.some((source) => source !== "dialogue" && source !== "document")
+    || new Set(sources).size !== sources.length)) {
+    return "sources must contain unique dialogue or document values";
+  }
+  const ids = context.document_ids;
+  if (ids !== undefined && (!Array.isArray(sources) || sources.length !== 1 || sources[0] !== "document"
+    || !Array.isArray(ids) || ids.length < 1 || ids.length > 100
+    || ids.some((id) => typeof id !== "string" || !id.trim()))) {
+    return "document_ids requires 1 to 100 nonblank IDs and sources=['document']";
+  }
+  return undefined;
+}
+
+function observedAddPayload(payload: MemoraxAddPayload): unknown {
+  return { ...payload, messages: payload.messages.map((message) => ({
+    ...message, content: observedMessageContent(message.content),
+  })) };
+}
+
+function validateMessageAttachments(
+  messages: MemoraxWritebackMessage[], options: MemoraxAddOptions, context: Record<string, unknown>,
+): void {
+  let files = 0;
+  let textChars = 0;
+  for (const message of messages) {
+    if (typeof message.content === "string") {
+      if (options.contentType === "auto") textChars += countAddTextChars(message.content);
+      continue;
+    }
+    for (const part of message.content) {
+      if (options.contentType === "auto") {
+        if (part.type === "text") textChars += countAddTextChars(part.text);
+        if (part.type === "input_image" && part.caption) textChars += countAddTextChars(part.caption);
+      }
+      if (part.type === "file") {
+        files++;
+        if (message.role !== "user" || options.contentType === "code" || context.chunk !== undefined) {
+          throw new Error("file parts require user messages with dialogue/work/auto content and no code chunks");
+        }
+      }
+      if (part.type !== "text" && options.mode !== undefined && options.mode !== "default") {
+        throw new Error("attachments require default mode");
+      }
+    }
+  }
+  if (files > 10) throw new Error("writeback supports at most 10 files");
+  if (textChars > MEMORAX_AUTO_MAX_TEXT_CHARS) {
+    throw new Error(`auto writeback exceeds the ${MEMORAX_AUTO_MAX_TEXT_CHARS} character budget`);
+  }
 }
 
 export async function callMemoSearch(
@@ -309,12 +379,17 @@ async function invokeMemoraxWriteback(
 ): Promise<MemoraxInvocationResult> {
   const env = options.env ?? process.env;
   const context = isRecord(request.context) ? request.context : {};
-  const messages = writebackMessagesFromContext(context, request.content);
+  const addOptions = memoraxAddOptionsFromContext(context, env);
+  if (!addOptions.ok) return { ok: false, error: addOptions.error };
+  let messages: MemoraxWritebackMessage[];
+  try {
+    messages = writebackMessagesFromContext(context, request.content, addOptions.options);
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : "Invalid writeback messages" };
+  }
   if (messages.length === 0) return { ok: false, error: "writeback messages are required" };
   const idempotencyKey = writebackIdempotencyKeyFromContext(context);
   if (!idempotencyKey) return { ok: false, error: "writeback idempotency key is required" };
-  const addOptions = memoraxAddOptionsFromContext(context, env);
-  if (!addOptions.ok) return { ok: false, error: addOptions.error };
   const payload = buildMemoraxAddPayload(config, run, messages, context, idempotencyKey, repositoryScope, addOptions.options);
   try {
     const { body: raw, quota } = await callMemoAdd(config, payload, options.fetchImpl);
@@ -323,7 +398,7 @@ async function invokeMemoraxWriteback(
       ok: true,
       request: {
         slot: request.slot || "state_context",
-        payload,
+        payload: observedAddPayload(payload),
       },
       response: {
         receiptId: memoraxReceiptId(raw),
@@ -359,7 +434,7 @@ async function invokeMemoraxWriteback(
       ok: false,
       request: {
         slot: request.slot || "state_context",
-        payload,
+        payload: observedAddPayload(payload),
       },
       error: failure.error,
     });
@@ -370,7 +445,7 @@ async function invokeMemoraxWriteback(
 function buildMemoraxAddPayload(
   config: MemoraxAdapterConfig,
   run: MemoraxRunContext,
-  messages: Array<{ role: "user" | "assistant"; content: string; timestamp?: number }>,
+  messages: MemoraxWritebackMessage[],
   context: Record<string, unknown>,
   idempotencyKey: string,
   repositoryScope: RepositoryMemoryScope,
@@ -381,14 +456,13 @@ function buildMemoraxAddPayload(
   const chunk = options.contentType === "code" && options.mode === "default"
     ? writebackChunkFromContext(context)
     : undefined;
-  let lastTimestamp = 0;
-  const stamped = messages.map((message, index) => {
-    let timestamp = Number.isFinite(message.timestamp) ? Number(message.timestamp) : now + index;
-    if (timestamp < 10_000_000_000) timestamp = now + index;
-    if (timestamp <= lastTimestamp) timestamp = lastTimestamp + 1;
-    lastTimestamp = timestamp;
-    return { role: message.role, content: message.content, timestamp };
-  });
+  // Preserve caller times exactly, including equal fragment timestamps and
+  // out-of-order arrival. Array order and chunk indexes already express order.
+  const stamped = messages.map((message, index) => ({
+    role: message.role,
+    content: message.content,
+    timestamp: parseNativeMessageTimestamp(message.timestamp) ?? now + index,
+  }));
   const scopeKind = repositoryMemoryScopeKind(repositoryScope);
   return {
     messages: stamped,
@@ -398,12 +472,16 @@ function buildMemoraxAddPayload(
     ...(options.contentType ? { content_type: options.contentType } : {}),
     ...(chunk ? { chunk } : {}),
     session_id: memoraxSessionIdForRun(run),
+    // Acceptance acknowledges task submission, not completed memory extraction.
     async_mode: true,
     timestamp: stamped[0]?.timestamp ?? now,
     metadata: {
       source: "memorax-code",
       tags: ["memorax-code"],
       ...extraMetadata,
+      ...(messages.some((message) => message.timestampSource) ? {
+        memorax_code_timestamp_sources: messages.map((message) => message.timestampSource ?? "unspecified"),
+      } : {}),
       memorax_code_memory_scope: memoraxScopeVersion(scopeKind),
       memorax_code_base_user_id: repositoryScope.baseUserId,
       memorax_code_workspace: repositoryScope.repositorySlug,
@@ -416,7 +494,7 @@ function buildMemoraxAddPayload(
 
 function memoraxScopeVersion(scopeKind: ReturnType<typeof repositoryMemoryScopeKind>): string {
   if (scopeKind === "git-repository") return "repository-name.v1";
-  if (scopeKind === "codex-projectless") return "codex-projectless.v1";
+  if (scopeKind === "general") return "general.v1";
   return "workspace-name.v1";
 }
 
@@ -465,26 +543,52 @@ function repositoryScopeForConfig(
 function writebackMessagesFromContext(
   context: Record<string, unknown>,
   fallbackContent: unknown,
-): Array<{ role: "user" | "assistant"; content: string; timestamp?: number }> {
+  options: MemoraxAddOptions,
+): MemoraxWritebackMessage[] {
+  const preserveWhitespace = options.contentType === "code" && options.mode === "default"
+    && writebackChunkFromContext(context) !== undefined;
+  if (context.messages !== undefined && !Array.isArray(context.messages)) {
+    throw new Error("writeback messages must be an array");
+  }
   const rawMessages = Array.isArray(context.messages) ? context.messages : [];
-  const messages = rawMessages
-    .map((message) => normalizeWritebackMessage(message))
-    .filter((message): message is { role: "user" | "assistant"; content: string; timestamp?: number } => Boolean(message));
-  if (messages.length > 0) return messages;
-  const content = typeof fallbackContent === "string" ? fallbackContent.trim() : "";
-  return content ? [{ role: "assistant", content }] : [];
+  if (rawMessages.length > 100) throw new Error("writeback supports at most 100 messages");
+  const messages = rawMessages.map((message) => normalizeWritebackMessage(message, preserveWhitespace));
+  if (messages.some((message) => !message)) {
+    // An invalid member must never be silently dropped from a submitted turn.
+    throw new Error("writeback messages are required");
+  }
+  let normalized = messages as MemoraxWritebackMessage[];
+  if (context.messages === undefined) {
+    const content = typeof fallbackContent === "string" ? fallbackContent.trim() : "";
+    normalized = content ? [{ role: "assistant", content }] : [];
+  }
+  validateMessageAttachments(normalized, options, context);
+  return normalized;
 }
 
-function normalizeWritebackMessage(value: unknown): { role: "user" | "assistant"; content: string; timestamp?: number } | undefined {
+function normalizeWritebackMessage(value: unknown, preserveWhitespace: boolean): MemoraxWritebackMessage | undefined {
   if (!isRecord(value)) return undefined;
   const role = value.role === "user" || value.role === "assistant" ? value.role : undefined;
-  const content = typeof value.content === "string" ? value.content.trim() : "";
+  const rawContent = typeof value.content === "string" ? value.content : "";
+  // Complete messages were normalized before chunking. A fragment's boundary
+  // whitespace, including a whitespace-only fragment, belongs to that message.
+  const content = Array.isArray(value.content) ? normalizeContentParts(value.content) : (preserveWhitespace ? rawContent : rawContent.trim());
   if (!role || !content) return undefined;
-  const timestamp = typeof value.timestamp === "number" && Number.isFinite(value.timestamp) ? value.timestamp : undefined;
-  return { role, content, ...(timestamp === undefined ? {} : { timestamp }) };
+  const timestamp = typeof value.timestamp === "number" ? parseNativeMessageTimestamp(value.timestamp) : undefined;
+  const timestampSource = value.timestampSource === "native" || value.timestampSource === "observed"
+    ? (timestamp === undefined ? "observed" : value.timestampSource)
+    : undefined;
+  return {
+    role, content,
+    ...(timestamp === undefined ? {} : { timestamp }),
+    ...(timestampSource === undefined ? {} : { timestampSource }),
+  };
 }
 
 function renderMemoraxContextBlocks(items: unknown[], config: MemoraxAdapterConfig): MemoraxContextBlock[] {
+  if (items.some((item) => isRecord(item) && item.content_type === "document")) {
+    return renderDocumentContext(items, config);
+  }
   const renderedItems = items
     .map((item) => ({ item, line: formatMemoryItemLine(item, config.maxItemChars), memoryType: memoryTypeForItem(item) }))
     .filter((item) => item.line);
@@ -512,6 +616,44 @@ function renderMemoraxContextBlocks(items: unknown[], config: MemoraxAdapterConf
   lines.push("</memories>");
   const content = truncate(lines.join("\n"), config.maxContextChars);
   return [{ type: "memory_context", source: "memorax", content, itemCount: renderedItems.length }];
+}
+
+function renderDocumentContext(items: unknown[], config: MemoraxAdapterConfig): MemoraxContextBlock[] {
+  const opening = "<memories>\n";
+  const closing = "</memories>";
+  const notice = "<notice>Evidence truncated by context budget; use --json for complete returned chunks.</notice>\n";
+  const fragments: string[] = [];
+  let length = opening.length + closing.length;
+  let omitted = false;
+  for (const item of items) {
+    if (!isRecord(item)) continue;
+    const text = memoryTextForItem(item);
+    if (!text) continue;
+    let rendered: string;
+    if (item.content_type === "document") {
+      const metadata = isRecord(item.metadata) ? item.metadata : {};
+      const attrs: string[] = [];
+      for (const [key, value] of Object.entries({ chunk_id: item.id, document_id: metadata.document_id,
+        input_id: metadata.input_id, chunk_index: metadata.chunk_index })) {
+        if (typeof value === "string" || typeof value === "number") attrs.push(`${key}="${escapeAttribute(String(value))}"`);
+      }
+      const heading = Array.isArray(metadata.heading_path) ? metadata.heading_path.filter((part) => typeof part === "string").join(" / ") : "";
+      if (heading) attrs.push(`heading="${escapeAttribute(heading)}"`);
+      if (Array.isArray(metadata.source_spans)) attrs.push(`source_spans="${escapeAttribute(JSON.stringify(metadata.source_spans))}"`);
+      rendered = `<chunk ${attrs.join(" ")}>\n${escapeText(text)}\n</chunk>\n`;
+    } else {
+      rendered = `${formatMemoryItemLine(item, config.maxItemChars)}\n`;
+    }
+    // The notice is added outside the evidence budget when a whole fragment cannot fit.
+    if (length + rendered.length > config.maxContextChars) {
+      omitted = true;
+      break;
+    }
+    fragments.push(rendered);
+    length += rendered.length;
+  }
+  const content = opening + fragments.join("") + (omitted ? notice : "") + closing;
+  return [{ type: "memory_context", source: "memorax", content, itemCount: fragments.length }];
 }
 
 function memoraxReceiptId(raw: unknown): string {

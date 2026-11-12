@@ -7,7 +7,7 @@ import {
 } from "node:os";
 import { spawnSync } from "node:child_process";
 
-const COMMAND_TIMEOUT_MS = 1_000;
+const COMMAND_TIMEOUT_MS = 5_000;
 export const TRIAL_MARK_VERSION = 1;
 export const TRIAL_APP_SALT = "memorax-plugin-v1";
 

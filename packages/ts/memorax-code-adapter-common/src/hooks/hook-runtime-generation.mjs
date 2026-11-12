@@ -15,6 +15,7 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { withJsonFileLock } from "../config-utils.mjs";
+import { withWindowsDirectoryRetry } from "../windows-directory-retry.mjs";
 import {
   ensurePrivateDirectory,
   readJsonRuntimeRecord,
@@ -66,6 +67,8 @@ export function clientHookRuntimePaths(memoraxCodeHome) {
   };
 }
 
+// Staging leaves current authority unchanged so failed lifecycle readiness
+// checks cannot replace the active generation. Activation is a separate step.
 export function stageClientHookRuntimeGeneration({
   packageRoot,
   memoraxCodeHome,
@@ -119,11 +122,15 @@ export function stageClientHookRuntimeGeneration({
         durableBoundary: paths.home,
       });
       syncRegularTree(temporaryPath, { syncFile, syncDirectory: syncDir });
-      renameSync(temporaryPath, generationPath);
+      withWindowsDirectoryRetry(() => renameSync(temporaryPath, generationPath));
       syncDir(paths.generationsRoot);
       return { ...record, generationPath, reused: false };
     } catch (error) {
-      rmSync(temporaryPath, { recursive: true, force: true });
+      try {
+        withWindowsDirectoryRetry(() => rmSync(temporaryPath, { recursive: true, force: true }));
+      } catch {
+        // Preserve the publication failure if Windows also blocks stage cleanup.
+      }
       if (existsSync(generationPath)) {
         const existing = readGenerationRecord(generationPath);
         assertSameGeneration(existing, record);
@@ -186,6 +193,8 @@ export function prepareClientHookRuntimeGeneration(options = {}) {
   return { generation, current };
 }
 
+// Full-tree digests are checked at stage/activation, not on each Hook lookup.
+// Reads validate metadata and rely on published generations staying unchanged.
 export function readCurrentClientHookRuntime(memoraxCodeHome) {
   const paths = clientHookRuntimePaths(memoraxCodeHome);
   const state = readJsonRuntimeRecord(paths.currentPath);

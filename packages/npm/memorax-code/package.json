@@ -1,9 +1,12 @@
 {
   "name": "@memorax/memorax-code",
-  "version": "0.1.8",
-  "description": "Persistent coding memory for Codex, Claude Code, DeepSeek Harness, and OpenCode.",
+  "version": "0.1.23",
+  "description": "Persistent coding memory for Codex, Claude Code, CodeBuddy/WorkBuddy, DeepSeek Harness, OpenCode, Trae, Cursor, and Qoder.",
   "license": "MIT",
   "type": "module",
+  "memoraxCode": {
+    "updateRecoveryProtocol": 1
+  },
   "homepage": "https://github.com/memorax-ai/memorax-code#readme",
   "repository": {
     "type": "git",
@@ -18,8 +21,12 @@
     "deepseek-harness",
     "dsh",
     "opencode",
+    "codebuddy",
+    "trae",
     "memory",
-    "memorax"
+    "memorax",
+    "cursor",
+    "qoder"
   ],
   "bin": {
     "memorax-code": "bin/memorax-code.mjs",
@@ -27,7 +34,11 @@
     "memorax-code-backend": "bin/memorax-code-backend.mjs",
     "memorax-code-claude": "bin/memorax-code-claude.mjs",
     "memorax-code-codex": "bin/memorax-code-codex.mjs",
-    "memorax-code-opencode": "bin/memorax-code-opencode.mjs"
+    "memorax-code-opencode": "bin/memorax-code-opencode.mjs",
+    "memorax-code-codebuddy": "bin/memorax-code-codebuddy.mjs",
+    "memorax-code-trae": "bin/memorax-code-trae.mjs",
+    "memorax-code-cursor": "bin/memorax-code-cursor.mjs",
+    "memorax-code-qoder": "bin/memorax-code-qoder.mjs"
   },
   "files": [
     "bin",
@@ -40,7 +51,7 @@
     "node": ">=20"
   },
   "dependencies": {
-    "smol-toml": "^1.7.0"
+    "smol-toml": "^1.8.0"
   },
   "scripts": {
     "preinstall": "node ./bin/memorax-code-npm-preinstall.mjs",

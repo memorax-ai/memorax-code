@@ -13,7 +13,7 @@ try {
     runner: "claude",
     finalMessageSource: "stdout",
     memorySkillInvocation: "/memorax-code-claude-adapter:memorax-code",
-    validatorPath: resolve(pluginRoot, "skills/memorax-code/scripts/validate_memory.py"),
+    validatorPath: resolve(pluginRoot, "skills/memorax-code/scripts/repo-memory.mjs"),
     evaluateRepository,
     createCommand({ prompt }) {
       const claude = resolveHookClaudeCommand({
@@ -26,6 +26,11 @@ try {
         "text",
         "--dangerously-skip-permissions",
         "--no-session-persistence",
+        "--effort",
+        "medium",
+        // Claude's effort environment variable takes precedence over --effort.
+        "--settings",
+        JSON.stringify({ env: { CLAUDE_CODE_EFFORT_LEVEL: "medium" } }),
         prompt,
       ];
     },

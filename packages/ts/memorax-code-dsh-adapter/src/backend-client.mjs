@@ -40,6 +40,7 @@ export function createDshBackendClient(options = {}) {
     const connection = resolveConnection(runtime);
     ensureRevision = runtime.revision;
     const pending = Promise.resolve(ensureBackend({
+      client: "dsh",
       backendConnection: connection,
       ensureBackendValue: env.MEMORAX_CODE_DSH_ENSURE_BACKEND,
       healthTimeoutValue: env.MEMORAX_CODE_DSH_ENSURE_TIMEOUT_MS,
@@ -77,6 +78,10 @@ export function createDshBackendClient(options = {}) {
     async recordTurnStart(command, request) {
       await waitForEnsure(ensureReady(), request?.signal, 12_000);
       return httpClient.recordTurnStart(command, request);
+    },
+    async evaluateSearchGuidance(command, request) {
+      // The accepted Turn start already awaited recovery; guidance has its own short deadline.
+      return httpClient.evaluateSearchGuidance(command, request);
     },
     async recordSkillReminder(command, request) {
       await waitForEnsure(ensureReady(), request?.signal, 5_000);

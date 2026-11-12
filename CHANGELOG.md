@@ -6,6 +6,486 @@ behavior.
 
 ## Unreleased
 
+## [0.1.23] - 2026-11-11
+
+### Added
+
+- Supported coding agents installed after setup are now activated
+  automatically while the managed Backend is running, usually within about 15
+  minutes. Set `[clients].<client> = false` to keep one disabled. See
+  [Clients installed after setup](docs/configuration.md#clients-installed-after-setup).
+- Added Work Memory guidance for searching indexed documents and previous
+  business discussions through the shared Skill.
+- Added Search source selection with `--sources dialogue`, `--sources document`,
+  or both, plus document ID filtering for document-only searches.
+- Added structured Add input through `--messages-file`, supporting text, image,
+  and file parts, and explicit `auto` and `work` content types.
+
+### Changed
+
+- First setup now records only the clients it finds. Clients it does not find
+  stay undecided instead of being recorded as `false`.
+- Automatic writeback now defaults to server-side `auto` classification while
+  retaining the default eight-turn buffer. Explicit `work` routing sends each
+  completed turn immediately; explicit `code` retains code chunking.
+- Automatic auto/work/dialogue messages now retain at most 12000 Unicode code
+  points each. Auto batches are capped at 128000 text characters and 100 messages.
+- Search top-k and dense/sparse recall counts are now capped at 50.
+
+### Fixed
+
+- Setup now finds the Claude Code runtime that macOS Claude Desktop places
+  under a build directory.
+- Document Search preserves Markdown, source metadata, and server ordering.
+  JSON output keeps complete returned evidence; text output includes whole
+  chunks within its context budget and reports omitted evidence.
+
+### Upgrade notes
+
+For an installation whose earlier setup completed, the first setup after
+upgrading, including one started by a background update, removes `false` from
+`[clients]` for agents that are still not installed, so they can be activated
+when they appear. A `false` for an agent that is installed is kept; delete that
+line or set it to `true`, then rerun `memorax-code setup` to enable that agent.
+
+Existing explicit `memory.add.content_type` settings remain in effect. Plain
+`add --memory` keeps its `code/pre_summarized` default; structured Add defaults
+to `auto/default`. Document and multimodal operations require support from the
+configured MemoraX service. Add acceptance does not confirm completed indexing.
+See [Writeback and explicit Add](docs/configuration.md#writeback-and-explicit-add)
+for routing and structured-input details.
+
+## [0.1.22] - 2026-11-03
+
+### Changed
+
+- Updated the default MemoraX service endpoint and account links to
+  `https://platform.memoraxai.com`.
+
+### Fixed
+
+- Restored authenticated Search/Add and trial provisioning for installations
+  using the legacy official `https://platform.memorax.net` root endpoint.
+  Requests now go directly to the new domain, avoiding cross-origin redirects
+  that can remove authentication and change POST requests to GET.
+
+### Upgrade notes
+
+Upgrade with `memorax-code update`. Existing API keys, Base User IDs, and
+saved connection settings are preserved. The legacy official HTTPS root
+endpoint is normalized at runtime; custom endpoints remain unchanged.
+You do not need to rerun setup or manually replace the saved legacy endpoint.
+See [MemoraX connection configuration](docs/configuration.md#memorax-connection)
+for configuration details.
+
+## [0.1.21] - 2026-10-21
+
+### Added
+
+- Added Qoder Desktop integration with managed Hooks, shared Skill Search/Add,
+  personal-memory reminders, and automatic writeback from verified native
+  turns. Recognized default chat directories use General memory scope.
+- Added a managed Qoder background Repo Memory agent with single-use job claims
+  and validated finalization.
+
+### Changed
+
+- DSH status now reports CLI and Desktop versions and integration readiness.
+  Removed tested/untested labels and the `dshVersionTested` and
+  `testedDshVersions` JSON fields.
+
+### Fixed
+
+- Restored DSH memory handling for native Session format 4, including agent
+  creation and resume, producer-attributed context, and compaction, while
+  retaining support for formats 0 and 3.
+- Fixed DSH Desktop Profile management to use its bundled launcher, including
+  installations with both CLI and Desktop or Desktop alone.
+- Stopped automatic DSH memory handling after a native working-directory
+  change, including after resume, to preserve the Session's original scope.
+
+### Upgrade notes
+
+For DSH Desktop, open the application once to initialize its Profile, then
+fully quit it before changing plugins. Run `memorax-code start --clients dsh`
+after changing the runtime or Profiles. Start a new Session after changing its
+working directory. Update scripts that consume the removed DSH status fields.
+See [DSH configuration](docs/configuration.md#deepseek-harness-integration-paths).
+
+For Qoder, run setup or `memorax-code start --clients qoder`, then restart Qoder
+and open a new task. A separate Qoder CLI is not required. Setup and update
+reconciliation can enable a detected Qoder installation when its client setting
+is absent; an explicit `qoder = false` remains disabled.
+See [Qoder configuration](docs/configuration.md#qoder-integration-paths).
+
+### Known limitations
+
+Qoder's complete native Repo Memory build and publication flow remains
+unverified. The native probe stopped at `Unknown agent type` before the worker
+claimed its job. In containers whose PID 1 does not reap orphaned children,
+Qoder Repo Memory lease guards can also leave defunct processes.
+
+## [0.1.20] - 2026-10-12
+
+### Added
+
+- Added a shared Repo Memory baseline for linked Git worktrees using the same
+  MemoraX Code home. Branches and dirty worktrees reuse one validated mainline
+  snapshot while agents continue to verify relevant current source files.
+
+### Changed
+
+- Changed automatic Repo Memory builds and updates to use the locally known
+  `origin/HEAD` commit. The default update policy now requires new mainline
+  commits and at least 72 hours since the last successful publication.
+  Explicit policy and interval settings remain in effect.
+- Requested medium reasoning for background Repo Memory builds and updates
+  in Codex, Claude Code, and CodeBuddy/WorkBuddy. OpenCode selects medium only
+  when the background model exposes that variant. Model selection and
+  foreground settings remain unchanged.
+
+### Fixed
+
+- Restored Codex automatic writeback when assistant responses carry a provider
+  turn ID that differs from the local rollout turn, while retaining strict
+  user-message correlation.
+- Preserved CodeBuddy and WorkBuddy multiline prompts in automatic writeback
+  when native Hooks remove line breaks, using unique native transcript matches.
+- Prevented CodeBuddy and WorkBuddy Repo Memory workers from inheriting the
+  foreground client's listening endpoint.
+- Fixed Cursor Hook input handling for split UTF-8 characters and Windows
+  PowerShell BOMs, and recognized Windows workspace URI paths.
+- Supported deep Windows paths when preparing Repo Memory source snapshots.
+- Retained distinct connection permission errors in MemoraX request diagnostics.
+
+### Upgrade notes
+
+Shared Repo Memory lives under
+`$MEMORAX_CODE_HOME/repo-memory-bases/<repository-key>/`. Existing local
+`.repo_memory` bundles are preserved and remain a read fallback until a shared
+baseline exists. Independent clones do not share a baseline merely because
+remote URLs match. Update all client integrations together; older runtimes
+retain their previous local maintenance behavior.
+
+Automatic maintenance requires a resolvable local `refs/remotes/origin/HEAD`.
+It does not fetch or guess the default branch. Fetch or pull through your
+normal Git workflow to make new mainline commits available. Explicit local
+Build and Update operations remain local and do not publish a shared baseline.
+Background Repo Memory jobs in Claude Code and CodeBuddy/WorkBuddy require a
+native runtime that supports `--effort`.
+See [Repo Memory configuration](docs/configuration.md#skill-reminder-and-repository-maintenance).
+
+## [0.1.19] - 2026-09-28
+
+### Added
+
+- Added independently managed Cursor integration with native Hooks, the shared
+  Skill, scoped Search/Add, automatic writeback from verified native
+  conversation records, personal-memory context, and local diagnostics.
+  Repo Memory builds and maintenance use Cursor's native background subagent.
+- Added optional Jev guidance for Coding Memory Search. When explicitly
+  enabled with a separate API key, it evaluates each eligible user request and
+  guides the agent to the shared Skill's Search workflow. Jev is disabled by
+  default; unavailable or failed evaluations retain the usual reminder cadence.
+  Setup and npm upgrades add disabled defaults when no Jev configuration exists,
+  preserving existing settings.
+
+### Changed
+
+- Removed automatic remote Search from prompt Hooks. Search runs through the
+  shared Skill or `memorax-cli search`; Hooks continue to provide local memory
+  context and reminders, and automatic writeback remains available.
+- Made User Profile and Procedure Memory local to the user's MemoraX Code home
+  and shared across repositories and non-Git workspaces. Clients using the same
+  home reuse the same preferences and procedures.
+- Updated the shared Skill to recognize durable, general working rules and
+  communication preferences from user intent without requiring "remember"
+  wording. Agents are instructed to finish the current task before saving and
+  confirm the change at the end, asking when scope or permanence is unclear.
+
+### Fixed
+
+- Retried transient Windows JSON-lock acquisition failures within the existing
+  timeout, improving concurrent local-state and personal-memory writes.
+- Fixed DSH plugin installation on Windows when the `pnpm.cmd` launcher points
+  to the standalone `pnpm.exe` distribution.
+- Reduced redundant Backend restarts during foreground and automatic npm
+  updates by reusing a healthy, successfully restored Backend when the selected
+  clients still match. Other cases retain the full reconciliation path.
+- Preserved explicit client choices during reinstall and update when a legacy
+  `[clients]` table omits Codex or Claude. Invalid client values now stop setup
+  without rewriting the saved configuration.
+
+### Upgrade notes
+
+Personal memory now lives under `$MEMORAX_CODE_HOME/personal-memory`, defaulting
+to `~/.memorax-code/personal-memory`. Existing personal-memory files under
+`.repo_memory/` are ignored without migration or fallback; Repo Memory remains
+repository-local. `memorax-code user-profile` accepts `--home DIR` in place of
+the removed `--repo` option. See [personal memory storage](docs/configuration.md#personal-memory-storage).
+
+The former `[memory.retrieval].enabled` and `[memorax].startup_timeout_ms`
+settings and their environment overrides are ignored. The
+`search.retrievalEnabled` and `search.startupTimeoutMs` status fields have also
+been removed; update scripts that consume them. Explicit Search retains its
+other retrieval settings and normal request timeout. See [retrieval](docs/configuration.md#retrieval).
+
+Cursor database-backed features require the Backend to run on Node.js 22.13 or
+later with built-in SQLite; Node.js 24 is recommended. Restart or refresh Cursor
+and open a new conversation after activation. During automatic update
+reconciliation, a detected Cursor installation is enabled when `cursor` is
+absent from an existing `[clients]` selection; an explicit `cursor = false`
+is preserved.
+See [Cursor integration](docs/configuration.md#cursor-integration-paths).
+
+Enabling Jev sends the current request and, when available, the preceding
+validated user request and final assistant reply to TypeSafe. Each text field
+is trimmed and limited to 4,000 characters without content redaction. A key
+alone does not enable Jev. See [Jev configuration](docs/configuration.md#jev-provider-configuration).
+
+## [0.1.18] - 2026-09-16
+
+### Added
+
+- Added default failure diagnostics for setup, client installation, Backend
+  lifecycle, updates, explicit Search/Add, Hooks, and automatic writeback.
+  Records identify the failed stage, error code, impact, and recovery guidance
+  without requiring Debug or trace logging, and exclude conversation content
+  and credentials.
+- Added recent failure history to `memorax-code status` and diagnostic lookup
+  through `memorax-code logs --diagnostics` and `memorax-code logs --id`.
+  Records stay local with a 30-day, 1000-record retention policy. Historical
+  failures remain separate from current readiness and can be inspected while
+  the Backend is stopped.
+
+### Fixed
+
+- Improved interrupted update recovery with shared manual/automatic update
+  locking, bounded restoration retries, and Backend recovery after a failed
+  npm installation. Recovery respects later stop, restart, or uninstall
+  operations; restoring the Backend does not report a failed update as
+  successful. Diagnostics preserve the original failure and recovery outcome.
+- Supported newer DSH session persistence APIs and native log formats, resolved
+  built-in components from the selected DSH installation during fresh setup,
+  and preserved Windows plugin paths containing spaces or special characters.
+- Preserved WorkBuddy's original prompt after Slash/Skill expansion so matching
+  completed turns remain eligible for automatic QA writeback.
+- Fixed Windows partial JSONL repair, retried transient state-file replacement
+  failures, allowed lifecycle command output to drain before exit, and avoided
+  reporting cleanup failure when the Backend had already exited.
+- Updated `smol-toml` to require version 1.8.0 or later, preventing certain
+  malformed TOML configurations from hanging configuration reads and lifecycle
+  commands.
+
+## [0.1.17] - 2026-09-12
+
+### Added
+
+- Added `memorax-code setup --existing-account --non-interactive` for coding
+  agents without an interactive terminal. It accepts one API key through stdin,
+  uses the detected username and language, preserves explicit client choices,
+  and checks that the saved key matches before completing setup.
+
+### Fixed
+
+- Removed hard-link claims from normal JSON lock acquisition and used direct
+  file removal for lock release, reducing failures under client deletion
+  protection. Concurrent stale-lock recovery releases losing claims before
+  slower process checks. Lock cleanup failures now retain the underlying error
+  instead of silently reporting success.
+- Reused complete, unchanged Codex and CodeBuddy/WorkBuddy plugin artifacts
+  during setup and activation. Skills already included in a copied plugin are
+  no longer deleted and copied again; changed or incomplete artifacts are
+  still repaired.
+- Kept WorkBuddy's inherited configuration-directory alias from redirecting
+  standalone CodeBuddy CLI installation into the WorkBuddy directory.
+- Allowed Codex uninstall to finish when its marketplace is already absent,
+  and included underlying registration and activation errors in setup output.
+
+### Upgrade note
+
+The explicit non-interactive command replaces the saved API key. A reported
+key match verifies local persistence, not remote authentication. Interactive
+setup remains available, and guest setup still requires a terminal. See
+[non-interactive setup](docs/configuration.md#existing-account-setup-without-a-terminal).
+
+## [0.1.16] - 2026-09-10
+
+### Added
+
+- Added independent support for CodeBuddy CLI and WorkBuddy, including
+  discovery, plugin installation, Hooks, and lifecycle operations. Either can
+  be used alone, or both can be enabled with separate configuration roots.
+  Stopping or uninstalling one preserves the other.
+
+### Fixed
+
+- Recognized the official Windows CodeBuddy npm `.cmd` launcher during setup
+  and reported unusable selected runtimes instead of silently skipping them.
+- Migrated identifiable legacy WorkBuddy installations to the separate
+  WorkBuddy client while preserving explicit selections and owned custom
+  roots. Hooks with missing or invalid client identity no longer default to
+  CodeBuddy, and Windows-equivalent root paths are cleaned up consistently.
+- Retried transient Windows directory failures during Trae/OpenCode
+  installation and shared Hook runtime publication, with bounded retries and
+  explicit failure when access remains unavailable.
+- Reported the failing client and installation step accurately during setup,
+  without adding another global stop/start cycle after the Backend has
+  recovered while a client integration remains incomplete.
+- Coordinated concurrent Hook recovery and preserved the managed client set,
+  including explicit client stops, when restoring an unavailable Backend.
+
+### Upgrade note
+
+Finish the current reply before updating, then start a new CodeBuddy CLI
+session or restart WorkBuddy to load the new Hooks. Legacy installations whose
+client ownership is ambiguous require an explicit WorkBuddy home; see the
+[configuration guide](docs/configuration.md#codebuddy-and-workbuddy-integration-paths).
+
+## [0.1.15] - 2026-09-09
+
+### Added
+
+- Shared Coding Memory across recognized default chats in Codex, WorkBuddy,
+  and OpenCode under `<base-user-id>@General`, while retaining the existing
+  scope rules for ordinary workspaces and Git repositories.
+
+### Fixed
+
+- Preserved default-chat memory scope when Codex sessions resume from nested
+  directories after Backend restarts, and kept CodeBuddy/WorkBuddy CLI memory
+  operations associated with the native session.
+- Validated the working directory before reusing a General scope without a
+  workspace, and allowed the first verified default workspace to complete that
+  scope without losing the current Turn's writeback.
+- Allowed device-identity lookup up to five seconds during guest setup,
+  preventing valid but slower Windows registry queries from timing out.
+
+### Upgrade note
+
+Existing memories under previous default-chat names are not migrated or
+searched alongside `General`.
+
+## [0.1.14] - 2026-09-07
+
+### Added
+
+- Added `memorax-code update --recover` to restore and verify the installed
+  package after an interrupted package transition.
+
+### Changed
+
+- User Profile operations now use the packaged Node.js runtime instead of
+  Python, while preserving the existing preference-file format.
+
+### Fixed
+
+- Preserved native user and assistant timestamps during automatic QA
+  writeback, with explicit observed-time fallbacks when native timestamps are
+  unavailable. Buffering, chunking, and retries retain these times.
+- Preserved message whitespace across writeback chunk boundaries, including
+  whitespace-only fragments.
+- Restored CodeBuddy/WorkBuddy automatic writeback during cold starts, after
+  long tool chains, and when transcripts use Windows CRLF line endings.
+- Kept relative MemoraX Code home paths consistent across Backend startup,
+  package updates, and background Repo Memory jobs.
+- Preserved distinct User Profile preferences with different applicability or
+  exceptions, and prevented empty fields from consuming adjacent fields.
+- Skipped provider authentication probes during local-only Repo Memory
+  collection and rejected failed OpenCode assistant responses instead of
+  treating partial output as completed work.
+- Preserved newer Trae turns when an earlier Stop finishes late, and refreshed
+  managed runtime paths when recovery configuration changes.
+- Kept CLI workspace association and interrupted-turn recovery working when
+  local trace event capture is disabled.
+
+## [0.1.13] - 2026-09-04
+
+### Added
+
+- Supported coding agents now briefly identify when recalled Memory materially
+  shaped the final answer, while omitting the notice for unused or merely
+  confirmatory context.
+
+### Fixed
+
+- Recovered abandoned CodeBuddy/WorkBuddy plugin registry locks after
+  interrupted lifecycle operations while preserving unrelated plugin entries.
+- Fixed Repo Memory workers launched from installed packages so supported
+  clients consistently resolve their packaged runtime, including preserving
+  the triggering WorkBuddy plugin root.
+- Preserved existing Repo Memory long-option compatibility, including
+  `--option=value`, during build and update operations.
+
+## [0.1.12] - 2026-09-02
+
+### Added
+
+- Added managed Trae integration with the shared MemoraX Code Skill, native
+  lifecycle Hooks, exact Turn correlation, completed-Turn writeback,
+  interrupted-Turn handling, Skill reminders, optional automatic retrieval,
+  local traces, and supported setup on macOS, Linux, and Windows. Trae users
+  enable Global Hooks once in Trae before the integration can run.
+
+### Changed
+
+- Updates now enable a newly supported coding-agent integration when its
+  runtime is detected and its client setting was previously absent. Explicit
+  enabled and disabled choices remain unchanged; automatic updates reconcile
+  silently, while manual updates prompt for unconfigured detected clients.
+- Clarified Trae activation guidance with the exact Global Hooks UI path and
+  the runtime status check used to confirm that Hooks have been observed.
+
+### Fixed
+
+- Updated Windows PowerShell Skill commands to invoke `memorax-cli.cmd`,
+  avoiding `.ps1` execution-policy failures without requiring users to change
+  PowerShell policy.
+
+## [0.1.11] - 2026-09-01
+
+### Fixed
+
+- Updated Windows WorkBuddy setup to prefer `%USERPROFILE%\\.workbuddy` for
+  new installations while safely reconciling only MemoraX-managed plugin state
+  from legacy `%USERPROFILE%\\.codebuddy` homes, preserving unrelated plugins,
+  Skills, and user data.
+
+## [0.1.10] - 2026-09-01
+
+### Added
+
+- Added managed CodeBuddy/WorkBuddy integration with native Turn tracking,
+  completed-Turn writeback, interrupted-Turn handling, Skill reminders, quota
+  notices, Repo Memory maintenance, local traces, and supported setup on
+  macOS, Linux, and Windows.
+- Added automatic updates owned by the managed Backend. Stable and preview
+  installations check their release channel every eight hours, retry failures
+  after 15 minutes, install the exact resolved version, reconcile enabled
+  clients non-interactively, silently trust verified Codex Hook changes, and
+  replace the Backend process without requiring a new client session.
+
+### Fixed
+
+- Completed manual update reconciliation when the managed Backend was already
+  stopped, including client integration assets, Codex Hook trust, setup state,
+  and Backend recovery.
+- Repaired the Windows user `PATH` during interactive setup when npm's global
+  command directory is missing, while preserving existing command priority.
+- Repaired missing or disabled Codex plugin registrations even when a valid
+  versioned plugin cache already exists, preventing the CLI and active Codex
+  plugin from remaining on different versions.
+
+## [0.1.9] - 2026-08-28
+
+### Fixed
+
+- Restored Codex automatic writeback for current rollout transcripts by reading
+  authoritative response-item user and final-assistant messages before falling
+  back to legacy event messages.
+- Rejected response-item messages whose embedded Turn ID conflicts with the
+  active Turn, preventing mismatched content from being written to memory.
+
 ## [0.1.8] - 2026-08-24
 
 ### Added
@@ -121,6 +601,16 @@ Later upgrades do not require this workaround.
 - Required a non-empty MemoraX user ID and API key during interactive setup,
   with clearer registration guidance.
 
+[0.1.22]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.22
+[0.1.21]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.21
+[0.1.20]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.20
+[0.1.19]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.19
+[0.1.18]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.18
+[0.1.17]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.17
+[0.1.15]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.15
+[0.1.14]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.14
+[0.1.10]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.10
+[0.1.9]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.9
 [0.1.8]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.8
 [0.1.7]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.7
 [0.1.6]: https://www.npmjs.com/package/@memorax/memorax-code/v/0.1.6

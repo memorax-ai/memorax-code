@@ -17,9 +17,9 @@ test("Codex rollout reader selects the exact open turn and preserves prompt and 
     taskComplete("turn-before", "Earlier reply."),
     taskStarted("turn-target"),
     turnContext("turn-target"),
-    userMessage("  Target prompt with trailing newline.\n"),
+    { ...userMessage("  Target prompt with trailing newline.\n"), timestamp: "2026-09-01T08:00:00.000Z" },
     agentMessage("Intermediate update.", "commentary"),
-    agentMessage("Target final reply.\n", "final_answer"),
+    { ...agentMessage("Target final reply.\n", "final_answer"), timestamp: "2026-09-01T08:03:00.000Z" },
   ]);
 
   assert.deepEqual(codexRolloutTurnFromJsonLines(transcript, {
@@ -32,6 +32,8 @@ test("Codex rollout reader selects the exact open turn and preserves prompt and 
       turnId: "turn-target",
       userPrompt: "  Target prompt with trailing newline.\n",
       assistantReply: "Target final reply.\n",
+      userTimestamp: Date.parse("2026-09-01T08:00:00.000Z"),
+      assistantTimestamp: Date.parse("2026-09-01T08:03:00.000Z"),
       activities: [],
     },
   });
@@ -42,7 +44,8 @@ test("Codex rollout reader uses task_complete as a completed-turn assistant fall
     sessionMeta("session-1"),
     taskStarted("turn-1"),
     userMessage("Stored prompt."),
-    taskComplete("turn-1", "Stored final reply."),
+    { ...taskComplete("turn-1", "Stored final reply."), timestamp: "2026-09-01T08:03:00.000Z" },
+    { ...taskComplete("other-turn", "Other final reply."), timestamp: "2026-09-01T08:05:00.000Z" },
   ]);
 
   assert.deepEqual(codexRolloutTurnFromJsonLines(transcript, {
@@ -55,6 +58,8 @@ test("Codex rollout reader uses task_complete as a completed-turn assistant fall
       turnId: "turn-1",
       userPrompt: "Stored prompt.",
       assistantReply: "Stored final reply.",
+      userTimestamp: Date.parse("2026-07-16T00:00:03.000Z"),
+      assistantTimestamp: Date.parse("2026-09-01T08:03:00.000Z"),
       activities: [],
     },
   });
@@ -65,9 +70,9 @@ test("Codex rollout reader supports response_item-only user and final assistant 
     sessionMeta("session-1"),
     taskStarted("turn-1"),
     turnContext("turn-1"),
-    responseItemUserMessage("Current-format prompt.", "turn-1"),
-    responseMessage("assistant", "Current-format final reply.", "final_answer", "turn-1"),
-    taskComplete("turn-1"),
+    { ...responseItemUserMessage("Current-format prompt.", "turn-1"), timestamp: "2026-09-01T08:00:00.000Z" },
+    { ...responseMessage("assistant", "Current-format final reply.", "final_answer", "turn-1"), timestamp: "2026-09-01T08:02:58.000Z" },
+    { ...taskComplete("turn-1"), timestamp: "2026-09-01T08:03:00.000Z" },
   ]);
 
   assert.deepEqual(codexRolloutTurnFromJsonLines(transcript, {
@@ -80,9 +85,52 @@ test("Codex rollout reader supports response_item-only user and final assistant 
       turnId: "turn-1",
       userPrompt: "Current-format prompt.",
       assistantReply: "Current-format final reply.",
+      userTimestamp: Date.parse("2026-09-01T08:00:00.000Z"),
+      assistantTimestamp: Date.parse("2026-09-01T08:03:00.000Z"),
       activities: [],
     },
   });
+});
+
+test("Codex rollout reader keeps local turn boundaries when assistant metadata names another turn", () => {
+  const transcript = jsonLines([
+    sessionMeta("session-1"),
+    taskStarted("turn-before"),
+    responseItemUserMessage("Earlier prompt.", "turn-before"),
+    responseMessage("assistant", "Earlier reply.", "final_answer", "turn-target"),
+    taskComplete("turn-before"),
+    taskStarted("turn-target"),
+    turnContext("turn-target"),
+    responseItemUserMessage("Target prompt.", "turn-target"),
+    responseMessage("assistant", "Intermediate update.", "commentary", "provider-turn"),
+    responseMessage("assistant", "Target reply.", "final_answer", "provider-turn"),
+    taskComplete("turn-target"),
+    responseMessage("assistant", "Reply outside a turn.", "final_answer", "turn-target"),
+    taskStarted("turn-after"),
+    responseItemUserMessage("Later prompt.", "turn-after"),
+    responseMessage("assistant", "Later reply.", "final_answer", "turn-target"),
+    taskComplete("turn-after"),
+  ]);
+
+  assert.deepEqual(codexRolloutTurnFromJsonLines(transcript, {
+    sessionId: "session-1",
+    turnId: "turn-target",
+  }), {
+    ok: true,
+    turn: {
+      sessionId: "session-1",
+      turnId: "turn-target",
+      userPrompt: "Target prompt.",
+      assistantReply: "Target reply.",
+      userTimestamp: Date.parse("2026-07-16T00:00:03.000Z"),
+      assistantTimestamp: Date.parse("2026-07-16T00:00:05.000Z"),
+      activities: [],
+    },
+  });
+  assert.deepEqual(codexRolloutTurnFromJsonLines(transcript, {
+    sessionId: "session-1",
+    turnId: "provider-turn",
+  }), { ok: false, reason: "turn_not_found" });
 });
 
 test("Codex rollout reader prefers response_item messages over legacy event messages", () => {
@@ -90,11 +138,11 @@ test("Codex rollout reader prefers response_item messages over legacy event mess
     sessionMeta("session-1"),
     taskStarted("turn-1"),
     turnContext("turn-1"),
-    responseItemUserMessage("Current-format prompt."),
-    userMessage("Legacy prompt."),
-    responseMessage("assistant", "Current-format final reply.", "final_answer"),
-    agentMessage("Legacy final reply.", "final_answer"),
-    taskComplete("turn-1", "Legacy final reply."),
+    { ...responseItemUserMessage("Current-format prompt."), timestamp: "invalid" },
+    { ...userMessage("Legacy prompt."), timestamp: "2026-09-01T08:00:00.000Z" },
+    { ...responseMessage("assistant", "Current-format final reply.", "final_answer"), timestamp: "2026-09-01T08:02:58.000Z" },
+    { ...agentMessage("Legacy final reply.", "final_answer"), timestamp: "2026-09-01T08:02:59.000Z" },
+    { ...taskComplete("turn-1", "Legacy final reply."), timestamp: "invalid" },
   ]);
 
   assert.deepEqual(codexRolloutTurnFromJsonLines(transcript, {
@@ -107,37 +155,28 @@ test("Codex rollout reader prefers response_item messages over legacy event mess
       turnId: "turn-1",
       userPrompt: "Current-format prompt.",
       assistantReply: "Current-format final reply.",
+      assistantTimestamp: Date.parse("2026-09-01T08:02:58.000Z"),
       activities: [],
     },
   });
 });
 
-test("Codex rollout reader fails closed for conflicting response_item turn metadata", () => {
-  for (const conflictingRole of ["user", "assistant"]) {
-    const transcript = jsonLines([
-      sessionMeta("session-1"),
-      taskStarted("turn-1"),
-      turnContext("turn-1"),
-      responseItemUserMessage(
-        "Current-format prompt.",
-        conflictingRole === "user" ? "other-turn" : "turn-1",
-      ),
-      userMessage("Legacy prompt."),
-      responseMessage(
-        "assistant",
-        "Current-format final reply.",
-        "final_answer",
-        conflictingRole === "assistant" ? "other-turn" : "turn-1",
-      ),
-      agentMessage("Legacy final reply.", "final_answer"),
-      taskComplete("turn-1", "Legacy final reply."),
-    ]);
+test("Codex rollout reader fails closed for conflicting user response_item turn metadata", () => {
+  const transcript = jsonLines([
+    sessionMeta("session-1"),
+    taskStarted("turn-1"),
+    turnContext("turn-1"),
+    responseItemUserMessage("Current-format prompt.", "other-turn"),
+    userMessage("Legacy prompt."),
+    responseMessage("assistant", "Current-format final reply.", "final_answer", "provider-turn"),
+    agentMessage("Legacy final reply.", "final_answer"),
+    taskComplete("turn-1", "Legacy final reply."),
+  ]);
 
-    assert.deepEqual(codexRolloutTurnFromJsonLines(transcript, {
-      sessionId: "session-1",
-      turnId: "turn-1",
-    }), { ok: false, reason: "turn_metadata_mismatch" });
-  }
+  assert.deepEqual(codexRolloutTurnFromJsonLines(transcript, {
+    sessionId: "session-1",
+    turnId: "turn-1",
+  }), { ok: false, reason: "turn_metadata_mismatch" });
 
   assert.deepEqual(codexInterruptedRolloutTurnFromJsonLines(jsonLines([
     sessionMeta("session-1"),
@@ -214,6 +253,8 @@ test("Codex rollout reader aggregates cumulative token snapshots for the complet
       turnId: "turn-1",
       userPrompt: "Prompt.",
       assistantReply: "Reply.",
+      userTimestamp: Date.parse("2026-07-16T00:00:03.000Z"),
+      assistantTimestamp: Date.parse("2026-07-16T00:00:05.000Z"),
       activities: [],
       usage: {
         input_tokens: 100,
@@ -237,7 +278,7 @@ test("Codex rollout reader records ordered repo-memory and memory CLI activities
     customToolCall(`const r = await tools.exec_command({ cmd: "sed -n '1,200p' ${pluginRoot}/skills/memorax-code/references/repo-build.md" });`),
     customToolCall(`const r = await tools.exec_command({ cmd: "type ${windowsPluginRoot}\\skills\\memorax-code\\references\\repo-build.md" });`),
     customToolCall(`const r = await tools.exec_command({ cmd: "sed -n '1,200p' ${pluginRoot}/skills/memorax-code/references/repo-read.md && sed -n '1,200p' ${pluginRoot}/skills/memorax-code/references/repo-update.md" });`),
-    customToolCall('const r = await tools.exec_command({"cmd":"memorax-cli search --query \\"prior context\\""});'),
+    customToolCall('const r = await tools.exec_command({"cmd":"memorax-cli.cmd search --query \\"prior context\\""});'),
     customToolCall('const r = await tools.exec_command({ cmd: "git status --short" });'),
     customToolCall('const r = await tools.exec_command({ cmd: "memorax-cli add --message \\"reusable lesson\\"" });'),
     agentMessage("Done.", "final_answer"),
@@ -289,6 +330,8 @@ test("Codex rollout reader uses the file header authority across imported histor
       turnId: "turn-target",
       userPrompt: "Current prompt.",
       assistantReply: "Current reply.",
+      userTimestamp: Date.parse("2026-07-16T00:00:03.000Z"),
+      assistantTimestamp: Date.parse("2026-07-16T00:00:04.000Z"),
       activities: [{ index: 1, type: "repo_memory_operation", operation: "repo-read" }],
     },
   });
@@ -338,6 +381,8 @@ test("Codex rollout reader treats repeated authority session metadata as idempot
       turnId: "turn-1",
       userPrompt: "Prompt from a resumed session.",
       assistantReply: "Reply from a resumed session.",
+      userTimestamp: Date.parse("2026-07-16T00:00:03.000Z"),
+      assistantTimestamp: Date.parse("2026-07-16T00:00:04.000Z"),
       activities: [],
       usage,
     },

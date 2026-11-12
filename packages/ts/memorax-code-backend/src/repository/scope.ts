@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, resolve, sep } from "node:path";
 
-const CODEX_PROJECTLESS_SLUG = "Codex-General";
+const GENERAL_SLUG = "General";
 const MAX_GIT_POINTER_BYTES = 64 * 1024;
 const MAX_GIT_CONFIG_BYTES = 1024 * 1024;
 
@@ -10,14 +10,16 @@ export type RepositoryMemoryIdentitySource =
   | "origin-remote"
   | "git-common-dir"
   | "workspace-directory"
-  | "codex-projectless";
+  | "general";
 
-export type RepositoryMemoryScopeKind = "git-repository" | "local-directory" | "codex-projectless";
+export type RepositoryMemoryScopeKind = "git-repository" | "local-directory" | "general";
 export type RepositoryMemoryScopeFallbackReason = "git_metadata_invalid";
 
 export type RepositoryMemoryScope = Readonly<{
   schemaVersion: "workspace-memory-scope.v1";
   baseUserId: string;
+  // Same-named repositories may share the remote namespace in effectiveUserId.
+  // repositoryKey separately identifies the local scope used for session binding.
   effectiveUserId: string;
   repositoryKey: string;
   repositorySlug: string;
@@ -52,19 +54,10 @@ export async function resolveRepositoryMemoryScope(input: {
   }
 
   const workspaceKind = input.workspaceKind?.trim().toLowerCase();
-  if (workspaceKind === "projectless") {
-    const workspace = await resolveWorkspace(input.workspaceRoot);
-    return {
-      ok: true,
-      scope: memoryScope({
-        baseUserId,
-        repositoryKey: identityKey("codex-projectless", CODEX_PROJECTLESS_SLUG),
-        repositorySlug: CODEX_PROJECTLESS_SLUG,
-        identitySource: "codex-projectless",
-        scopeKind: "codex-projectless",
-        boundWorkspaceRoot: workspace,
-      }),
-    };
+  // Native projectless sessions may omit cwd. A supplied but unreadable cwd
+  // still fails closed; it must not lose its physical workspace binding.
+  if (workspaceKind === "projectless" && !input.workspaceRoot?.trim()) {
+    return { ok: true, scope: generalMemoryScope(baseUserId) };
   }
 
   const workspace = await resolveWorkspace(input.workspaceRoot);
@@ -95,6 +88,11 @@ export async function resolveRepositoryMemoryScope(input: {
         boundWorkspaceRoot: gitRepository.workspaceRoot,
       }),
     };
+  }
+  // A native default-chat hint does not override Git authority, including the
+  // existing degraded-Git fallback. Only verified non-Git work uses General.
+  if (workspaceKind === "projectless" && gitRepository.kind === "none") {
+    return { ok: true, scope: generalMemoryScope(baseUserId, workspace) };
   }
   const localWorkspace = gitRepository.kind === "degraded"
     ? gitRepository.workspaceRoot
@@ -145,6 +143,20 @@ export function repositoryMemoryScopeCanUpgradeFromDegradedGit(
     && previous.boundWorkspaceRoot === current.boundWorkspaceRoot;
 }
 
+// The session resolver separately validates the client's first default directory.
+// This transition adds local authority without changing the remote namespace.
+export function repositoryMemoryScopeCanBindGeneralWorkspace(
+  previous: RepositoryMemoryScope,
+  current: RepositoryMemoryScope,
+): boolean {
+  return previous.scopeKind === "general"
+    && previous.boundWorkspaceRoot === undefined
+    && current.scopeKind === "general"
+    && current.boundWorkspaceRoot !== undefined
+    && previous.baseUserId === current.baseUserId
+    && previous.effectiveUserId === current.effectiveUserId;
+}
+
 export async function repositoryMemoryScopeContainsWorkspace(
   scope: RepositoryMemoryScope,
   workspaceRoot: string | undefined,
@@ -164,12 +176,27 @@ export async function repositoryMemoryScopeContainsWorkspace(
     return gitRepository.kind === "degraded"
       && identityKey("workspace-directory", gitRepository.workspaceRoot) === scope.repositoryKey;
   }
-  return scope.scopeKind !== "local-directory"
-    || !await hasGitMarkerBetween(workspace, scope.boundWorkspaceRoot);
+  if (scope.scopeKind === "general") {
+    return (await resolveGitRepository(workspace)).kind === "none";
+  }
+  return !await hasGitMarkerBetween(workspace, scope.boundWorkspaceRoot);
 }
 
 export function repositoryMemoryScopeKind(scope: RepositoryMemoryScope): RepositoryMemoryScopeKind {
   return scope.scopeKind;
+}
+
+function generalMemoryScope(baseUserId: string, workspace?: string): RepositoryMemoryScope {
+  return memoryScope({
+    baseUserId,
+    // Sharing remote memory does not make separate default workspaces the
+    // same local session authority. Keep the canonical directory in the key.
+    repositoryKey: identityKey("general", workspace ?? ""),
+    repositorySlug: GENERAL_SLUG,
+    identitySource: "general",
+    scopeKind: "general",
+    boundWorkspaceRoot: workspace,
+  });
 }
 
 function memoryScope(input: {
@@ -248,6 +275,9 @@ async function resolveGitRepository(workspace: string): Promise<GitRepositoryRes
       workspaceRoot: marker.workspaceRoot,
     };
   } catch (error) {
+    // Only a direct .git directory can anchor folder fallback for malformed or
+    // incomplete metadata. An invalid .git file pointer or a permission error
+    // leaves scope authority unverified, so resolution must fail closed.
     if (directDirectoryMarker && canFallbackFromDirectGitDirectory(error)) {
       return {
         kind: "degraded",
@@ -532,20 +562,25 @@ function repositoryNameFromRemoteUrl(value: string): string | undefined {
     || raw.startsWith("./")
     || raw.startsWith("../")
     || raw.startsWith("\\\\")
-    || /^[a-zA-Z]:[\\/]/.test(raw)
+    || /^[a-zA-Z]:/.test(raw)
+    || /^file:/i.test(raw)
   ) return undefined;
 
-  try {
-    const parsed = new URL(raw);
-    if (!["http:", "https:", "ssh:", "git:", "git+ssh:", "git+https:"].includes(parsed.protocol)) {
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(raw)) {
+    try {
+      const parsed = new URL(raw);
+      if (!["http:", "https:", "ssh:", "git:", "git+ssh:", "git+https:"].includes(parsed.protocol)) {
+        return undefined;
+      }
+      if (!parsed.hostname.trim()) return undefined;
+      return repositoryNameFromRemotePath(parsed.pathname);
+    } catch {
       return undefined;
     }
-    if (!parsed.hostname.trim()) return undefined;
-    return repositoryNameFromRemotePath(parsed.pathname);
-  } catch {
-    const scp = /^(?:[^@/:\s]+@)?[^/:\s]+:(.+)$/.exec(raw);
-    return scp?.[1] ? repositoryNameFromRemotePath(scp[1]) : undefined;
   }
+  // A double colon denotes Git's remote-helper syntax, not an SCP address.
+  const scp = /^(?:[^@/:\s]+@)?[^/:\s]+:(?!:)(.+)$/.exec(raw);
+  return scp?.[1] ? repositoryNameFromRemotePath(scp[1]) : undefined;
 }
 
 function repositoryNameFromRemotePath(value: string): string | undefined {

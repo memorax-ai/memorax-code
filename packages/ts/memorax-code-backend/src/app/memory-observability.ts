@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { backendDebug } from "../shared/debug-log.js";
 import type { MemoryObservabilityEvent, MemoryObservabilityHook } from "../memory/observability.js";
 import {
-  TRACE_CLIENTS,
+  TRACE_RUNTIME_CLIENTS,
   clientTraceConfigFromEnv,
 } from "../trace/config.js";
 import { recordTraceEvent } from "../trace/store.js";
@@ -27,6 +27,7 @@ export function composeMemoryObservabilityHooks(hooks: Array<MemoryObservability
       const correlatedEvent = event.eventId
         ? event
         : { ...event, eventId: `memory-observability-${randomUUID()}` };
+      // Diagnostic failures must not change memory acceptance or suppress other sinks.
       for (const [sinkIndex, hook] of active.entries()) {
         try {
           hook.recordEvent?.(correlatedEvent);
@@ -56,18 +57,16 @@ export function composeMemoryObservabilityHooks(hooks: Array<MemoryObservability
 function sessionTraceObservabilityHook(
   memoraxCodeHome: string,
   env: Record<string, string | undefined>,
-): MemoryObservabilityHook | undefined {
-  const enabledClients = new Set(
-    TRACE_CLIENTS.filter((client) => clientTraceConfigFromEnv(client, env).enabled),
-  );
-  if (enabledClients.size === 0) return undefined;
+): MemoryObservabilityHook {
+  // Keep the sink available: file configuration can enable tracing after startup.
   const pending = new Set<Promise<unknown>>();
   return {
     recordEvent(event) {
       const client = event.traceContext?.client;
-      if (!client || !enabledClients.has(client)) return;
+      if (!client || !TRACE_RUNTIME_CLIENTS.includes(client)) return;
       const config = clientTraceConfigFromEnv(client, env);
       if (!config.enabled) return;
+      // Queue local I/O without delaying the memory operation; shutdown uses drain.
       const write = recordTraceEvent({
         memoraxCodeHome,
         env,
@@ -93,6 +92,7 @@ function sessionTraceObservabilityHook(
       pending.add(write);
     },
     async drain() {
+      // Wait for writes already queued here, including their failure handling.
       await Promise.allSettled([...pending]);
     },
   };

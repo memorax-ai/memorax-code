@@ -1,4 +1,4 @@
-.PHONY: test test-ts test-codex-adapter test-claude-adapter test-dsh-adapter test-dsh-e2e test-opencode-adapter test-opencode-e2e test-npm-package docs-check npm-package-build npm-package-check npm-publish-dry-run release-version-check clean
+.PHONY: test test-ts test-adapter-common test-shared-skill test-codex-adapter test-claude-adapter test-claude-e2e test-dsh-adapter test-dsh-e2e test-opencode-adapter test-opencode-e2e test-codebuddy-adapter test-codebuddy-e2e test-trae-adapter test-cursor-adapter test-qoder-adapter test-npm-package docs-check npm-package-build npm-package-check npm-publish-dry-run release-version-check clean
 
 NPM ?= npm
 
@@ -8,16 +8,31 @@ test-ts:
 	$(NPM) ci --prefix packages/ts/memorax-code-backend
 	$(NPM) run typecheck --prefix packages/ts/memorax-code-backend
 	$(NPM) test --prefix packages/ts/memorax-code-backend
+	$(MAKE) test-adapter-common
+	$(MAKE) test-shared-skill
 	$(MAKE) test-codex-adapter
 	$(MAKE) test-claude-adapter
 	$(MAKE) test-dsh-adapter
 	$(MAKE) test-opencode-adapter
+	$(MAKE) test-codebuddy-adapter
+	$(MAKE) test-trae-adapter
+	$(MAKE) test-cursor-adapter
+	$(MAKE) test-qoder-adapter
+
+test-adapter-common:
+	node --test "packages/ts/memorax-code-adapter-common/test/**/*.test.mjs"
+
+test-shared-skill:
+	node --test "test/shared-skill/**/*.test.mjs"
 
 test-codex-adapter:
 	$(NPM) test --prefix packages/ts/memorax-code-codex-adapter
 
 test-claude-adapter:
 	$(NPM) test --prefix packages/ts/memorax-code-claude-adapter
+
+test-claude-e2e: npm-package-check
+	node scripts/ci/claude/claude-e2e.mjs
 
 test-dsh-adapter:
 	$(NPM) test --prefix packages/ts/memorax-code-dsh-adapter
@@ -28,13 +43,27 @@ test-dsh-e2e:
 test-opencode-adapter:
 	$(NPM) test --prefix packages/ts/memorax-code-opencode-adapter
 
-test-opencode-e2e:
-	$(NPM) ci --prefix packages/ts/memorax-code-backend
-	node scripts/opencode-e2e.mjs
+test-codebuddy-adapter:
+	$(NPM) test --prefix packages/ts/memorax-code-codebuddy-adapter
+
+test-codebuddy-e2e: npm-package-check
+	node scripts/ci/codebuddy-workbuddy/codebuddy-e2e.mjs
+
+test-trae-adapter:
+	$(NPM) test --prefix packages/ts/memorax-code-trae-adapter
+
+test-cursor-adapter:
+	$(NPM) test --prefix packages/ts/memorax-code-cursor-adapter
+
+test-qoder-adapter:
+	$(NPM) test --prefix packages/ts/memorax-code-qoder-adapter
+
+test-opencode-e2e: npm-package-check
+	node scripts/ci/opencode/opencode-e2e.mjs
 
 test-npm-package:
 	$(NPM) ci --prefix packages/ts/memorax-code-backend
-	node --test packages/npm/memorax-code/test/*.test.mjs scripts/check-local-trace-only.test.mjs
+	node --test packages/npm/memorax-code/test/*.test.mjs scripts/check-local-trace-only.test.mjs scripts/ci/dsh/*.test.mjs
 	node scripts/check-local-trace-only.mjs
 
 docs-check:

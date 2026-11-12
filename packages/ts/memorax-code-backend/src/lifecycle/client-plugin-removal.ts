@@ -30,6 +30,48 @@ type OpenCodePluginInstaller = {
   removeOpenCodePluginInstallation: (options: Record<string, unknown>) => OpenCodePluginRemovalReport;
 };
 
+type CodeBuddyPluginRemovalReport = {
+  ok: boolean;
+  action: string;
+  reason?: string;
+  message?: string;
+};
+
+type CodeBuddyPluginInstaller = {
+  removeCodeBuddyPluginInstallation: (options: Record<string, unknown>) => CodeBuddyPluginRemovalReport;
+};
+
+type TraePluginRemovalReport = {
+  ok: boolean;
+  action: string;
+  reason?: string;
+  message?: string;
+};
+
+type CursorPluginRemovalReport = {
+  ok: boolean;
+  action: string;
+  reason?: string;
+  message?: string;
+};
+type QoderPluginRemovalReport = {
+  ok: boolean;
+  action: string;
+  reason?: string;
+  message?: string;
+};
+
+type TraePluginInstaller = {
+  removeTraeAdapterInstallation: (options: Record<string, unknown>) => Promise<TraePluginRemovalReport>;
+};
+
+type CursorPluginInstaller = {
+  removeCursorAdapterInstallation: (options: Record<string, unknown>) => Promise<CursorPluginRemovalReport>;
+};
+type QoderPluginInstaller = {
+  removeQoderAdapter: (options: Record<string, unknown>) => Promise<QoderPluginRemovalReport>;
+};
+
 type DshPluginRemovalReport = {
   ok: boolean;
   action: string;
@@ -53,6 +95,11 @@ export type ClientPluginRemovalOptions = {
   dshHome?: string;
   dshAdapterRoot?: string;
   openCodeConfigDir?: string;
+  codeBuddyHome?: string;
+  workBuddyHome?: string;
+  traeHome?: string;
+  cursorHome?: string;
+  qoderHome?: string;
   codexCommand?: string;
   claudeCommand?: string;
   dshCommand?: string;
@@ -65,6 +112,11 @@ export type ClientPluginRemovalReport = {
   claudePlugin: ClaudePluginRemovalReport | ClientPluginRemovalFailure;
   dshPlugin: DshPluginRemovalReport | ClientPluginRemovalFailure;
   opencodePlugin: OpenCodePluginRemovalReport | ClientPluginRemovalFailure;
+  codebuddyPlugin: CodeBuddyPluginRemovalReport | ClientPluginRemovalFailure;
+  workbuddyPlugin: CodeBuddyPluginRemovalReport | ClientPluginRemovalFailure;
+  traePlugin: TraePluginRemovalReport | ClientPluginRemovalFailure;
+  cursorPlugin: CursorPluginRemovalReport | ClientPluginRemovalFailure;
+  qoderPlugin: QoderPluginRemovalReport | ClientPluginRemovalFailure;
 };
 
 type ClientPluginRemovalFailure = {
@@ -80,15 +132,25 @@ export async function prepareClientPluginRemovalCleanup(
   const claudePluginInstaller = await loadClaudePluginInstaller();
   const dshProfileLifecycle = await loadDshProfileLifecycle();
   const openCodePluginInstaller = await loadOpenCodePluginInstaller();
+  const codeBuddyPluginInstaller = await loadCodeBuddyPluginInstaller();
+  const traePluginInstaller = await loadTraePluginInstaller();
+  const cursorPluginInstaller = await loadCursorPluginInstaller();
+  const qoderPluginInstaller = await loadQoderPluginInstaller();
   const home = resolveHome(options.homeDir);
   const memoraxCodeHome = resolve(options.memoraxCodeHome ?? process.env.MEMORAX_CODE_HOME ?? join(home, ".memorax-code"));
   const claudeState = await readJsonRecord(join(memoraxCodeHome, "adapters", "claude-code", "state.json"));
   const claudeHome = options.claudeHome ?? stringField(claudeState, "claudeHome");
+  const traeState = await readJsonRecord(join(memoraxCodeHome, "adapters", "trae", "state.json"));
+  const traeHome = options.traeHome ?? stringField(traeState, "traeHome");
+  const cursorState = await readJsonRecord(join(memoraxCodeHome, "adapters", "cursor", "state.json"));
+  const cursorHome = options.cursorHome ?? stringField(cursorState, "cursorHome");
+  const qoderState = await readJsonRecord(join(memoraxCodeHome, "adapters", "qoder", "state.json"));
+  const qoderHome = options.qoderHome ?? stringField(qoderState, "qoderHome");
 
   return async () => {
     try {
       return await withBackendLifecycleLock({ home: memoraxCodeHome }, async () => {
-        const [codexPlugin, claudePlugin, dshPlugin, opencodePlugin] = await Promise.all([
+        const [codexPlugin, claudePlugin, dshPlugin, opencodePlugin, codebuddyPlugin, workbuddyPlugin, traePlugin, cursorPlugin, qoderPlugin] = await Promise.all([
           cleanupCodexAfterBackendRemoval({
             memoraxCodeHome,
             homeDir: home,
@@ -118,14 +180,44 @@ export async function prepareClientPluginRemovalCleanup(
                 : {}),
             }))
             .catch((error) => removalFailure("opencode-plugin-remove", error)),
+          Promise.resolve()
+            .then(() => codeBuddyPluginInstaller.removeCodeBuddyPluginInstallation({
+              memoraxCodeHome,
+              ...(options.codeBuddyHome ? { codeBuddyHome: options.codeBuddyHome } : {}),
+            }))
+            .catch((error) => removalFailure("codebuddy-plugin-remove", error)),
+          Promise.resolve()
+            .then(() => codeBuddyPluginInstaller.removeCodeBuddyPluginInstallation({
+              client: "workbuddy",
+              memoraxCodeHome,
+              ...(options.workBuddyHome ? { codeBuddyHome: options.workBuddyHome } : {}),
+            }))
+            .catch((error) => removalFailure("workbuddy-plugin-remove", error)),
+          traePluginInstaller.removeTraeAdapterInstallation({
+            memoraxCodeHome,
+            ...(traeHome ? { traeHome } : {}),
+          }).catch((error) => removalFailure("trae-adapter-remove", error)),
+          cursorPluginInstaller.removeCursorAdapterInstallation({
+            memoraxCodeHome,
+            ...(cursorHome ? { cursorHome } : {}),
+          }).catch((error) => removalFailure("cursor-adapter-remove", error)),
+          qoderPluginInstaller.removeQoderAdapter({
+            memoraxCodeHome,
+            ...(qoderHome ? { qoderHome } : {}),
+          }).catch((error) => removalFailure("qoder-adapter-remove", error)),
         ]);
         return {
-          ok: codexPlugin.ok && claudePlugin.ok && dshPlugin.ok && opencodePlugin.ok,
+          ok: codexPlugin.ok && claudePlugin.ok && dshPlugin.ok && opencodePlugin.ok && codebuddyPlugin.ok && workbuddyPlugin.ok && traePlugin.ok && cursorPlugin.ok && qoderPlugin.ok,
           action: "client-plugin-removal-cleanup" as const,
           codexPlugin,
           claudePlugin,
           dshPlugin,
           opencodePlugin,
+          codebuddyPlugin,
+          workbuddyPlugin,
+          traePlugin,
+          cursorPlugin,
+          qoderPlugin,
         };
       });
     } catch (error) {
@@ -137,6 +229,11 @@ export async function prepareClientPluginRemovalCleanup(
         claudePlugin: failure,
         dshPlugin: failure,
         opencodePlugin: failure,
+        codebuddyPlugin: failure,
+        workbuddyPlugin: failure,
+        traePlugin: failure,
+        cursorPlugin: failure,
+        qoderPlugin: failure,
       };
     }
   };
@@ -148,6 +245,21 @@ async function loadClaudePluginInstaller(): Promise<ClaudePluginInstaller> {
 
 async function loadOpenCodePluginInstaller(): Promise<OpenCodePluginInstaller> {
   return await import(new URL("../../../memorax-code-opencode-adapter/src/plugin-install.mjs", import.meta.url).href);
+}
+
+async function loadCodeBuddyPluginInstaller(): Promise<CodeBuddyPluginInstaller> {
+  return await import(new URL("../../../memorax-code-codebuddy-adapter/src/config.mjs", import.meta.url).href);
+}
+
+async function loadTraePluginInstaller(): Promise<TraePluginInstaller> {
+  return await import(new URL("../../../memorax-code-trae-adapter/src/config.mjs", import.meta.url).href);
+}
+
+async function loadCursorPluginInstaller(): Promise<CursorPluginInstaller> {
+  return await import(new URL("../../../memorax-code-cursor-adapter/src/config.mjs", import.meta.url).href);
+}
+async function loadQoderPluginInstaller(): Promise<QoderPluginInstaller> {
+  return await import(new URL("../../../memorax-code-qoder-adapter/src/config.mjs", import.meta.url).href);
 }
 
 async function loadDshProfileLifecycle(): Promise<DshProfileLifecycleModule> {

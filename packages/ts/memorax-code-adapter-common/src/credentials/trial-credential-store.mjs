@@ -128,6 +128,8 @@ export async function completeTrialCredentialRecord(value, metadata, options = {
     trialCredentialLockPath(home),
     async () => {
       const current = await loadFromBackend(backend, "load");
+      // Only the response for this exact persisted seed may complete it;
+      // a stale attempt must not overwrite a replacement or ready credential.
       if (current === null || serializeTrialCredentialRecord(current) !== expected) {
         throw new TrialCredentialRecordError("invalid_transition");
       }
@@ -147,6 +149,8 @@ export async function completeTrialCredentialRecord(value, metadata, options = {
 }
 
 export async function clearTrialCredentialRecord(options = {}) {
+  // Take the provision lock before the record lock so an in-flight request
+  // cannot recreate credentials after explicit deletion.
   return await withTrialCredentialProvisionLock(
     () => clearTrialCredentialRecordLocked(options),
     options,
@@ -244,6 +248,8 @@ async function saveToBackend(backend, serialized) {
 async function saveVerifiedRecord(backend, record, serialized = undefined) {
   const expected = serialized ?? serializeTrialCredentialRecord(record);
   await saveToBackend(backend, expected);
+  // A successful OS command alone does not prove persistence; verify the exact
+  // record before accepting the write.
   const stored = await loadFromBackend(backend, "verify");
   if (stored === null || serializeTrialCredentialRecord(stored) !== expected) {
     throw secureCredentialBackendError(STORE_BACKEND, "save", "storage_failed");

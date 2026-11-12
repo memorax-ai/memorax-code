@@ -1,6 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
+  accessSync,
+  constants,
   copyFileSync,
   existsSync,
   lstatSync,
@@ -13,19 +15,18 @@ import {
 } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { delimiter, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isDeepStrictEqual } from "node:util";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import {
-  DSH_TESTED_VERSIONS,
-  isTestedDshVersion,
-  parseDshVersion,
-} from "./dsh-version.mjs";
+import { parseDshVersion } from "./dsh-version.mjs";
 import {
   buildDshCommand,
+  dshCommandEnvironment,
+  inspectDshDesktopCommand,
   requireDshRuntimeAuthority,
   requireEnabledDshRuntime,
+  validDshDesktopRuntime,
 } from "./runtime-state.mjs";
 
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
@@ -47,6 +48,9 @@ const {
 } = await import(pathToFileURL(join(commonRoot, "config-utils.mjs")).href);
 const { resolveWindowsCliInvocation } = await import(
   pathToFileURL(join(commonRoot, "windows-cli-invocation.mjs")).href
+);
+const { attachDeploymentFailure, deploymentFailure } = await import(
+  pathToFileURL(join(commonRoot, "deployment-failure.mjs")).href
 );
 
 const STATE_VERSION = 1;
@@ -80,38 +84,42 @@ const PROFILE_BUNDLE_FILES = Object.freeze([
   "skills/memorax-code/references/repo-read.md",
   "skills/memorax-code/references/repo-templates.md",
   "skills/memorax-code/references/repo-update.md",
-  "skills/memorax-code/scripts/collect_all.py",
-  "skills/memorax-code/scripts/detect_updates.py",
-  "skills/memorax-code/scripts/git_commit_facets.py",
-  "skills/memorax-code/scripts/github_resource_facets.py",
-  "skills/memorax-code/scripts/gitlab_resource_facets.py",
-  "skills/memorax-code/scripts/prepare_repo_memory.py",
-  "skills/memorax-code/scripts/user_profile_memory.py",
-  "skills/memorax-code/scripts/validate_memory.py",
+  "skills/memorax-code/references/work-memory.md",
+  "skills/memorax-code/scripts/repo-memory.mjs",
+  "skills/memorax-code/scripts/user-profile-memory.mjs",
   "src/index.mjs",
   "src/backend-client.mjs",
   "src/dsh-message.mjs",
   "src/dsh-version.mjs",
+  "src/reminder-cadence.mjs",
   "src/http-client.mjs",
   "src/personal-context-worker.mjs",
   "src/personal-context.mjs",
   "src/plugin.mjs",
   "src/protocol.mjs",
   "src/runtime-state.mjs",
+  "memorax-code-adapter-common/src/backend-command.mjs",
   "memorax-code-adapter-common/src/backend-connection.mjs",
   "memorax-code-adapter-common/src/config-utils.mjs",
+  "memorax-code-adapter-common/src/diagnostic-record.mjs",
+  "memorax-code-adapter-common/src/setup-completion.mjs",
   "memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs",
+  "memorax-code-adapter-common/src/hooks/hook-diagnostics.mjs",
   "memorax-code-adapter-common/src/hooks/memory-skill-reminder-policy.mjs",
   "memorax-code-adapter-common/src/repo-memory/repo-memory-auto-build.mjs",
+  "memorax-code-adapter-common/src/repo-memory/repo-memory-job-artifacts.mjs",
   "memorax-code-adapter-common/src/repo-memory/repo-memory-job-context.mjs",
   "memorax-code-adapter-common/src/repo-memory/repo-memory-job-marker.mjs",
   "memorax-code-adapter-common/src/repo-memory/repo-memory-job-supervisor.mjs",
   "memorax-code-adapter-common/src/repo-memory/repo-memory-job-worker.mjs",
-  "memorax-code-adapter-common/src/repo-memory/repo-procedure-memory-context.mjs",
+  "memorax-code-adapter-common/src/repo-memory/repo-memory-repository.mjs",
+  "memorax-code-adapter-common/src/repo-memory/repo-memory-shared-bundle.mjs",
+  "memorax-code-adapter-common/src/personal-memory/procedure-memory-context.mjs",
   "memorax-code-adapter-common/src/repo-memory/repo-memory-update-policy-evaluator.mjs",
   "memorax-code-adapter-common/src/repo-memory/repo-memory-update-policy.mjs",
-  "memorax-code-adapter-common/src/repo-memory/repo-user-profile-context.mjs",
+  "memorax-code-adapter-common/src/personal-memory/user-profile-context.mjs",
   "memorax-code-adapter-common/src/runtime-record.mjs",
+  "memorax-code-adapter-common/src/windows-directory-retry.mjs",
   "memorax-code-adapter-common/src/windows-cli-invocation.mjs",
 ]);
 
@@ -122,7 +130,7 @@ export function discoverDshProfiles(options = {}) {
     entries = readdirSync(paths.profilesRoot, { withFileTypes: true });
   } catch (error) {
     if (error?.code === "ENOENT") return [];
-    throw error;
+    throw attachDeploymentFailure(error, "discover");
   }
   return entries
     .filter((entry) => entry.isDirectory() && validProfileName(entry.name))
@@ -148,7 +156,9 @@ export function collectDshAdapterStatus(options = {}) {
     const managed = Boolean(state) && !stateProblem;
     const installed = profiles.length > 0
       && profiles.every((profile) => profile.managed && profile.exists && profile.installed)
-      && managedProfilesHaveInstalledHeadlessBundle(discoveredProfiles, managedNames);
+      && managedProfilesHaveInstalledHeadlessBundle(
+        discoveredProfiles, managedNames, options, paths, state?.dshCommand,
+      );
     const base = {
       integration: "plugin",
       managed,
@@ -157,7 +167,7 @@ export function collectDshAdapterStatus(options = {}) {
       profiles,
     };
     if (stateProblem) {
-      return { ok: false, ...base, reason: stateProblem.reason };
+      return { ok: false, ...base, reason: stateProblem.reason, failure: stateProblem.failure };
     }
     if (!state && profiles.length === 0) {
       return { ok: true, ...base, skipped: true, reason: "no_existing_profiles" };
@@ -169,10 +179,6 @@ export function collectDshAdapterStatus(options = {}) {
       state,
     );
     const version = compatibility.dshVersion;
-    const versionStatus = {
-      dshVersionTested: compatibility.dshVersionTested,
-      testedDshVersions: [...DSH_TESTED_VERSIONS],
-    };
     if (compatibility.reason === "dsh_version_unavailable"
       || compatibility.reason === "dsh_profile_runtime_stale") {
       return {
@@ -180,6 +186,7 @@ export function collectDshAdapterStatus(options = {}) {
         ...base,
         compatible: false,
         reason: compatibility.reason,
+        failure: compatibility.failure,
       };
     }
     if (compatibility.compatible !== true) {
@@ -188,18 +195,25 @@ export function collectDshAdapterStatus(options = {}) {
         ...base,
         ...(version ? { version } : {}),
         compatible: false,
-        ...versionStatus,
         skipped: true,
         reason: compatibility.reason,
       };
     }
+    const desktop = resolveDshDesktopRuntime(options, paths, state, dshCommand, {
+      required: discoveredProfiles.some((profile) => isDesktopProfile(profile.name)),
+      pinned: Boolean(state),
+    });
+    if (desktop.problem) return { ok: false, ...base, ...desktop.problem };
+    const desktopStatus = desktop.runtime ? {
+      desktopVersion: desktop.runtime.dshVersion,
+    } : {};
     if (!state) {
       return {
         ok: true,
         ...base,
         version,
         compatible: true,
-        ...versionStatus,
+        ...desktopStatus,
         skipped: true,
         reason: "not_managed",
       };
@@ -213,7 +227,7 @@ export function collectDshAdapterStatus(options = {}) {
           ...base,
           version,
           compatible: true,
-          ...versionStatus,
+          ...desktopStatus,
           reason: "runtime_authority_invalid",
         };
       }
@@ -224,14 +238,14 @@ export function collectDshAdapterStatus(options = {}) {
       enabled: state.enabled === true && installed,
       version,
       compatible: true,
-      ...versionStatus,
+      ...desktopStatus,
       ...(state.enabled !== true
         ? { reason: "disabled" }
         : !installed
           ? { reason: "profile_drift" }
           : {}),
     };
-  } catch {
+  } catch (error) {
     return {
       ok: false,
       integration: "plugin",
@@ -240,6 +254,7 @@ export function collectDshAdapterStatus(options = {}) {
       enabled: false,
       profiles: [],
       reason: "dsh_status_unavailable",
+      failure: deploymentFailure(error, "discover"),
     };
   }
 }
@@ -253,18 +268,25 @@ export function withDshPluginLifecycleLock(options = {}, operation) {
     throw new TypeError("DSH lifecycle lock requires an operation");
   }
   const paths = resolvePaths(options);
-  return withJsonFileLockAsync(paths.statePath, () => operation(Object.freeze({
-    status: () => readDshPluginStatusUnlocked(paths, options),
-    ensureInstalled: (overrides = {}) => ensureDshPluginInstalledUnlocked(
-      paths,
-      { ...options, ...overrides },
-    ),
-    activate: () => activateDshPluginInstallationUnlocked(paths, options),
-    quiesce: () => quiesceDshPluginInstallationUnlocked(paths),
-    disable: () => disableDshPluginInstallationUnlocked(paths, options, false),
-    remove: () => disableDshPluginInstallationUnlocked(paths, options, true),
-  })), {
+  let entered = false;
+  return withJsonFileLockAsync(paths.statePath, () => {
+    entered = true;
+    return operation(Object.freeze({
+      status: () => readDshPluginStatusUnlocked(paths, options),
+      ensureInstalled: (overrides = {}) => ensureDshPluginInstalledUnlocked(
+        paths,
+        { ...options, ...overrides },
+      ),
+      activate: () => activateDshPluginInstallationUnlocked(paths, options),
+      quiesce: () => quiesceDshPluginInstallationUnlocked(paths),
+      disable: () => disableDshPluginInstallationUnlocked(paths, options, false),
+      remove: () => disableDshPluginInstallationUnlocked(paths, options, true),
+    }));
+  }, {
     timeoutMs: DEFAULT_LIFECYCLE_LOCK_TIMEOUT_MS,
+  }).catch((error) => {
+    const stage = !entered || error?.code === "JSON_FILE_LOCK_RELEASE_FAILED" ? "lock" : "deploy";
+    throw attachDeploymentFailure(error, stage);
   });
 }
 
@@ -292,11 +314,17 @@ function readDshPluginStatusUnlocked(paths, options) {
     state.runtimeBundleRoot,
     state,
   );
+  const desktop = resolveDshDesktopRuntime(options, paths, state, state.dshCommand, {
+    required: state.profiles.some(isDesktopProfile), pinned: true,
+  });
   const installed = state.profiles.length > 0
+    && !desktop.problem
     && managedProfiles.every((profile) => profile.installed)
-    && managedProfilesHaveInstalledHeadlessBundle(profiles, new Set(state.profiles));
+    && managedProfilesHaveInstalledHeadlessBundle(
+      profiles, new Set(state.profiles), options, paths, state.dshCommand,
+    );
   return {
-    ok: true,
+    ok: !desktop.problem,
     action: "dsh-plugin-status",
     runtime: RUNTIME,
     installed,
@@ -305,6 +333,7 @@ function readDshPluginStatusUnlocked(paths, options) {
     authorityEnabled: state.enabled === true,
     revision: state.updatedAt,
     profiles: managedProfiles,
+    ...(desktop.problem ?? {}),
   };
 }
 
@@ -319,8 +348,15 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
   if (manifestProblem) return manifestProblem;
 
   const profiles = discoverDshProfiles({ ...options, dshHome: paths.dshHome });
+  if (profiles.some((profile) => isDesktopProfile(profile.name) && profile.name !== "desktop")) {
+    return {
+      ok: false, action: "dsh-plugin-install", runtime: RUNTIME,
+      reason: "profile_name_reserved",
+      failure: deploymentFailure(undefined, "discover", { failureReason: "invalid_record" }),
+    };
+  }
   if (profiles.length === 0) {
-    if (state) atomicWriteJson(paths.statePath, disabledState(state, []));
+    if (state) writeDshState(paths, disabledState(state, []));
     return {
       ok: !state,
       action: "dsh-plugin-install",
@@ -331,6 +367,7 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
       ...(!state ? { skipped: true } : {}),
       reason: "no_existing_profiles",
       detectedProfiles: [],
+      ...(state ? { failure: deploymentFailure(undefined, "discover", { failureReason: "not_ready" }) } : {}),
     };
   }
 
@@ -339,7 +376,7 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
     const nextState = state?.enabled === true
       ? disabledState(state, state.profiles)
       : state;
-    if (nextState && nextState !== state) atomicWriteJson(paths.statePath, nextState);
+    if (nextState && nextState !== state) writeDshState(paths, nextState);
     return {
       ok: false,
       action: "dsh-plugin-install",
@@ -351,6 +388,23 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
       ...compatibility,
     };
   }
+
+  const desktop = resolveDshDesktopRuntime(options, paths, state, dshCommand, {
+    required: profiles.some((profile) => isDesktopProfile(profile.name)),
+  });
+  if (desktop.problem) {
+    if (state?.enabled === true) writeDshState(paths, disabledState(state, state.profiles));
+    return {
+      ok: false,
+      action: "dsh-plugin-install",
+      runtime: RUNTIME,
+      installed: false,
+      enabled: false,
+      managed: Boolean(state),
+      ...desktop.problem,
+    };
+  }
+  const desktopRuntime = desktop.runtime;
 
   const previouslyManaged = new Set(claimedProfiles
     .filter((profile) => profile.status !== "directory_missing")
@@ -364,11 +418,16 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
       action: "dsh-plugin-install",
       runtime: RUNTIME,
       reason: "profile_plugin_conflict",
+      failure: deploymentFailure(undefined, "plugin-install", { failureReason: "conflict" }),
       profiles: conflicts,
     };
   }
 
-  let workerProfileName = profiles.find(profileHasInstalledHeadlessBundle)?.name;
+  const installAnchor = resolveDshInstallAnchor(dshCommand, options, paths);
+  const headlessRuntime = { command: dshCommand, options, paths, checks: new Map() };
+  let workerProfileName = profiles.find((profile) => (
+    profileHasInstalledHeadlessBundle(profile, installAnchor, headlessRuntime)
+  ))?.name;
   let targetProfiles = profiles;
   let initializeWorkerProfile = false;
   if (!workerProfileName) {
@@ -380,6 +439,7 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
         action: "dsh-plugin-install",
         runtime: RUNTIME,
         reason: "profile_manifest_unreadable",
+        failure: headless.failure ?? deploymentFailure(undefined, "config-read", { failureReason: "invalid_record" }),
         profiles: [HEADLESS_PROFILE_NAME],
       };
     }
@@ -389,6 +449,7 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
         action: "dsh-plugin-install",
         runtime: RUNTIME,
         reason: "headless_profile_not_capable",
+        failure: deploymentFailure(undefined, "verify-native", { failureReason: "not_ready" }),
         profiles: [HEADLESS_PROFILE_NAME],
       };
     }
@@ -408,6 +469,7 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
     dshHome: paths.dshHome,
     dshCommand,
     dshVersion: compatibility.dshVersion,
+    ...(desktopRuntime ? { desktopRuntime } : {}),
     sourceAdapterRoot: paths.adapterRoot,
   };
   const runtimeBundleRoot = materializeRuntimeBundle(paths, metadata);
@@ -425,6 +487,7 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
     memoraxCodeCommand,
     dshCommand,
     dshVersion: compatibility.dshVersion,
+    ...(desktopRuntime ? { desktopRuntime } : {}),
     // Preserve prior claims and claim each target before invoking DSH so an
     // interrupted or partial native add remains repairable and removable.
     profiles: [...new Set([
@@ -433,7 +496,7 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
     ])].sort(),
     updatedAt: now,
   };
-  atomicWriteJson(paths.statePath, pendingState);
+  writeDshState(paths, pendingState);
 
   const installedProfiles = [];
   const failedProfiles = [];
@@ -446,7 +509,7 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
         && current.status === "directory_missing")) {
       failedProfiles.push(current.status === "directory_missing"
         ? { name: profile.name, reason: "profile_disappeared" }
-        : profileManifestFailure(profile.name));
+        : profileManifestFailure(profile.name, current));
       continue;
     }
     if (!profileHasInstalledAdapter(current.profile, runtimeBundleRoot, pendingState)) {
@@ -456,7 +519,7 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
         profile.name,
         "add",
         `file:${runtimeBundleRoot}`,
-      ], dshCommand);
+      ], profileDshCommand(profile.name, dshCommand, desktopRuntime));
       current = inspectProfile(profile.name, profile.path);
       if (previouslyManaged.has(profile.name)
         || (current.status === "valid" && profileMentionsAdapter(current.profile))) {
@@ -467,7 +530,7 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
         || current.status !== "valid"
         || !profileHasInstalledAdapter(current.profile, runtimeBundleRoot, pendingState)
         || (profile.name === workerProfileName
-          && !profileHasInstalledHeadlessBundle(current.profile))) {
+          && !profileHasInstalledHeadlessBundle(current.profile, installAnchor, headlessRuntime))) {
         failedProfiles.push(profileMutationFailure(
           profile.name,
           result,
@@ -489,7 +552,7 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
         options,
         profile.name,
         LEGACY_ADAPTER_PACKAGE_NAMES,
-        dshCommand,
+        profileDshCommand(profile.name, dshCommand, desktopRuntime),
       );
       current = cleanup.profile;
       if (cleanup.failure) {
@@ -501,7 +564,7 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
     if (current.status === "valid"
       && profileHasInstalledAdapter(current.profile, runtimeBundleRoot, pendingState)
       && (profile.name !== workerProfileName
-        || profileHasInstalledHeadlessBundle(current.profile))) {
+        || profileHasInstalledHeadlessBundle(current.profile, installAnchor, headlessRuntime))) {
       installedProfiles.push(profile.name);
     } else {
       failedProfiles.push(profileMutationFailure(
@@ -519,14 +582,14 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
   for (const profile of finalProfiles) {
     if (failedProfiles.some((failure) => failure.name === profile.name)) continue;
     if (profile.status === "manifest_unreadable") {
-      failedProfiles.push(profileManifestFailure(profile.name));
+      failedProfiles.push(profileManifestFailure(profile.name, profile));
     } else if (profile.status === "valid"
       && !profileHasInstalledAdapter(profile.profile, runtimeBundleRoot, pendingState)) {
       failedProfiles.push({ name: profile.name, reason: "dsh_bundle_not_activated" });
     }
   }
   if (!finalProfiles.some((profile) => (
-    profile.status === "valid" && profileHasInstalledHeadlessBundle(profile.profile)
+    profile.status === "valid" && profileHasInstalledHeadlessBundle(profile.profile, installAnchor, headlessRuntime)
   )) && !failedProfiles.some((failure) => failure.name === workerProfileName)) {
     failedProfiles.push({ name: workerProfileName, reason: "headless_profile_not_capable" });
   }
@@ -540,6 +603,7 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
       state,
       mutatedProfiles,
       dshCommand,
+      desktopRuntime,
     );
     const failureReason = pluginManagerFailureReason(failedProfiles);
     return {
@@ -551,10 +615,14 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
       managed: true,
       detectedProfiles: profiles.map((profile) => profile.name),
       dshVersion: compatibility.dshVersion,
-      dshVersionTested: compatibility.dshVersionTested,
-      testedDshVersions: [...DSH_TESTED_VERSIONS],
       installedProfiles,
       failedProfiles,
+      failure: deploymentFailure({ failure: failedProfiles[0].failure }, "verify-native", {
+        failureReason: "verification_failed",
+        ...(rollback.failedProfiles.length > 0 ? {
+          cleanupError: { code: rollback.failedProfiles[0].failure?.systemCode },
+        } : {}),
+      }),
       ...(failureReason ? { reason: failureReason } : {}),
       ...(rollback.failedProfiles.length > 0
         ? { rollbackFailedProfiles: rollback.failedProfiles }
@@ -570,7 +638,9 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
     profiles: managedProfiles,
     updatedAt: new Date().toISOString(),
   };
-  atomicWriteJson(paths.statePath, nextState);
+  writeDshState(paths, nextState);
+  // A failed reconciliation may reinstall the prior bundle during rollback,
+  // so retire old generations only after every target Profile succeeds.
   if (failedProfiles.length === 0 && managedProfiles.length > 0) {
     cleanupRuntimeGenerations(paths.runtimeRoot, runtimeBundleRoot);
   }
@@ -585,15 +655,16 @@ function ensureDshPluginInstalledUnlocked(paths, options) {
     managed: true,
     detectedProfiles: profiles.map((profile) => profile.name),
     dshVersion: compatibility.dshVersion,
-    dshVersionTested: compatibility.dshVersionTested,
-    testedDshVersions: [...DSH_TESTED_VERSIONS],
     installedProfiles,
     failedProfiles,
+    ...(failedProfiles.length > 0 ? {
+      failure: failedProfiles[0].failure ?? deploymentFailure(undefined, "verify-native", { failureReason: "verification_failed" }),
+    } : {}),
     ...(failureReason ? { reason: failureReason } : {}),
   };
 }
 
-function rollbackDshPluginReconciliation(paths, options, state, mutatedProfiles, dshCommand) {
+function rollbackDshPluginReconciliation(paths, options, state, mutatedProfiles, dshCommand, desktopRuntime) {
   const previouslyManaged = new Set(state.profiles);
   const previousPackageName = runtimeAdapterPackageName(state.runtimeBundleRoot)
     ?? ADAPTER_PACKAGE_NAME;
@@ -617,7 +688,7 @@ function rollbackDshPluginReconciliation(paths, options, state, mutatedProfiles,
         name,
         "add",
         `file:${state.runtimeBundleRoot}`,
-      ], dshCommand);
+      ], profileDshCommand(name, state.dshCommand, state.desktopRuntime));
       managedMutationResults.set(name, result);
       const restored = inspectProfile(name, profilePath);
       if (result.status === 0
@@ -629,7 +700,7 @@ function rollbackDshPluginReconciliation(paths, options, state, mutatedProfiles,
           options,
           name,
           replacementPackageNames,
-          dshCommand,
+          profileDshCommand(name, state.dshCommand, state.desktopRuntime),
         );
         if (cleanup.failure) recordFailure(cleanup.failure);
       }
@@ -644,7 +715,7 @@ function rollbackDshPluginReconciliation(paths, options, state, mutatedProfiles,
       options,
       name,
       MANAGED_ADAPTER_PACKAGE_NAMES,
-      dshCommand,
+      profileDshCommand(name, dshCommand, desktopRuntime),
     );
     if (cleanup.profile.status !== "directory_missing"
       && (cleanup.profile.status !== "valid"
@@ -660,11 +731,25 @@ function rollbackDshPluginReconciliation(paths, options, state, mutatedProfiles,
         updatedAt: new Date().toISOString(),
       }
     : state;
+  // Keep runtime authority disabled until installed Profiles have been
+  // verified against the prior bundle, even if native rollback commands succeeded.
   const verificationState = rollbackState.enabled
     ? { ...rollbackState, enabled: false }
     : rollbackState;
-  atomicWriteJson(paths.statePath, verificationState);
+  writeDshState(paths, verificationState);
   let authorityRestored = true;
+  if (state.enabled && state.desktopRuntime) {
+    const desktop = resolveDshDesktopRuntime(options, paths, state, state.dshCommand, {
+      required: true, pinned: true,
+    });
+    if (desktop.problem) {
+      authorityRestored = false;
+      recordFailure({
+        name: state.profiles.find(isDesktopProfile) ?? state.profiles[0],
+        ...desktop.problem,
+      });
+    }
+  }
   for (const name of state.profiles) {
     const profile = inspectProfile(name, join(paths.profilesRoot, name));
     if (profile.status === "valid"
@@ -686,7 +771,7 @@ function rollbackDshPluginReconciliation(paths, options, state, mutatedProfiles,
       "dsh_bundle_not_restored",
     ));
   }
-  if (authorityRestored) atomicWriteJson(paths.statePath, rollbackState);
+  if (authorityRestored) writeDshState(paths, rollbackState);
   return { authorityRestored, failedProfiles: rollbackFailedProfiles };
 }
 
@@ -695,22 +780,31 @@ function activateDshPluginInstallationUnlocked(paths, options) {
   const stateProblem = validateState(state, paths);
   if (stateProblem) return { ...stateProblem, action: "dsh-plugin-activate" };
   if (!state) return notManaged(paths, "dsh-plugin-activate");
+  const desktop = resolveDshDesktopRuntime(options, paths, state, state.dshCommand, {
+    required: state.profiles.some(isDesktopProfile), pinned: true,
+  });
+  if (desktop.problem) {
+    return { ok: false, action: "dsh-plugin-activate", runtime: RUNTIME, ...desktop.problem };
+  }
   const profiles = discoverDshProfiles({ ...options, dshHome: paths.dshHome });
   const profileByName = new Map(profiles.map((profile) => [profile.name, profile]));
   if (state.profiles.length === 0
     || state.profiles.some((name) => (
       !profileHasInstalledAdapter(profileByName.get(name), state.runtimeBundleRoot, state)
     ))
-    || !managedProfilesHaveInstalledHeadlessBundle(profiles, new Set(state.profiles))) {
+    || !managedProfilesHaveInstalledHeadlessBundle(
+      profiles, new Set(state.profiles), options, paths, state.dshCommand,
+    )) {
     return {
       ok: false,
       action: "dsh-plugin-activate",
       runtime: RUNTIME,
       reason: "managed_profiles_not_installed",
+      failure: deploymentFailure(undefined, "verify-native", { failureReason: "not_ready" }),
     };
   }
   const nextState = { ...state, enabled: true, updatedAt: new Date().toISOString() };
-  atomicWriteJson(paths.statePath, nextState);
+  writeDshState(paths, nextState);
   return {
     ok: true,
     action: "dsh-plugin-activate",
@@ -728,7 +822,7 @@ function quiesceDshPluginInstallationUnlocked(paths) {
   if (stateProblem) return { ...stateProblem, action: "dsh-plugin-quiesce" };
   if (!state) return notManaged(paths, "dsh-plugin-quiesce");
   const nextState = disabledState(state, state.profiles);
-  atomicWriteJson(paths.statePath, nextState);
+  writeDshState(paths, nextState);
   return {
     ok: true,
     action: "dsh-plugin-quiesce",
@@ -751,8 +845,11 @@ function disableDshPluginInstallationUnlocked(paths, options, removeState) {
   if (!state) return notManaged(paths, action);
 
   const disabled = disabledState(state, state.profiles);
-  atomicWriteJson(paths.statePath, disabled);
+  writeDshState(paths, disabled);
   const dshCommand = resolveDshCommand(options, paths, state);
+  const desktop = resolveDshDesktopRuntime(options, paths, state, dshCommand, {
+    required: state.profiles.some(isDesktopProfile),
+  });
   const removedProfiles = [];
   const failedProfiles = [];
   for (const name of state.profiles) {
@@ -762,11 +859,19 @@ function disableDshPluginInstallationUnlocked(paths, options, removeState) {
       continue;
     }
     if (before.status === "manifest_unreadable") {
-      failedProfiles.push(profileManifestFailure(name));
+      failedProfiles.push(profileManifestFailure(name, before));
       continue;
     }
     if (!profileMentionsAdapter(before.profile)) {
       removedProfiles.push(name);
+      continue;
+    }
+    if (isDesktopProfile(name) && name !== "desktop") {
+      failedProfiles.push({ name, reason: "profile_name_reserved" });
+      continue;
+    }
+    if (isDesktopProfile(name) && desktop.problem) {
+      failedProfiles.push({ name, ...desktop.problem });
       continue;
     }
     const cleanup = removeProfileAdapterPackages(
@@ -774,14 +879,14 @@ function disableDshPluginInstallationUnlocked(paths, options, removeState) {
       options,
       name,
       MANAGED_ADAPTER_PACKAGE_NAMES,
-      dshCommand,
+      profileDshCommand(name, dshCommand, desktop.runtime),
     );
     if (cleanup.failure) failedProfiles.push(cleanup.failure);
     else removedProfiles.push(name);
   }
 
   if (failedProfiles.length > 0) {
-    atomicWriteJson(paths.statePath, disabledState(disabled, failedProfiles.map((profile) => profile.name).sort()));
+    writeDshState(paths, disabledState(disabled, failedProfiles.map((profile) => profile.name).sort()));
     const failureReason = pluginManagerFailureReason(failedProfiles);
     return {
       ok: false,
@@ -790,15 +895,18 @@ function disableDshPluginInstallationUnlocked(paths, options, removeState) {
       enabled: false,
       removedProfiles,
       failedProfiles,
+      failure: failedProfiles[0].failure ?? deploymentFailure(undefined, "verify-native", { failureReason: "verification_failed" }),
       ...(failureReason ? { reason: failureReason } : {}),
     };
   }
 
   if (removeState) {
-    rmSync(paths.statePath, { force: true });
-    rmSync(paths.runtimeRoot, { recursive: true, force: true });
+    try { rmSync(paths.statePath, { force: true }); }
+    catch (error) { throw attachDeploymentFailure(error, "state-write"); }
+    try { rmSync(paths.runtimeRoot, { recursive: true, force: true }); }
+    catch (error) { throw attachDeploymentFailure(error, "plugin-remove"); }
   }
-  else atomicWriteJson(paths.statePath, disabledState(disabled, []));
+  else writeDshState(paths, disabledState(disabled, []));
   return {
     ok: true,
     action,
@@ -824,7 +932,7 @@ function removeProfileAdapterPackages(
   for (const packageName of packageNames) {
     if (profile.status === "directory_missing") break;
     if (profile.status !== "valid") {
-      failure ??= profileManifestFailure(name);
+      failure ??= profileManifestFailure(name, profile);
       break;
     }
     if (!profileMentionsPackage(profile.profile, packageName)) continue;
@@ -860,13 +968,18 @@ function removeProfileAdapterPackages(
 }
 
 function materializeRuntimeBundle(paths, metadata) {
+  try { return materializeRuntimeBundleUnchecked(paths, metadata); }
+  catch (error) { throw attachDeploymentFailure(error, "runtime-stage"); }
+}
+
+function materializeRuntimeBundleUnchecked(paths, metadata) {
   const manifest = readJsonObject(join(paths.adapterRoot, "package.json"));
   if (manifest?.name !== ADAPTER_PACKAGE_NAME
     || !nonEmpty(manifest.version)
     || manifest.main !== "src/index.mjs"
     || !isDeepStrictEqual(manifest.exports, { ".": "./src/index.mjs" })
     || !isDeepStrictEqual(manifest.files, PROFILE_BUNDLE_FILES)) {
-    throw new Error("MemoraX Code DSH adapter source manifest is invalid");
+    throw attachDeploymentFailure(new Error("MemoraX Code DSH adapter source manifest is invalid"), "runtime-stage", { failureReason: "invalid_configuration" });
   }
 
   const sourceFiles = ["package.json", ...PROFILE_BUNDLE_FILES]
@@ -888,6 +1001,7 @@ function materializeRuntimeBundle(paths, metadata) {
   mkdirSync(paths.runtimeRoot, { recursive: true, mode: 0o700 });
   rmSync(runtimeBundleRoot, { recursive: true, force: true });
   const temporaryRoot = join(paths.runtimeRoot, `.${generation}.${randomUUID()}.tmp`);
+  let stage = "runtime-stage";
   try {
     mkdirSync(temporaryRoot, { mode: 0o700 });
     for (const { relativePath, path: sourcePath } of sourceFiles) {
@@ -896,11 +1010,14 @@ function materializeRuntimeBundle(paths, metadata) {
       copyFileSync(sourcePath, destinationPath);
     }
     atomicWriteJson(join(temporaryRoot, PACKAGE_METADATA_FILE), runtimeMetadata);
+    stage = "runtime-publish";
     renameSync(temporaryRoot, runtimeBundleRoot);
     return runtimeBundleRoot;
   } catch (error) {
-    rmSync(temporaryRoot, { recursive: true, force: true });
-    throw error;
+    let cleanupError;
+    try { rmSync(temporaryRoot, { recursive: true, force: true }); }
+    catch (failure) { cleanupError = failure; }
+    throw attachDeploymentFailure(error, stage, { cleanupError });
   }
 }
 
@@ -963,7 +1080,7 @@ function cleanupRuntimeGenerations(runtimeRoot, activeRoot) {
 
 function resolvePaths(options) {
   const env = options.env ?? process.env;
-  const homeDir = options.homeDir ?? homedir();
+  const homeDir = options.homeDir ?? nonEmpty(env.HOME) ?? nonEmpty(env.USERPROFILE) ?? homedir();
   const memoraxCodeHome = resolveHomePath(
     options.memoraxCodeHome ?? nonEmpty(env.MEMORAX_CODE_HOME) ?? join(homeDir, ".memorax-code"),
     homeDir,
@@ -978,6 +1095,7 @@ function resolvePaths(options) {
     : resolveHomePath(configuredDshHome, homeDir);
   return {
     env,
+    homeDir,
     dshHome,
     memoraxCodeHome,
     adapterRoot,
@@ -997,7 +1115,7 @@ function persistedDshHome(paths, homeDir) {
 
 function validateState(state, paths) {
   if (!state) return undefined;
-  if (state.unreadable) return { ok: false, runtime: RUNTIME, reason: "state_unreadable", statePath: paths.statePath };
+  if (state.unreadable) return { ok: false, runtime: RUNTIME, reason: "state_unreadable", statePath: paths.statePath, failure: deploymentFailure(undefined, "state-read", { failureReason: "invalid_record" }) };
   if (state.version !== STATE_VERSION
     || state.runtime !== RUNTIME
     || state.integration !== "plugin"
@@ -1009,10 +1127,11 @@ function validateState(state, paths) {
     || typeof state.memoraxCodeCommand !== "string"
     || typeof state.dshCommand !== "string"
     || !parseDshVersion(state.dshVersion)
+    || !validDshDesktopRuntime(state.desktopRuntime)
     || !timestampString(state.updatedAt)
     || !Array.isArray(state.profiles)
     || !state.profiles.every(validProfileName)) {
-    return { ok: false, runtime: RUNTIME, reason: "state_invalid", statePath: paths.statePath };
+    return { ok: false, runtime: RUNTIME, reason: "state_invalid", statePath: paths.statePath, failure: deploymentFailure(undefined, "state-read", { failureReason: "invalid_record" }) };
   }
   return undefined;
 }
@@ -1024,6 +1143,11 @@ function disabledState(state, profiles) {
     profiles,
     updatedAt: new Date().toISOString(),
   };
+}
+
+function writeDshState(paths, state) {
+  try { atomicWriteJson(paths.statePath, state); }
+  catch (error) { throw attachDeploymentFailure(error, "state-write"); }
 }
 
 function notManaged(paths, action) {
@@ -1088,7 +1212,7 @@ function resolveDshCompatibility(options, paths, state) {
   const configured = nonEmpty(options.dshCommand)
     ?? nonEmpty(paths.env.MEMORAX_CODE_DSH_COMMAND);
   if (configured) {
-    const dshCommand = normalizeDshCommand(configured);
+    const dshCommand = canonicalDshCommand(configured, options, paths);
     return dshCommand
       ? { dshCommand, compatibility: inspectDshCompatibility(options, paths, dshCommand) }
       : {
@@ -1101,7 +1225,7 @@ function resolveDshCompatibility(options, paths, state) {
   const attemptedCommands = new Set();
   let unavailable;
   for (const value of [state?.dshCommand, "dsh"]) {
-    const dshCommand = normalizeDshCommand(value);
+    const dshCommand = canonicalDshCommand(value, options, paths);
     if (!dshCommand || attemptedCommands.has(dshCommand)) continue;
     attemptedCommands.add(dshCommand);
     if (dshCommand === profileRuntime?.dshCommand) {
@@ -1113,6 +1237,14 @@ function resolveDshCompatibility(options, paths, state) {
     unavailable ??= { dshCommand, compatibility };
   }
   if (profileRuntime?.compatibility.compatible === true) return profileRuntime;
+  // Desktop includes a native CLI and package manager. It can also boot a
+  // regular headless Profile when no standalone npm CLI has been installed.
+  for (const value of desktopCommandCandidates(options, paths, state)) {
+    const desktop = inspectDshDesktopCommand(value, options.windowsCliResolution);
+    if (!desktop || attemptedCommands.has(desktop.command)) continue;
+    const compatibility = inspectDshCompatibility(options, paths, desktop.command);
+    if (compatibility.compatible === true) return { dshCommand: desktop.command, compatibility };
+  }
   if (profileRuntime?.compatibility.reason === "dsh_profile_runtime_stale") {
     return {
       dshCommand: profileRuntime.dshCommand ?? unavailable?.dshCommand ?? "dsh",
@@ -1123,6 +1255,92 @@ function resolveDshCompatibility(options, paths, state) {
     dshCommand: "dsh",
     compatibility: unavailableDshCompatibility("dsh_version_unavailable"),
   };
+}
+
+function isDesktopProfile(name) {
+  return typeof name === "string" && name.toLowerCase() === "desktop";
+}
+
+function profileDshCommand(name, command, desktopRuntime) {
+  return isDesktopProfile(name) ? desktopRuntime?.command : command;
+}
+
+function canonicalDshCommand(value, options, paths) {
+  const command = normalizeDshCommand(value);
+  if (!command) return undefined;
+  const candidates = isAbsolute(command) ? [command] : pathDshCommands(paths, command, options);
+  // Only the first PATH match owns a bare command. Pin native Desktop symlinks
+  // so a later npm install cannot silently replace the saved authority.
+  return inspectDshDesktopCommand(candidates[0], options.windowsCliResolution)?.command ?? command;
+}
+
+function pathDshCommands(paths, command, options) {
+  const platform = options.windowsCliResolution?.platform ?? process.platform;
+  const extensions = platform === "win32" && !/\.(?:cmd|exe|bat|com)$/i.test(command)
+    ? [".com", ".exe", ".bat", ".cmd", ""]
+    : [""];
+  return (paths.env.PATH ?? "").split(platform === "win32" ? ";" : delimiter)
+    .filter(Boolean)
+    .flatMap((directory) => extensions.map((extension) => resolve(directory, `${command}${extension}`)))
+    .filter((candidate) => {
+      try {
+        accessSync(candidate, platform === "win32" ? constants.F_OK : constants.X_OK);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+}
+
+function desktopCommandCandidates(options, paths, state, command) {
+  const platform = options.windowsCliResolution?.platform ?? process.platform;
+  const configured = nonEmpty(options.dshDesktopCommand)
+    ?? nonEmpty(paths.env.MEMORAX_CODE_DSH_DESKTOP_COMMAND);
+  if (configured) return [normalizeDshCommand(configured)];
+  if (state?.desktopRuntime) return [state.desktopRuntime.command];
+  const installed = platform === "darwin"
+    ? ["/Applications", join(paths.homeDir, "Applications")]
+      .map((root) => join(root, "DeepSeek Harness.app", "Contents", "Resources", "runtime", "cli", "bin", "dsh"))
+    : platform === "win32" && nonEmpty(paths.env.LOCALAPPDATA)
+      ? [join(paths.env.LOCALAPPDATA, "Programs", "DeepSeek Harness", "resources", "runtime", "cli", "bin", "dsh.cmd")]
+      : [];
+  return [...new Set([
+    normalizeDshCommand(command),
+    ...pathDshCommands(paths, "dsh", options),
+    ...installed,
+  ].filter(Boolean))];
+}
+
+function resolveDshDesktopRuntime(options, paths, state, command, { required, pinned = false }) {
+  const configured = nonEmpty(options.dshDesktopCommand)
+    ?? nonEmpty(paths.env.MEMORAX_CODE_DSH_DESKTOP_COMMAND);
+  const selected = inspectDshDesktopCommand(command, options.windowsCliResolution);
+  if (!required && !configured && !state?.desktopRuntime && !selected) return {};
+  const candidates = pinned && state?.desktopRuntime
+    ? [state.desktopRuntime.command]
+    : desktopCommandCandidates(options, paths, state, command);
+  for (const candidate of candidates) {
+    const desktop = inspectDshDesktopCommand(candidate, options.windowsCliResolution);
+    if (!desktop) continue;
+    const compatibility = inspectDshCompatibility(options, paths, desktop.command);
+    if (compatibility.compatible === true) {
+      if (pinned && state?.desktopRuntime
+        && compatibility.dshVersion !== state.desktopRuntime.dshVersion) {
+        return { problem: {
+          compatible: false,
+          reason: "dsh_desktop_version_changed",
+          desktopVersion: compatibility.dshVersion,
+          failure: deploymentFailure(undefined, "verify-native", { failureReason: "not_ready" }),
+        } };
+      }
+      return { runtime: { version: 1, command: desktop.command, dshVersion: compatibility.dshVersion } };
+    }
+  }
+  return { problem: {
+    compatible: false,
+    reason: "dsh_desktop_command_unavailable",
+    failure: deploymentFailure(undefined, "verify-native", { failureReason: "not_ready" }),
+  } };
 }
 
 function normalizeDshCommand(value) {
@@ -1180,8 +1398,6 @@ function inspectProfileDshRuntime(paths, state) {
       compatibility: {
         compatible: true,
         dshVersion: version,
-        dshVersionTested: isTestedDshVersion(version),
-        testedDshVersions: [...DSH_TESTED_VERSIONS],
       },
     };
   } catch {
@@ -1196,15 +1412,110 @@ function unavailableDshCompatibility(reason) {
   return {
     compatible: false,
     reason,
-    testedDshVersions: [...DSH_TESTED_VERSIONS],
+    failure: deploymentFailure(undefined, "verify-native", { failureReason: "not_ready" }),
   };
 }
 
+// This preload is embedded so an npm replacement can still remove Profiles after
+// deleting the package files. It runs only in the Windows DSH plugin subprocess.
+async function installWindowsDshPnpmCompatibility() {
+  if (process.platform !== "win32") return;
+  const { default: childProcess } = await import("node:child_process");
+  const { existsSync, readFileSync, statSync } = await import("node:fs");
+  const { dirname, join, resolve } = await import("node:path");
+  const { syncBuiltinESMExports } = await import("node:module");
+  const spawn = childProcess.spawnSync;
+  // Our entrypoint is: node dsh.js plugin --profile <name> <pnpm arguments>.
+  const expectedArgs = process.argv.slice(5);
+  childProcess.spawnSync = (command, args, options) => {
+    // Leave newer DSH launchers that disable the shell or escape their arguments alone.
+    if (command !== "pnpm" || options?.shell !== true
+      || !Array.isArray(args) || args.length !== expectedArgs.length
+      || args.some((value, index) => value !== expectedArgs[index])) {
+      return spawn(command, args, options);
+    }
+    // Use Unicode environment paths directly; where.exe output follows the
+    // console code page and cannot reliably be decoded as UTF-8.
+    const env = options.env ?? process.env;
+    const envValue = (name) => env[Object.keys(env).sort()
+      .find((key) => key.toLowerCase() === name.toLowerCase())];
+    const cwd = options.cwd ?? process.cwd();
+    const directories = envValue("NoDefaultCurrentDirectoryInExePath") === undefined ? [cwd] : [];
+    directories.push(...String(envValue("PATH") ?? "").split(";")
+      .map((value) => resolve(cwd, value.replace(/^"(.*)"$/, "$1"))));
+    const extensions = String(envValue("PATHEXT") ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean);
+    let executable;
+    try {
+      for (const directory of directories) {
+        for (const extension of extensions) {
+          const candidate = join(directory, "pnpm" + extension.toLowerCase());
+          try {
+            if (statSync(candidate).isFile()) {
+              executable = candidate;
+              break;
+            }
+          } catch (error) {
+            if (error?.code !== "ENOENT" && error?.code !== "ENOTDIR") throw error;
+          }
+        }
+        if (executable) break;
+      }
+    } catch (error) {
+      return { status: null, signal: null, error };
+    }
+    if (!executable) {
+      return {
+        status: null,
+        signal: null,
+        error: Object.assign(new Error("pnpm not found on PATH"), { code: "ENOENT" }),
+      };
+    }
+    if (executable && /\.(?:exe|com)$/i.test(executable)) {
+      return spawn(executable, args, { ...options, shell: false });
+    }
+    let entrypoint;
+    if (executable) {
+      try {
+        // Read the selected shim's target: pnpm and Corepack can coexist in one prefix.
+        const shim = readFileSync(executable, "utf8").replaceAll("\\", "/");
+        const target = /%(?:dp0%|~dp0)[/]((?:node_modules\/|\.\.\/)(?:pnpm\/bin\/pnpm\.cjs|pnpm\/pnpm\.exe|corepack\/dist\/pnpm\.js))"/i.exec(shim)?.[1];
+        const candidate = target && join(dirname(executable), target);
+        if (candidate && existsSync(candidate)) entrypoint = candidate;
+      } catch (error) {
+        return { status: null, signal: null, error };
+      }
+    }
+    if (!entrypoint) {
+      return {
+        status: null,
+        signal: null,
+        error: Object.assign(new Error("Cannot resolve pnpm's Windows Node entrypoint"), { code: "ENOEXEC" }),
+      };
+    }
+    if (/\.exe$/i.test(entrypoint)) {
+      return spawn(entrypoint, args, { ...options, shell: false });
+    }
+    // Forward the original arguments, including literal percent signs, without
+    // cmd.exe expansion. DSH still owns Profile mutation and reconciliation.
+    return spawn(process.execPath, [entrypoint, ...args], { ...options, shell: false });
+  };
+  syncBuiltinESMExports();
+}
+
+const WINDOWS_DSH_PNPM_PRELOAD = "data:text/javascript;base64," + Buffer.from(
+  "await (" + installWindowsDshPnpmCompatibility.toString() + ")();",
+).toString("base64");
+
 function runDsh(options, paths, args, command) {
-  const env = { ...paths.env, DSH_HOME: paths.dshHome };
+  const env = {
+    ...paths.env,
+    ...dshCommandEnvironment(command, options.windowsCliResolution),
+    DSH_HOME: paths.dshHome,
+  };
   let executable;
   try {
     const [launcher, ...launcherArgs] = buildDshCommand(command, args, {
+      ...options.windowsCliResolution,
       nodePath: options.windowsCliResolution?.nodePath,
     });
     executable = resolveWindowsCliInvocation(launcher, launcherArgs, {
@@ -1213,6 +1524,11 @@ function runDsh(options, paths, args, command) {
     });
   } catch (error) {
     return { status: 1, error };
+  }
+  if ((options.windowsCliResolution?.platform ?? process.platform) === "win32"
+    && args[0] === "plugin"
+    && /\.(?:cjs|mjs|js)$/i.test(executable.args[0] ?? "")) {
+    executable.args = ["--import", WINDOWS_DSH_PNPM_PRELOAD, ...executable.args];
   }
   const invocation = {
     command: executable.command,
@@ -1248,7 +1564,7 @@ function inspectDshCompatibility(options, paths, command) {
     return {
       compatible: false,
       reason: "dsh_version_unavailable",
-      testedDshVersions: [...DSH_TESTED_VERSIONS],
+      failure: deploymentFailure(result.error, "native-command", { commandResult: result }),
     };
   }
   const output = parseDshVersion(result.stdout);
@@ -1256,18 +1572,17 @@ function inspectDshCompatibility(options, paths, command) {
     return {
       compatible: false,
       reason: "dsh_version_unavailable",
-      testedDshVersions: [...DSH_TESTED_VERSIONS],
+      failure: deploymentFailure(undefined, "verify-native", { failureReason: "invalid_response" }),
     };
   }
   return {
     compatible: true,
     dshVersion: output,
-    dshVersionTested: isTestedDshVersion(output),
-    testedDshVersions: [...DSH_TESTED_VERSIONS],
   };
 }
 
 function commandFailure(name, result, contractReason) {
+  const verificationFailed = contractReason && result.status === 0 && !result.error && !result.signal;
   return {
     name,
     reason: contractReason
@@ -1278,6 +1593,10 @@ function commandFailure(name, result, contractReason) {
           ? "dsh_not_found"
           : "dsh_command_failed",
     status: Number.isInteger(result.status) ? result.status : undefined,
+    failure: deploymentFailure(result.error, verificationFailed ? "verify-native" : "native-command", {
+      commandResult: result,
+      ...(verificationFailed ? { failureReason: "verification_failed" } : {}),
+    }),
   };
 }
 
@@ -1298,17 +1617,22 @@ function managedProfileManifestProblem(claimedProfiles) {
         runtime: RUNTIME,
         reason: "profile_manifest_unreadable",
         profiles,
+        failure: claimedProfiles.find((profile) => profile.status === "manifest_unreadable")?.failure
+          ?? deploymentFailure(undefined, "config-read", { failureReason: "invalid_record" }),
       }
     : undefined;
 }
 
-function profileManifestFailure(name) {
-  return { name, reason: "profile_manifest_unreadable" };
+function profileManifestFailure(name, profile) {
+  return {
+    name, reason: "profile_manifest_unreadable",
+    failure: profile?.failure ?? deploymentFailure(undefined, "config-read", { failureReason: "invalid_record" }),
+  };
 }
 
 function profileMutationFailure(name, result, profile, contractReason) {
   return result.status === 0 && !result.error && profile.status === "manifest_unreadable"
-    ? profileManifestFailure(name)
+    ? profileManifestFailure(name, profile)
     : commandFailure(name, result, result.status === 0 ? contractReason : undefined);
 }
 
@@ -1321,13 +1645,19 @@ function inspectProfile(name, path) {
   try {
     if (!lstatSync(path).isDirectory()) return { status: "manifest_unreadable", name };
   } catch (error) {
-    return { status: error?.code === "ENOENT" ? "directory_missing" : "manifest_unreadable", name };
+    return {
+      status: error?.code === "ENOENT" ? "directory_missing" : "manifest_unreadable", name,
+      ...(error?.code !== "ENOENT" ? { failure: deploymentFailure(error, "config-read") } : {}),
+    };
   }
+  let stage = "config-read";
   try {
-    const manifest = JSON.parse(readFileSync(join(path, "package.json"), "utf8"));
+    const text = readFileSync(join(path, "package.json"), "utf8");
+    stage = "config-parse";
+    const manifest = JSON.parse(text);
     const bundles = manifest?.dsh?.profile?.bundles;
     if (!Array.isArray(bundles) || !bundles.every((value) => typeof value === "string")) {
-      return { status: "manifest_unreadable", name };
+      return { status: "manifest_unreadable", name, failure: deploymentFailure(undefined, stage, { failureReason: "invalid_record" }) };
     }
     return {
       status: "valid",
@@ -1341,8 +1671,10 @@ function inspectProfile(name, path) {
         bundles,
       },
     };
-  } catch {
-    return { status: "manifest_unreadable", name };
+  } catch (error) {
+    return { status: "manifest_unreadable", name, failure: deploymentFailure(error, stage, {
+      ...(stage === "config-parse" ? { failureReason: "invalid_record" } : {}),
+    }) };
   }
 }
 
@@ -1364,22 +1696,86 @@ function profileHasAdapter(profile, packageName = ADAPTER_PACKAGE_NAME) {
     && profile.bundles.includes(packageName));
 }
 
-function managedProfilesHaveInstalledHeadlessBundle(profiles, managedNames) {
+function managedProfilesHaveInstalledHeadlessBundle(profiles, managedNames, options, paths, command) {
+  const installAnchor = resolveDshInstallAnchor(command, options, paths);
+  const runtime = { command, options, paths, checks: new Map() };
   return profiles.some((profile) => (
-    managedNames.has(profile.name) && profileHasInstalledHeadlessBundle(profile)
+    managedNames.has(profile.name) && profileHasInstalledHeadlessBundle(profile, installAnchor, runtime)
   ));
 }
 
-function profileHasInstalledHeadlessBundle(profile) {
-  if (!profile?.bundles.includes(HEADLESS_BUNDLE_NAME)) return false;
+function resolveDshInstallAnchor(command, options, paths) {
+  if (!command) return undefined;
   try {
-    // DSH exposes built-in bundles through the Profile's shared resolution tree.
-    const requireFromProfile = createRequire(join(profile.path, "package.json"));
-    readFileSync(requireFromProfile.resolve(HEADLESS_BUNDLE_NAME), "utf8");
-    return true;
+    const [launcher, ...args] = buildDshCommand(command, [], {
+      ...options.windowsCliResolution,
+      nodePath: options.windowsCliResolution?.nodePath,
+    });
+    const invocation = resolveWindowsCliInvocation(launcher, args, {
+      ...options.windowsCliResolution,
+      env: paths.env,
+    });
+    let entrypoint = invocation.args[0] ?? invocation.command;
+    if (!isAbsolute(entrypoint)) {
+      entrypoint = (paths.env.PATH ?? "").split(delimiter)
+        .map((directory) => resolve(paths.adapterRoot, directory, entrypoint))
+        .find((candidate) => {
+          try {
+            accessSync(candidate, constants.X_OK);
+            return true;
+          } catch {
+            return false;
+          }
+        });
+    }
+    if (!entrypoint) return undefined;
+    // Follow the selected CLI's npm symlink or Windows shim, not this adapter's
+    // dependencies: DSH resolves built-in bundles from its own installation.
+    for (let root = dirname(realpathSync(entrypoint)); ; root = dirname(root)) {
+      const manifestPath = join(root, "package.json");
+      if (existsSync(manifestPath)
+        && JSON.parse(readFileSync(manifestPath, "utf8")).name === DSH_PACKAGE_NAME) {
+        return manifestPath;
+      }
+      if (dirname(root) === root) return undefined;
+    }
   } catch {
-    return false;
+    // Older or packaged CLIs may expose only the Profile's shared module tree.
+    return undefined;
   }
+}
+
+function profileHasInstalledHeadlessBundle(profile, installAnchor, runtime) {
+  if (!profile?.bundles.includes(HEADLESS_BUNDLE_NAME) || isDesktopProfile(profile.name)) return false;
+  if (runtime && inspectDshDesktopCommand(runtime.command, runtime.options.windowsCliResolution)) {
+    // Desktop built-ins live inside app.asar, which ordinary Node cannot
+    // resolve. Ask its native CLI to compose the declared bundle layers;
+    // this exits before starting plugins, models, or a session.
+    if (!runtime.checks.has(profile.name)) {
+      const result = runDsh(runtime.options, runtime.paths, [
+        "--profile", profile.name, "--dump-default-config",
+      ], runtime.command);
+      runtime.checks.set(profile.name, result.status === 0 && !result.error
+        && String(result.stdout ?? "").includes(HEADLESS_BUNDLE_NAME));
+    }
+    return runtime.checks.get(profile.name);
+  }
+  // Modern DSH uses installation-first resolution before a session has created
+  // profiles/node_modules. Keep the Profile tree as the legacy fallback.
+  for (const anchor of [installAnchor, join(profile.path, "package.json")].filter(Boolean)) {
+    const requireFromAnchor = createRequire(anchor);
+    if (!(requireFromAnchor.resolve.paths(HEADLESS_BUNDLE_NAME) ?? []).some((directory) => (
+      existsSync(join(directory, HEADLESS_BUNDLE_NAME, "package.json"))
+    ))) continue;
+    try {
+      readFileSync(requireFromAnchor.resolve(HEADLESS_BUNDLE_NAME), "utf8");
+      return true;
+    } catch {
+      // A broken selected bundle must not be hidden by a different legacy copy.
+      return false;
+    }
+  }
+  return false;
 }
 
 function profileHasInstalledAdapter(
@@ -1423,6 +1819,7 @@ function profileHasInstalledAdapter(
       && authority.memoraxCodeCommand === state.memoraxCodeCommand
       && authority.dshCommand === state.dshCommand
       && authority.dshVersion === state.dshVersion
+      && isDeepStrictEqual(authority.desktopRuntime, state.desktopRuntime)
       && isDeepStrictEqual(authority.profiles, state.profiles)
       && authority.revision === state.updatedAt;
   } catch {

@@ -1,13 +1,16 @@
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
-import { basename, delimiter, join } from "node:path";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { basename, delimiter, isAbsolute, join } from "node:path";
 import {
   localBackendRecoveryArguments,
   resolveBackendConnection,
 } from "../backend-connection.mjs";
+import { withJsonFileLockAsync } from "../config-utils.mjs";
 import { isRepoMemoryJobWorker } from "../repo-memory/repo-memory-job-context.mjs";
+import { recordHookFailure } from "./hook-diagnostics.mjs";
 
 export const DEFAULT_ENSURE_BACKEND_START_TIMEOUT_MS = 90000;
+const MAX_CHILD_STDOUT_BYTES = 64 * 1024;
 const HOOK_INPUT_SYMBOL = Symbol.for("memorax-code.client-hook.input.v1");
 
 export async function runEnsureBackendHook(options) {
@@ -16,13 +19,23 @@ export async function runEnsureBackendHook(options) {
 }
 
 export async function ensureBackendAvailable(options, input = {}) {
-  if (isRepoMemoryJobWorker() || ensureDisabled(options.ensureBackendValue)) return;
+  if (isRepoMemoryJobWorker()) return;
   const homes = options.resolveHomes(input);
+  const metadata = packageMetadata(options.pluginRoot);
+  const command = memoraxCodeCommandInfo(
+    options.memoraxCodeCommand,
+    metadata,
+    options.platform,
+  );
+  if (ensureDisabled(options.ensureBackendValue)) {
+    return;
+  }
   let connection;
   try {
     connection = options.backendConnection
       ?? resolveBackendConnection({ memoraxCodeHome: homes.memoraxCodeHome });
   } catch (error) {
+    recordHookFailure({ memoraxCodeHome: homes.memoraxCodeHome, client: options.client, input, operation: "hook.ensure-backend", errorCode: "HOOK_BACKEND_CONNECTION_INVALID", error });
     options.debug?.(error instanceof Error ? error.message : String(error));
     return;
   }
@@ -32,22 +45,62 @@ export async function ensureBackendAvailable(options, input = {}) {
     return;
   }
 
-  const recoveryArguments = localBackendRecoveryArguments(connection);
-  if (recoveryArguments === undefined) return;
-  const command = memoraxCodeCommandInfo(options.memoraxCodeCommand, options.pluginRoot);
+  if (localBackendRecoveryArguments(connection) === undefined) return;
   if (!command.value || command.removed === true || !memoraxCodeCommandAvailable(command.value)) return;
-  const result = await runMemoraxCode(
-    command.value,
-    options.buildStartArgs(homes, recoveryArguments),
-    parsePositiveInt(options.startTimeoutValue, DEFAULT_ENSURE_BACKEND_START_TIMEOUT_MS),
-    options.nodePath,
-    options.recoveryEnv,
-  );
-  if (result.code !== 0) {
-    options.debug?.(
-      `MemoraX Code backend start failed with code ${result.code}${result.stderr ? `: ${result.stderr}` : ""}`,
-    );
+  const startTimeoutMs = parsePositiveInt(options.startTimeoutValue, DEFAULT_ENSURE_BACKEND_START_TIMEOUT_MS);
+  const deadline = Date.now() + startTimeoutMs;
+  try {
+    // Hooks from different clients and processes share one recovery attempt.
+    // This lock is separate from the lifecycle lock acquired by the child CLI.
+    await withJsonFileLockAsync(join(homes.memoraxCodeHome, "runtime", "backend", "hook-recovery.json"), async () => {
+      connection = refreshedBackendConnection(options.backendConnection, homes.memoraxCodeHome);
+      const remainingHealthMs = Math.min(healthTimeoutMs, deadline - Date.now());
+      if (remainingHealthMs <= 0) return;
+      if (await backendHealthy(connection, remainingHealthMs)) {
+        await options.onHealthy?.({ homes, backendUrl: connection.url });
+        return;
+      }
+      const recoveryArguments = localBackendRecoveryArguments(connection);
+      if (recoveryArguments === undefined || deadline <= Date.now() || !memoraxCodeCommandAvailable(command.value)) return;
+      // Client authority may have been revoked while health checks or this lock
+      // were pending. A skipped recovery is not a successful process start.
+      if (options.shouldRecover && await options.shouldRecover() !== true) return;
+      const remainingStartMs = deadline - Date.now();
+      if (remainingStartMs <= 0) return;
+      const result = await runMemoraxCode(
+        command.value,
+        [...options.buildStartArgs(homes, recoveryArguments), "--preserve-clients", "--json"],
+        remainingStartMs,
+        options.nodePath,
+        recoveryEnvironment(options.recoveryEnv, metadata),
+      );
+      if ((result.code !== 0 || result.signal) && !result.diagnosticRecorded) {
+        const errorCode = result.timedOut ? "HOOK_BACKEND_START_TIMEOUT"
+          : result.error ? "HOOK_BACKEND_START_SPAWN_FAILED"
+            : result.signal ? "HOOK_BACKEND_START_INTERRUPTED" : "HOOK_BACKEND_START_FAILED";
+        recordHookFailure({ memoraxCodeHome: homes.memoraxCodeHome, client: options.client, input, operation: "hook.ensure-backend", errorCode, error: result.error, commandExitCode: result.code, commandSignal: result.signal });
+      }
+      if (result.code !== 0) {
+        options.debug?.(
+          `MemoraX Code backend start failed with code ${result.code}${result.stderr ? `: ${result.stderr}` : ""}`,
+        );
+      }
+    }, { timeoutMs: startTimeoutMs });
+  } catch (error) {
+    recordHookFailure({ memoraxCodeHome: homes.memoraxCodeHome, client: options.client, input, operation: "hook.ensure-backend", errorCode: "HOOK_BACKEND_RECOVERY_FAILED", error });
+    options.debug?.(error instanceof Error ? error.message : String(error));
   }
+
+}
+
+function refreshedBackendConnection(supplied, memoraxCodeHome) {
+  if (!supplied) return resolveBackendConnection({ memoraxCodeHome });
+  return resolveBackendConnection({
+    memoraxCodeHome,
+    env: {},
+    backendUrl: supplied.source === "authority" || supplied.source === "default" ? undefined : supplied.url,
+    backendToken: supplied.tokenSource === "authority-file" ? undefined : supplied.token,
+  });
 }
 
 export function stringValue(value) {
@@ -79,22 +132,48 @@ async function backendHealthy(connection, timeoutMs) {
   }
 }
 
-function memoraxCodeCommandInfo(explicitCommand, pluginRoot) {
+function memoraxCodeCommandInfo(explicitCommand, metadata, platform = process.platform) {
   const explicit = stringValue(explicitCommand);
   if (explicit) return { value: explicit, removed: pathLooksRemoved(explicit) };
-  const metadata = metadataCommand(pluginRoot);
-  if (metadata) return { value: metadata, removed: pathLooksRemoved(metadata) };
+  const command = stringValue(metadata?.memoraxCodeCommand);
+  if (command) return { value: command, removed: pathLooksRemoved(command) };
+  if (platform === "win32") return { value: undefined, removed: false };
   return { value: "memorax-code", removed: false };
 }
 
-function metadataCommand(pluginRoot) {
+function packageMetadata(pluginRoot) {
   const root = stringValue(pluginRoot);
   if (!root) return undefined;
   const path = join(root, ".memorax-code-package.json");
   if (!existsSync(path)) return undefined;
   try {
     const metadata = JSON.parse(readFileSync(path, "utf8"));
-    return stringValue(metadata.memoraxCodeCommand);
+    return metadata && typeof metadata === "object" && !Array.isArray(metadata)
+      ? metadata
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function recoveryEnvironment(recoveryEnv, metadata) {
+  if (stringValue(recoveryEnv?.MEMORAX_CODE_NPM_EXEC_PATH)
+    || stringValue(process.env.MEMORAX_CODE_NPM_EXEC_PATH)) {
+    return recoveryEnv;
+  }
+  const npmExecPath = metadataNpmExecPath(metadata);
+  return npmExecPath
+    ? { ...(recoveryEnv ?? {}), MEMORAX_CODE_NPM_EXEC_PATH: npmExecPath }
+    : recoveryEnv;
+}
+
+function metadataNpmExecPath(metadata) {
+  const npmExecPath = stringValue(metadata?.npmExecPath);
+  if (!npmExecPath || !isAbsolute(npmExecPath) || !/\.(?:cjs|js|mjs)$/i.test(npmExecPath)) {
+    return undefined;
+  }
+  try {
+    return statSync(npmExecPath).isFile() ? npmExecPath : undefined;
   } catch {
     return undefined;
   }
@@ -116,25 +195,60 @@ function runMemoraxCode(command, args, timeoutMs, nodePath, recoveryEnv) {
     const childArgs = nodeEntrypoint(command) ? [command, ...args] : args;
     const childCommand = nodeEntrypoint(command) ? (stringValue(nodePath) ?? process.execPath) : command;
     let stderr = "";
+    let stdout = "";
+    let stdoutBytes = 0;
     let settled = false;
     const child = spawn(childCommand, childArgs, {
       env: recoveryEnv === undefined ? process.env : { ...process.env, ...recoveryEnv },
-      stdio: ["ignore", "ignore", "pipe"],
+      stdio: ["ignore", "pipe", "pipe"],
     });
     const finish = (result) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve(result);
+      resolve({ ...result, diagnosticRecorded: result.code !== 0 && !result.timedOut && !result.error && !result.signal && savedStartDiagnostic(stdout) });
     };
     const timer = setTimeout(() => {
       child.kill("SIGTERM");
-      finish({ code: 124, stderr: "timed out" });
+      finish({ code: 124, stderr: "timed out", timedOut: true });
     }, timeoutMs);
+    child.stdout.on("data", (chunk) => {
+      stdoutBytes += chunk.length;
+      stdout = stdoutBytes <= MAX_CHILD_STDOUT_BYTES ? stdout + String(chunk) : "";
+    });
     child.stderr.on("data", (chunk) => { stderr += String(chunk); });
-    child.on("error", (error) => finish({ code: 127, stderr: error.message }));
-    child.on("close", (code) => finish({ code: code ?? 0, stderr }));
+    child.on("error", (error) => finish({ code: 127, stderr: error.message, error: { code: error.code } }));
+    child.on("close", (code, signal) => finish({ code: code ?? 0, stderr, signal }));
   });
+}
+
+function savedStartDiagnostic(stdout) {
+  try {
+    const report = JSON.parse(stdout);
+    if (report?.action !== "start" || report.ok !== false || typeof report.backend?.ok !== "boolean") return false;
+    const reportKeys = {
+      codex: "codexAdapter", claude: "claudeAdapter", dsh: "dshAdapter", opencode: "opencodeAdapter",
+      codebuddy: "codebuddyAdapter", workbuddy: "workbuddyAdapter", trae: "traeAdapter", cursor: "cursorAdapter", qoder: "qoderAdapter",
+    };
+    if (Object.hasOwn(report, "clientFailures") && !Array.isArray(report.clientFailures)) return false;
+    const clientFailures = report.clientFailures ?? [];
+    if (clientFailures.length > Object.keys(reportKeys).length) return false;
+    const diagnostics = report.backend.ok === false ? [report.diagnostic] : [];
+    const seenClients = new Set();
+    for (const entry of clientFailures) {
+      if (!Object.hasOwn(reportKeys, entry?.client) || seenClients.has(entry.client)
+        || report[reportKeys[entry.client]]?.ok !== false) return false;
+      seenClients.add(entry.client);
+      diagnostics.push(entry.diagnostic);
+    }
+    for (const [client, key] of Object.entries(reportKeys)) {
+      if (report[key]?.ok === false && !seenClients.has(client)) return false;
+    }
+    // Trust only the requested child command's structured saved-record metadata.
+    // Never retain its report, raw output, or a supplied filesystem path.
+    return diagnostics.length > 0 && diagnostics.every((diagnostic) => diagnostic?.recorded === true
+      && /^mc-\d{13}-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(diagnostic.id));
+  } catch { return false; }
 }
 
 function nodeEntrypoint(command) {

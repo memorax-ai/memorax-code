@@ -1,13 +1,16 @@
 import { loadLifecycleMemoraxCodeConfig, type MemoraxCodeConfig } from "../config/memorax-code.js";
+import { LIFECYCLE_CLIENTS, type LifecycleClientId } from "./client-reports.js";
 
-export type ManagedClients = Readonly<{
-  codex: boolean;
-  claude: boolean;
-  dsh: boolean;
-  opencode: boolean;
-}>;
+// Preserve explicit false fields in legacy selection records. Later clients
+// remain absent unless selected; this is distinct from discovery defaults.
+const LEGACY_SELECTION_CLIENTS = ["codex", "claude", "dsh", "opencode"] as const;
+type LegacySelectionClient = typeof LEGACY_SELECTION_CLIENTS[number];
+export type ManagedClients = Readonly<Record<LegacySelectionClient, boolean>
+  & Partial<Record<Exclude<LifecycleClientId, LegacySelectionClient>, boolean>>>;
 
-const allClients: ManagedClients = Object.freeze({ codex: true, claude: true, dsh: true, opencode: true });
+const allClients: ManagedClients = Object.freeze(Object.fromEntries(
+  LIFECYCLE_CLIENTS.map(({ id }) => [id, true]),
+) as ManagedClients);
 
 export function resolveManagedClients(argv: readonly string[], config: MemoraxCodeConfig = {}): ManagedClients {
   const explicit = argValue(argv, "--clients");
@@ -21,10 +24,15 @@ export function resolveManagedClients(argv: readonly string[], config: MemoraxCo
       // automatic local-Harness discovery enabled for existing installations.
       dsh: config.clients.dsh !== false,
       opencode: config.clients.opencode === true,
+      ...(config.clients.codebuddy === true ? { codebuddy: true } : {}),
+      ...(config.clients.workbuddy !== undefined ? { workbuddy: config.clients.workbuddy } : {}),
+      ...(config.clients.trae === true ? { trae: true } : {}),
+      ...(config.clients.cursor === true ? { cursor: true } : {}),
+      ...(config.clients.qoder === true ? { qoder: true } : {}),
     };
   }
 
-  return allClients;
+  return { codex: true, claude: true, dsh: true, opencode: true };
 }
 
 export function parseManagedClients(value: string): ManagedClients {
@@ -33,17 +41,12 @@ export function parseManagedClients(value: string): ManagedClients {
   if (normalized === "none") return { codex: false, claude: false, dsh: false, opencode: false };
 
   const names = normalized.split(",").map((name) => name.trim()).filter(Boolean);
-  if (names.length === 0 || names.some((name) => (
-    name !== "codex" && name !== "claude" && name !== "dsh" && name !== "opencode"
-  ))) {
-    throw new Error(`invalid --clients value: ${value}; expected a comma-separated subset of codex, claude, dsh, opencode, or all or none`);
+  if (names.length === 0 || names.some((name) => !LIFECYCLE_CLIENTS.some(({ id }) => id === name))) {
+    throw new Error(`invalid --clients value: ${value}; expected a comma-separated subset of ${LIFECYCLE_CLIENTS.map(({ id }) => id).join(", ")}, or all or none`);
   }
-  return {
-    codex: names.includes("codex"),
-    claude: names.includes("claude"),
-    dsh: names.includes("dsh"),
-    opencode: names.includes("opencode"),
-  };
+  return Object.fromEntries(LIFECYCLE_CLIENTS
+    .filter(({ id }) => LEGACY_SELECTION_CLIENTS.some((legacy) => legacy === id) || names.includes(id))
+    .map(({ id }) => [id, names.includes(id)])) as ManagedClients;
 }
 
 export function loadManagedClientsConfig(memoraxCodeHome: string): MemoraxCodeConfig {

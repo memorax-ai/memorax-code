@@ -2,6 +2,7 @@ export type JsonFileLockOptions = Readonly<{
   timeoutMs?: number;
   staleMs?: number;
   retryMs?: number;
+  ensurePrivateDirectory?: boolean;
 }>;
 
 export type AsyncJsonFileLockOptions = JsonFileLockOptions & Readonly<{
@@ -13,6 +14,8 @@ export function readJsonFile(path: string): any;
 export function readJsonValue(path: string): any;
 export function readStdinJson(): Promise<any>;
 export function injectClientHookInput(input: Record<string, unknown>): void;
+export function injectClientHookPluginRoot(pluginRoot: string): void;
+export function readClientHookPluginRoot(): string | undefined;
 export function sha256(value: string | NodeJS.ArrayBufferView): string;
 export function stringOption(value: unknown): string | undefined;
 export function atomicWriteJson(path: string, value: unknown): void;

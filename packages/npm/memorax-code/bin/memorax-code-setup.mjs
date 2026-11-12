@@ -8,22 +8,52 @@ import { fileURLToPath } from "node:url";
 import { parse } from "smol-toml";
 import {
   setTomlField,
-  updateConfigFileAtomically,
+  updateConfigFileWithLock,
 } from "../lib/memorax-code-adapter-common/src/memorax-code-config-file.mjs";
+import { DEFAULT_JEV_CONFIG_TEXT, appendMissingJevConfig } from "../lib/memorax-code-adapter-common/src/jev-config-defaults.mjs";
 import {
   MEMORAX_DEFAULT_BASE_URL,
   MEMORAX_DEFAULT_MEMORY_OUTPUT_LANGUAGE,
   normalizeMemoraxBaseUrl,
   normalizeMemoraxMemoryOutputLanguage,
 } from "../lib/memorax-code-adapter-common/src/memorax-defaults.mjs";
-import { writeSetupCompletionRecord } from "../lib/memorax-code-adapter-common/src/setup-completion.mjs";
-import { stagePackagedClientHookRuntime } from "../lib/client-hook-runtime.mjs";
+import { resolveCodeBuddyClientSelection } from "../lib/memorax-code-codebuddy-adapter/src/config.mjs";
+import { readSetupCompletionRecord, writeSetupCompletionRecord } from "../lib/memorax-code-adapter-common/src/setup-completion.mjs";
+import { readJsonRuntimeRecord, writePrivateJsonRecord } from "../lib/memorax-code-adapter-common/src/runtime-record.mjs";
+import {
+  activatePackagedClientHookRuntime,
+  stagePackagedClientHookRuntime,
+} from "../lib/client-hook-runtime.mjs";
 import { discoverDshProfiles } from "../lib/dsh-plugin-install.mjs";
 import { ensureClaudeCommandEnv } from "../lib/resolve-claude-command.mjs";
 import { ensureCodexCommandEnv } from "../lib/resolve-codex-command.mjs";
-import { reconcileSetup } from "../lib/setup-reconcile.mjs";
+import {
+  defaultCodeBuddyHome,
+  defaultWorkBuddyHome,
+  ensureCodeBuddyCommandEnv,
+  ensureWorkBuddyCommandEnv,
+} from "../lib/resolve-codebuddy-command.mjs";
+import {
+  defaultTraeHome,
+  traeInstallationDetected,
+} from "../lib/memorax-code-trae-adapter/src/adapter-paths.mjs";
+import {
+  defaultCursorHome,
+  cursorInstallationDetected,
+} from "../lib/memorax-code-cursor-adapter/src/adapter-paths.mjs";
+import {
+  defaultQoderHome,
+  qoderInstallationDetected,
+} from "../lib/memorax-code-qoder-adapter/src/adapter-paths.mjs";
+import {
+  failedLifecycleAdapters,
+  reconcileSetup,
+  startLifecycleReport,
+} from "../lib/setup-reconcile.mjs";
 import { detectSetupMemoryPreferences } from "../lib/setup-memory-preferences.mjs";
-import { ensureTrialSetupCredential } from "../lib/trial-setup.mjs";
+import { readSetupApiKey } from "../lib/setup-api-key-input.mjs";
+import { ensureTrialSetupCredential, trialSetupFailureDetails } from "../lib/trial-setup.mjs";
+import { printSetupBackendDiagnostic, printSetupClientDiagnostics, reportSetupDeploymentFailure, reportSetupFailure } from "../lib/setup-diagnostics.mjs";
 import { commandOnPath } from "../lib/vscode-extension-command.mjs";
 import { resolveWindowsCliInvocation } from "../lib/windows-cli-invocation.mjs";
 
@@ -40,15 +70,48 @@ const RED = "\x1b[31m";
 const BOLD = "\x1b[1m";
 const RESET = "\x1b[0m";
 const DSH_OPTIONAL_ENV = "MEMORAX_CODE_DSH_ADAPTER_OPTIONAL";
+const SETUP_CLIENTS = ["codex", "claude", "opencode", "codebuddy", "workbuddy", "trae", "cursor", "qoder"];
+const LIFECYCLE_CLIENT_IDS = ["codex", "claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor", "qoder"];
 
 const skipCodexPluginInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_CODEX_PLUGIN_INSTALL);
 const skipClaudeAdapterInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_CLAUDE_ADAPTER_INSTALL);
 const skipOpenCodeAdapterInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_OPENCODE_ADAPTER_INSTALL);
+const skipCodeBuddyAdapterInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_CODEBUDDY_ADAPTER_INSTALL);
+const skipWorkBuddyAdapterInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_WORKBUDDY_ADAPTER_INSTALL);
+const skipTraeAdapterInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_TRAE_ADAPTER_INSTALL);
+const skipCursorAdapterInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_CURSOR_ADAPTER_INSTALL);
+const skipQoderAdapterInstall = truthyEnv(process.env.MEMORAX_CODE_SKIP_QODER_ADAPTER_INSTALL);
 const updateMode = truthyEnv(process.env.MEMORAX_CODE_SETUP_UPDATE);
+const reuseRestoredBackend = updateMode && truthyEnv(process.env.MEMORAX_CODE_SETUP_REUSE_RESTORED_BACKEND);
+const automaticUpdateMode = truthyEnv(process.env.MEMORAX_CODE_SETUP_AUTOMATIC_UPDATE);
+// An older updater leaves this unset and keeps its reconcile behavior. Empty
+// reconciles configured clients only; a list activates exactly those clients.
+const automaticNewClients = automaticUpdateMode
+  ? process.env.MEMORAX_CODE_SETUP_NEW_CLIENTS?.split(",").filter(Boolean)
+  : undefined;
+const clientActivationRun = (automaticNewClients?.length ?? 0) > 0;
 const setupMode = setupModeFromEnvironment(process.env.MEMORAX_CODE_SETUP_MODE);
+const nonInteractive = process.argv.includes("--non-interactive");
 if (!setupMode) {
   logRed("Setup mode is invalid.");
   process.exit(1);
+}
+if (automaticUpdateMode && !updateMode) {
+  logRed("Automatic update setup requires update mode.");
+  process.exit(1);
+}
+let stdinApiKey;
+if (nonInteractive) {
+  if (setupMode !== "existing-account" || updateMode) {
+    logRed("--non-interactive requires existing-account setup, not update reconciliation.");
+    process.exit(1);
+  }
+  try {
+    stdinApiKey = await readSetupApiKey();
+  } catch (error) {
+    logRed(error.message);
+    process.exit(1);
+  }
 }
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -59,27 +122,37 @@ const codexRuntime = ensureCodexCommandEnv();
 const codexCommand = codexRuntime.command;
 const claudeRuntime = ensureClaudeCommandEnv();
 const claudeCommand = claudeRuntime.command;
-const previousClients = readPersistedClientSelection();
-const existingSetup = previousClients !== undefined;
+const codeBuddyRuntime = ensureCodeBuddyCommandEnv();
+const workBuddyRuntime = ensureWorkBuddyCommandEnv();
+const persistedClientSelection = await readPersistedClientSelection();
+const existingSetup = persistedClientSelection !== undefined;
+const previousClients = persistedClientSelection?.selected ?? [];
+const explicitClientChoices = persistedClientSelection?.explicit ?? [];
 const persistedDshSelection = readPersistedDshSelection();
+const dshEnabledByConfig = persistedDshSelection !== false;
 let dshProfiles = [];
 let dshProfilesVerified = true;
 try {
   dshProfiles = discoverDshProfiles();
 } catch (error) {
   dshProfilesVerified = false;
+  reportSetupDeploymentFailure("dsh", "discover", { home: memoraxCodeHome(), version: packageVersion(), error });
   const code = typeof error?.code === "string" ? ` (${error.code})` : "";
   logRed(`DeepSeek Harness Profile discovery could not be verified${code}; DSH setup was skipped, but other client setup will continue.`);
 }
 const dshSelected = dshProfilesVerified
   && dshProfiles.length > 0
-  && persistedDshSelection !== false;
-if (!canPromptOnStderr()) {
+  && dshEnabledByConfig;
+if (automaticUpdateMode && !existingSetup) {
+  logRed("Automatic update setup requires an existing [clients] selection.");
+  process.exit(1);
+}
+if (!automaticUpdateMode && !nonInteractive && !canPromptOnStderr()) {
   logRed("Setup requires an interactive terminal.");
   log("Run `memorax-code setup` from a terminal, or use `memorax-code status` to inspect an existing setup.");
   process.exit(1);
 }
-const scriptedAnswers = process.stdin.isTTY !== true
+const scriptedAnswers = !automaticUpdateMode && !nonInteractive && process.stdin.isTTY !== true
   ? parseScriptedAnswers(readFileSync(0, "utf8"))
   : undefined;
 if (seedMissingMemoraxCodeConfig() === "failed") {
@@ -94,13 +167,13 @@ try {
   });
   process.env.MEMORAX_CODE_DEFER_CLIENT_HOOK_RUNTIME_ACTIVATION = "1";
 } catch (error) {
-  logRed(`Client Hook runtime staging failed: ${error instanceof Error ? error.message : String(error)}`);
+  setupFailure("runtime", { error });
   logRed("Backend and plugin mutation were skipped; the previously active runtime remains authoritative.");
   printPostinstallSummary("not-verified");
   process.exit(1);
 }
 runCommonPreflight();
-const requestedClients = ["codex", "claude", "opencode"];
+const requestedClients = SETUP_CLIENTS;
 const codexPreflight = requestedClients.includes("codex") && !skipCodexPluginInstall
   ? runCodexPreflight({
       integrationSelected: !existingSetup || previousClients.includes("codex"),
@@ -116,14 +189,109 @@ const opencodePreflight = requestedClients.includes("opencode") && !skipOpenCode
       integrationSelected: !existingSetup || previousClients.includes("opencode"),
     })
   : { ok: true };
+const codebuddyPreflight = requestedClients.includes("codebuddy") && !skipCodeBuddyAdapterInstall
+  ? runCodeBuddyPreflight({
+      client: "codebuddy",
+      integrationSelected: !existingSetup || previousClients.includes("codebuddy"),
+    })
+  : { ok: true };
+const workbuddyPreflight = requestedClients.includes("workbuddy") && !skipWorkBuddyAdapterInstall
+  ? runCodeBuddyPreflight({
+      client: "workbuddy",
+      integrationSelected: !existingSetup || previousClients.includes("workbuddy"),
+    })
+  : { ok: true };
+const traePreflight = requestedClients.includes("trae") && !skipTraeAdapterInstall
+  ? runTraePreflight({
+      integrationSelected: !existingSetup || previousClients.includes("trae"),
+    })
+  : { ok: true };
+const cursorPreflight = requestedClients.includes("cursor") && !skipCursorAdapterInstall
+  ? runCursorPreflight({
+      integrationSelected: !existingSetup || previousClients.includes("cursor"),
+    })
+  : { ok: true };
+const qoderPreflight = requestedClients.includes("qoder") && !skipQoderAdapterInstall
+  ? runQoderPreflight({
+      integrationSelected: !existingSetup || previousClients.includes("qoder"),
+    })
+  : { ok: true };
+const failedBuddyClients = [
+  ["codebuddy", codebuddyPreflight],
+  ["workbuddy", workbuddyPreflight],
+].filter(([client, preflight]) => preflight.failed
+  && (!existingSetup || previousClients.includes(client)));
+if (failedBuddyClients.length > 0) {
+  logRed(`Setup stopped because ${failedBuddyClients.map(([client]) => clientLabel(client)).join(" and ")} could not run. Correct the reported runtime problem and rerun \`memorax-code setup\`.`);
+  printPostinstallSummary("not-verified");
+  process.exit(1);
+}
 const detectedClients = requestedClients.filter((client) => {
   if (client === "codex") return !skipCodexPluginInstall && codexPreflight.ok;
   if (client === "claude") return !skipClaudeAdapterInstall && claudePreflight.ok;
-  return !skipOpenCodeAdapterInstall && opencodePreflight.ok;
+  if (client === "opencode") return !skipOpenCodeAdapterInstall && opencodePreflight.ok;
+  if (client === "codebuddy") return !skipCodeBuddyAdapterInstall && codebuddyPreflight.ok;
+  if (client === "workbuddy") return !skipWorkBuddyAdapterInstall && workbuddyPreflight.ok;
+  if (client === "trae") return !skipTraeAdapterInstall && traePreflight.ok;
+  if (client === "cursor") return !skipCursorAdapterInstall && cursorPreflight.ok;
+  return !skipQoderAdapterInstall && qoderPreflight.ok;
 });
-const selectedClients = existingSetup
-  ? await chooseUpdateClients(previousClients, detectedClients, scriptedAnswers)
+const newlyDetectedClients = existingSetup
+  ? detectedClients.filter((client) => (
+      !explicitClientChoices.includes(client)
+      && (automaticNewClients === undefined || automaticNewClients.includes(client))
+    ))
+  : [];
+if (clientActivationRun && newlyDetectedClients.length === 0) {
+  // A config edit or another setup won the race; do not restart the Backend.
+  log("No requested client still needs activation.");
+  process.exit(0);
+}
+// Non-interactive setup accepts the same default choices as interactive setup.
+const selectedClients = !existingSetup
+  ? detectedClients
+  : automaticUpdateMode || nonInteractive
+    ? requestedClients.filter((client) => (
+        previousClients.includes(client) || newlyDetectedClients.includes(client)
+      ))
+    : await chooseUpdateClients(previousClients, newlyDetectedClients, scriptedAnswers);
+// An activation run persists its client only after verification, so a failed
+// attempt stays undecided and can be retried.
+const clientsWithPersistedIntent = existingSetup
+  ? requestedClients.filter((client) => (
+      explicitClientChoices.includes(client)
+      || (newlyDetectedClients.includes(client) && !clientActivationRun)
+    ))
   : detectedClients;
+const clientSelectionMigrationDue = readJsonRuntimeRecord(clientSelectionMigrationPath()).status === "absent";
+const earlierSetupCompleted = readSetupCompletionRecord(memoraxCodeHome()).status === "valid";
+const clientPreflights = {
+  codex: codexPreflight,
+  claude: claudePreflight,
+  opencode: opencodePreflight,
+  codebuddy: codebuddyPreflight,
+  workbuddy: workbuddyPreflight,
+  trae: traePreflight,
+  cursor: cursorPreflight,
+  qoder: qoderPreflight,
+};
+// A client missing from [clients] is undecided and can be activated when it
+// appears. Earlier first setups wrote false for every client they did not find,
+// which the config cannot distinguish from an opt-out, so once such a setup has
+// completed, a false for a client that is still not installed is cleared once.
+// A config that never completed setup was not written that way and keeps its
+// false entries. A skipped preflight reports ok; a failed one found the client,
+// so its false is kept.
+const undecidedClients = !existingSetup
+  ? requestedClients.filter((client) => !detectedClients.includes(client))
+  : clientSelectionMigrationDue && earlierSetupCompleted
+    ? requestedClients.filter((client) => (
+        explicitClientChoices.includes(client)
+        && !previousClients.includes(client)
+        && !clientPreflights[client].ok
+        && !clientPreflights[client].failed
+      ))
+    : [];
 const installClients = detectedClients.filter((client) => selectedClients.includes(client));
 if (existingSetup) {
   log(clientSelectionMessage(selectedClients, { dshSelected }));
@@ -136,20 +304,38 @@ if (dshSelected) {
   log("DeepSeek Harness profiles were detected, but the DSH integration is disabled by [clients].dsh.");
 }
 if (requestedClients.includes("codex") && !skipCodexPluginInstall && !codexPreflight.ok) {
-  log("Codex runtime was not detected; skipping its adapter setup.");
+  log(codexPreflight.failed ? "Codex runtime could not run; skipping its adapter setup." : "Codex runtime was not detected; skipping its adapter setup.");
 }
 if (requestedClients.includes("claude") && !skipClaudeAdapterInstall && !claudePreflight.ok) {
-  log("Claude Code runtime was not detected; skipping its adapter setup.");
+  log(claudePreflight.failed ? "Claude Code runtime could not run; skipping its adapter setup." : "Claude Code runtime was not detected; skipping its adapter setup.");
 }
 if (requestedClients.includes("opencode") && !skipOpenCodeAdapterInstall && !opencodePreflight.ok) {
   log("OpenCode runtime or configuration was not detected; skipping its adapter setup.");
 }
-if (writeClientSelectionConfig(selectedClients) === "failed") {
+if (requestedClients.includes("codebuddy") && !skipCodeBuddyAdapterInstall && !codebuddyPreflight.ok && !codebuddyPreflight.failed) {
+  log("CodeBuddy CLI runtime was not detected; skipping its adapter setup.");
+}
+if (requestedClients.includes("workbuddy") && !skipWorkBuddyAdapterInstall && !workbuddyPreflight.ok && !workbuddyPreflight.failed) {
+  log("WorkBuddy runtime was not detected; skipping its adapter setup.");
+}
+if (requestedClients.includes("trae") && !skipTraeAdapterInstall && !traePreflight.ok) {
+  log("Trae runtime or data directory was not detected; skipping its adapter setup.");
+}
+if (requestedClients.includes("cursor") && !skipCursorAdapterInstall && !cursorPreflight.ok) {
+  log("Cursor runtime or data directory was not detected; skipping its adapter setup.");
+}
+if (requestedClients.includes("qoder") && !skipQoderAdapterInstall && !qoderPreflight.ok) {
+  log("Qoder runtime or data directory was not detected; skipping its adapter setup.");
+}
+if (writeClientSelectionConfig(selectedClients, clientsWithPersistedIntent, undecidedClients) === "failed") {
   printPostinstallSummary("not-verified");
   process.exit(1);
 }
-const clientMode = clientModeFor(installClients, {
-  includeDsh: dshProfilesVerified && persistedDshSelection !== false,
+if (clientSelectionMigrationDue) markClientSelectionMigrated();
+if (updateMode && !automaticUpdateMode) printLaterClientDisclosure();
+const lifecycleClients = automaticUpdateMode ? selectedClients : installClients;
+const clientMode = clientModeFor(lifecycleClients, {
+  includeDsh: dshProfilesVerified && dshEnabledByConfig,
 });
 let memoraxConfigResult = "skipped";
 if (!updateMode) {
@@ -163,6 +349,7 @@ if (!updateMode) {
   } else {
     memoraxConfigResult = await maybeConfigureMemoraxMemory(scriptedAnswers, {
       existingAccount: setupMode === "existing-account",
+      apiKey: stdinApiKey,
     });
   }
 }
@@ -179,34 +366,59 @@ if (memoraxConfigResult === "configured") {
 const codexClientEnabled = installClients.includes("codex");
 const claudeClientEnabled = installClients.includes("claude");
 const opencodeClientEnabled = installClients.includes("opencode");
+const codebuddyClientEnabled = installClients.includes("codebuddy");
+const workbuddyClientEnabled = installClients.includes("workbuddy");
+const traeClientEnabled = installClients.includes("trae");
+const cursorClientEnabled = installClients.includes("cursor");
+const qoderClientEnabled = installClients.includes("qoder");
 const codexClientNewlyEnabled = codexClientEnabled
   && existingSetup
   && !previousClients.includes("codex");
 const codexPluginRequiresActivation = codexClientEnabled
-  && codexPreflight.pluginCache.versions.length === 0;
-const codexHooksBeforeUpdate = codexClientEnabled
+  && codexPreflight.pluginRegistration.ready !== true;
+// Activating another client must not depend on Codex Hook trust, which the
+// version reconcile for this package already handled.
+const codexRegistrationRequired = codexClientEnabled
+  && (!clientActivationRun || newlyDetectedClients.includes("codex"));
+const codexHooksBeforeUpdate = codexRegistrationRequired
   && existingSetup
   && !codexClientNewlyEnabled
   && !codexPluginRequiresActivation
   ? inspectCodexPluginHooksForUpdate()
   : undefined;
-const result = codexClientEnabled
-  ? runNodeMemoraxCodeCommand(["codex-plugin", "install", "--json"], { print: verbose })
+const result = codexRegistrationRequired
+  ? runNodeMemoraxCodeCommand(["codex-plugin", "install", "--json"], { print: verbose, printOnFailure: true })
   : { status: 0 };
 
-if (codexClientEnabled && result.status !== 0) {
+if (codexRegistrationRequired && result.status !== 0) {
+  setupDeploymentFailure("codex", "plugin-register", result);
   logRed("MemoraX Code Codex plugin registration failed. Run `memorax-code setup` again after correcting the reported problem.");
   printPostinstallSummary("not-verified");
   process.exit(1);
 }
 
-if (codexClientEnabled && result.status === 0) {
+// Manual setup does not block installation on Codex Hook trust; the summary
+// reports untrusted Hooks instead.
+let codexHooksUntrusted = false;
+if (codexRegistrationRequired && result.status === 0) {
   if (existingSetup && (codexClientNewlyEnabled || codexPluginRequiresActivation)) {
-    activateCodexPluginHooks();
+    const activationResult = activateCodexPluginHooks();
+    if (automaticUpdateMode && activationResult !== "activated") {
+      logRed("Automatic update stopped because the current MemoraX Code Codex Hooks could not be activated and trusted.");
+      printPostinstallSummary("not-verified");
+      process.exit(1);
+    }
+    codexHooksUntrusted = activationResult !== "activated";
   } else if (existingSetup) {
-    await maybeTrustUpdatedCodexPluginHooks(scriptedAnswers, codexHooksBeforeUpdate);
+    const trustResult = maybeTrustUpdatedCodexPluginHooks(codexHooksBeforeUpdate);
+    if (automaticUpdateMode && trustResult !== "trusted" && trustResult !== "unchanged") {
+      logRed("Automatic update stopped because the current MemoraX Code Codex Hooks could not be verified and trusted.");
+      printPostinstallSummary("not-verified");
+      process.exit(1);
+    }
+    codexHooksUntrusted = trustResult !== "trusted" && trustResult !== "unchanged";
   } else {
-    activateCodexPluginHooks();
+    codexHooksUntrusted = activateCodexPluginHooks() !== "activated";
   }
 }
 const skipCodexAdapter = !codexClientEnabled;
@@ -227,6 +439,42 @@ const opencodeSkipReason = setupClientSkipReason({
   selected: selectedClients.includes("opencode"),
   enabled: opencodeClientEnabled,
 });
+const codebuddySkipReason = setupClientSkipReason({
+  explicitlySkipped: skipCodeBuddyAdapterInstall,
+  selected: selectedClients.includes("codebuddy"),
+  enabled: codebuddyClientEnabled,
+});
+const workbuddySkipReason = setupClientSkipReason({
+  explicitlySkipped: skipWorkBuddyAdapterInstall,
+  selected: selectedClients.includes("workbuddy"),
+  enabled: workbuddyClientEnabled,
+});
+const traeSkipReason = setupClientSkipReason({
+  explicitlySkipped: skipTraeAdapterInstall,
+  selected: selectedClients.includes("trae"),
+  enabled: traeClientEnabled,
+});
+const cursorSkipReason = setupClientSkipReason({
+  explicitlySkipped: skipCursorAdapterInstall,
+  selected: selectedClients.includes("cursor"),
+  enabled: cursorClientEnabled,
+});
+const qoderSkipReason = setupClientSkipReason({
+  explicitlySkipped: skipQoderAdapterInstall,
+  selected: selectedClients.includes("qoder"),
+  enabled: qoderClientEnabled,
+});
+
+const restoredLifecycleClients = reuseRestoredBackend && existingSetup
+  ? await readRestoredLifecycleClients()
+  : undefined;
+const canReuseRestoredBackend = reuseRestoredBackend
+  && existingSetup
+  && dshProfilesVerified
+  && sameLifecycleClientSelection(lifecycleClients, previousClients, { includeDsh: dshSelected })
+  && restoredLifecycleClientsMatch(restoredLifecycleClients, lifecycleClients, dshProfilesVerified && dshEnabledByConfig)
+  && !codexClientNewlyEnabled
+  && !codexPluginRequiresActivation;
 
 const backendAndAdapters = await startBackendAndCheck({
   skipCodexAdapter,
@@ -238,6 +486,22 @@ const backendAndAdapters = await startBackendAndCheck({
   skipOpenCodeAdapter,
   opencodeAdapterRequired: !skipOpenCodeAdapter,
   opencodeSkipReason,
+  skipCodeBuddyAdapter: !codebuddyClientEnabled,
+  codebuddyAdapterRequired: codebuddyClientEnabled,
+  codebuddySkipReason,
+  skipWorkBuddyAdapter: !workbuddyClientEnabled,
+  workbuddyAdapterRequired: workbuddyClientEnabled,
+  workbuddySkipReason,
+  skipTraeAdapter: !traeClientEnabled,
+  skipCursorAdapter: !cursorClientEnabled,
+  skipQoderAdapter: !qoderClientEnabled,
+  traeAdapterRequired: traeClientEnabled,
+  cursorAdapterRequired: cursorClientEnabled,
+  qoderAdapterRequired: qoderClientEnabled,
+  traeSkipReason,
+  cursorSkipReason,
+  qoderSkipReason,
+  reuseRestoredBackend: canReuseRestoredBackend,
 });
 const backendAndAdaptersStatus = backendAndAdapters.status;
 if (backendAndAdaptersStatus === "enabled") {
@@ -249,20 +513,52 @@ if (backendAndAdaptersStatus === "enabled") {
     claudeAdapterEnabled: !skipClaudeAdapter,
     dshAdapterEnabled: backendAndAdapters.dshAdapterEnabled,
     opencodeAdapterEnabled: !skipOpenCodeAdapter,
+    codebuddyAdapterEnabled: codebuddyClientEnabled,
+    workbuddyAdapterEnabled: workbuddyClientEnabled,
+    traeAdapterEnabled: traeClientEnabled,
+    cursorAdapterEnabled: cursorClientEnabled,
+    qoderAdapterEnabled: qoderClientEnabled,
+    traeGlobalHooksActivationRequired: backendAndAdapters.traeGlobalHooksActivationRequired,
   });
   printCommonCommands({
     codexAdapterEnabled: !skipCodexAdapter,
     claudeAdapterEnabled: !skipClaudeAdapter,
     opencodeAdapterEnabled: !skipOpenCodeAdapter,
+    codebuddyAdapterEnabled: codebuddyClientEnabled,
+    workbuddyAdapterEnabled: workbuddyClientEnabled,
+    traeAdapterEnabled: traeClientEnabled,
+    cursorAdapterEnabled: cursorClientEnabled,
+    qoderAdapterEnabled: qoderClientEnabled,
   });
 }
 printPostinstallSummary(
   backendAndAdaptersStatus,
   backendAndAdapters.dshAdapterUnavailable,
+  codexHooksUntrusted,
 );
 if (backendAndAdaptersStatus !== "enabled") process.exit(1);
-if (!updateMode && readMemoraxInstallStatus()?.configured !== true) {
-  logRed("Setup could not verify a ready MemoraX connection after Backend reconciliation.");
+if (!updateMode && readMemoraxInstallStatus({ diagnose: true })?.configured !== true) {
+  process.exit(1);
+}
+if (nonInteractive) {
+  // Verify the persisted value before publishing completion, without exposing it.
+  let matches = false;
+  let verificationStage = "read";
+  try {
+    const config = readFileSync(memoraxCodeConfigPath(), "utf8");
+    verificationStage = "parse";
+    matches = parse(config)?.memorax?.api_key === stdinApiKey;
+  } catch (error) {
+    setupFailure("verify_config", { error, details: { stage: verificationStage } });
+    process.exit(1);
+  }
+  log(`API Key match: ${matches}`);
+  if (!matches) {
+    setupFailure("saved_key");
+    process.exit(1);
+  }
+}
+if (clientActivationRun && recordActivatedClients(newlyDetectedClients) === "failed") {
   process.exit(1);
 }
 try {
@@ -275,7 +571,7 @@ try {
     logRed("Setup completed, but durable persistence of the completion record could not be confirmed.");
   }
 } catch (error) {
-  logRed(`Setup completion could not be recorded: ${error instanceof Error ? error.message : String(error)}`);
+  setupFailure("completion", { error });
   process.exit(1);
 }
 logGreen("Setup completed successfully.");
@@ -284,9 +580,24 @@ process.exit(0);
 async function maybeConfigureMemoraxMemory(scriptedAnswers, {
   existingAccount = false,
   showDisclosure = true,
+  apiKey,
 } = {}) {
   if (showDisclosure) printMemoraxDisclosure();
   const detectedPreferences = detectSetupMemoryPreferences();
+  if (apiKey !== undefined) {
+    if (!detectedPreferences.userId) {
+      logRed("Username could not be detected; run interactive setup to provide it.");
+      return "failed";
+    }
+    printDetectedMemoryPreferences(detectedPreferences);
+    return await writeMemoraxConfigFromInput({
+      userId: detectedPreferences.userId,
+      endpoint: memoraxInstallEndpoint(),
+      outputLanguage: detectedPreferences.outputLanguage ?? MEMORAX_DEFAULT_MEMORY_OUTPUT_LANGUAGE,
+      existingAccount: true,
+      apiKey,
+    });
+  }
   if (scriptedAnswers) {
     return await configureMemoraxMemoryFromAnswers(scriptedAnswers, detectedPreferences, {
       existingAccount,
@@ -324,16 +635,15 @@ async function maybeConfigureMemoraxMemory(scriptedAnswers, {
   }
 }
 
-async function chooseUpdateClients(previousClients, detectedClients, scriptedAnswers) {
+async function chooseUpdateClients(previousClients, newlyDetectedClients, scriptedAnswers) {
   const selected = new Set(previousClients);
-  const availableDisabledClients = detectedClients.filter((client) => !selected.has(client));
-  if (availableDisabledClients.length === 0) return [...previousClients];
+  if (newlyDetectedClients.length === 0) return [...previousClients];
 
   let rl;
   try {
-    for (const client of availableDisabledClients) {
+    for (const client of newlyDetectedClients) {
       const label = clientLabel(client);
-      const question = `${label} runtime is available, but its integration is disabled in [clients]. Enable it now? [Y/n]`;
+      const question = `${label} runtime is not configured in [clients]. Enable it now? [Y/n]`;
       let answer;
       if (scriptedAnswers) {
         log(question);
@@ -352,7 +662,7 @@ async function chooseUpdateClients(previousClients, detectedClients, scriptedAns
   } finally {
     rl?.close();
   }
-  return ["codex", "claude", "opencode"].filter((client) => selected.has(client));
+  return SETUP_CLIENTS.filter((client) => selected.has(client));
 }
 
 async function configureMemoraxMemoryFromAnswers(answers, detectedPreferences, {
@@ -404,6 +714,11 @@ function printMemoraxDisclosure() {
   log("MemoraX Code requires MemoraX for its core remote-memory functionality.");
   log("After connection, trusted repository sessions automatically send selected user prompts and final assistant answers to MemoraX after replies.");
   log("Newly generated configuration enables automatic writeback. Existing configuration is never enabled implicitly; disable it with `[memory.writeback] enabled = false` or `MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED=false`.");
+  printLaterClientDisclosure();
+}
+
+function printLaterClientDisclosure() {
+  log("Supported coding agents installed later are enabled automatically while the Backend is running, and their sessions follow the same rules. Set `[clients].<client> = false` to keep one disabled.");
 }
 
 async function writeMemoraxConfigFromInput({
@@ -443,8 +758,7 @@ async function writeMemoraxConfigFromInput({
       env: process.env,
     });
   } catch (error) {
-    const reason = typeof error?.reason === "string" ? error.reason : "credential_unavailable";
-    logRed(`Secure MemoraX credential setup failed (${reason}).`);
+    setupFailure("credential", { details: trialSetupFailureDetails(error) });
     return "failed";
   }
   if (writeMemoraxConfig({
@@ -549,10 +863,11 @@ function isRecord(value) {
 function inspectCodexPluginHooksForUpdate() {
   const result = runNodeMemoraxCodeCommand(codexPluginHookArgs("hooks"), { print: false });
   const report = parseCodexPluginHookReport(result, "codex-plugin-hooks");
+  if (!report) setupDeploymentFailure("codex", "hooks-read", result, "invalid_response");
   return report?.hooks;
 }
 
-async function maybeTrustUpdatedCodexPluginHooks(scriptedAnswers, previousHooks) {
+function maybeTrustUpdatedCodexPluginHooks(previousHooks) {
   if (!previousHooks) {
     warnUpdatedHookTrustSkipped("Existing Codex hooks could not be inspected before the plugin cache refresh.");
     return "skipped";
@@ -564,31 +879,18 @@ async function maybeTrustUpdatedCodexPluginHooks(scriptedAnswers, previousHooks)
   });
   const report = parseCodexPluginHookReport(checked, "codex-plugin-trust-hooks");
   if (!report) {
+    setupDeploymentFailure("codex", "verify-native", checked, "invalid_response");
     warnUpdatedHookTrustSkipped("Updated Codex hooks could not be inspected after the plugin cache refresh.");
     return "skipped";
   }
   if (report.requiresFullReview) {
+    setupDeploymentFailure("codex", "verify-native", undefined, "conflict");
     warnUpdatedHookTrustSkipped("The MemoraX Code Codex plugin marketplace identity changed during the update, so incremental Hook authorization was not applied.");
     return "skipped";
   }
   if (report.hooks.length === 0) return "unchanged";
 
   printUpdatedCodexHooks(report.hooks, previousHooks);
-  if (!canPromptForUpdate()) {
-    warnUpdatedHookTrustSkipped("This update is running without an interactive terminal, so the new or changed Hooks remain untrusted.");
-    return "skipped";
-  }
-  const answer = await updatedHookTrustAnswer(scriptedAnswers);
-  if (answer === undefined) {
-    warnUpdatedHookTrustSkipped("No Hook authorization response was received, so the new or changed Hooks remain untrusted.");
-    return "skipped";
-  }
-  const normalizedAnswer = answer.trim();
-  if (normalizedAnswer && !/^y(?:es)?$/i.test(normalizedAnswer)) {
-    warnUpdatedHookTrustSkipped("Hook authorization was declined, so the new or changed Hooks remain untrusted.");
-    return "skipped";
-  }
-
   const trustEnv = hookTrustCommandEnv(HOOK_TRUST_SELECTION_ENV, report.hooks);
   const trusted = runNodeMemoraxCodeCommand(codexPluginHookArgs("trust-hooks", ["--yes"]), {
     env: trustEnv,
@@ -598,7 +900,8 @@ async function maybeTrustUpdatedCodexPluginHooks(scriptedAnswers, previousHooks)
     logGreen(`Trusted ${report.hooks.length} new or changed MemoraX Code Codex Hook${report.hooks.length === 1 ? "" : "s"}.`);
     return "trusted";
   }
-  warnUpdatedHookTrustSkipped("The reviewed Hooks changed again or could not be written to Codex config.");
+  setupDeploymentFailure("codex", "hooks-write", trusted);
+  warnUpdatedHookTrustSkipped("The verified Hooks changed again or could not be written to Codex config.");
   return "failed";
 }
 
@@ -659,26 +962,13 @@ function hookTrustCommandEnv(name, hooks) {
 
 function printUpdatedCodexHooks(hooks, previousHooks) {
   const previousByKey = new Map(previousHooks.map((hook) => [hook.key, hook.currentHash]));
-  log("This MemoraX Code update includes new or changed Codex Hooks that require authorization:");
+  log("This MemoraX Code update includes new or changed Codex Hooks that will be trusted automatically after verification:");
   for (const hook of hooks) {
     const change = previousByKey.has(hook.key) ? "changed" : "new";
     const label = hook.statusMessage ? ` (${hook.statusMessage})` : "";
     log(`- ${change}: ${hook.key}${label}`);
     if (hook.eventName) log(`  event: ${hook.eventName}`);
     if (hook.command) log(`  command: ${hook.command}`);
-  }
-}
-
-async function updatedHookTrustAnswer(scriptedAnswers) {
-  if (scriptedAnswers) {
-    log("Trust these new or changed Codex Hooks? [Y/n]");
-    return scriptedAnswers.shift();
-  }
-  const rl = createInterface({ input: process.stdin, output: process.stderr });
-  try {
-    return await rl.question(`${PREFIX} Trust these new or changed Codex Hooks? [Y/n] `);
-  } finally {
-    rl.close();
   }
 }
 
@@ -695,17 +985,14 @@ function warnUpdatedHookTrustSkipped(message) {
 }
 
 function activateCodexPluginHooks() {
-  const activated = runNodeMemoraxCodeCommand(["codex-plugin", "activate", "--yes"], { print: verbose });
+  const activated = runNodeMemoraxCodeCommand(["codex-plugin", "activate", "--yes", "--json"], { print: verbose, printOnFailure: true });
   if (activated.status === 0) {
     logGreen("MemoraX Code Codex Adapter hooks activated and trusted.");
     return "activated";
   }
+  setupDeploymentFailure("codex", "plugin-enable", activated);
   logRed("Codex hook activation failed; run `memorax-code codex-plugin activate --yes` after installation.");
   return "failed";
-}
-
-function canPromptForUpdate() {
-  return canPromptOnStderr();
 }
 
 function canPromptOnStderr() {
@@ -732,20 +1019,45 @@ function memoraxCodeConfigPath() {
   return join(memoraxCodeHome(), "config.toml");
 }
 
-function readPersistedClientSelection() {
+function setupFailure(kind, fields = {}) {
+  return reportSetupFailure(kind, {
+    home: memoraxCodeHome(), version: packageVersion(), ...fields,
+    write: (line) => console.error(`${RED}${line}${RESET}`),
+  });
+}
+
+function setupDeploymentFailure(client, stage, commandResult, failureReason) {
+  let report;
+  try { report = JSON.parse(commandResult?.stdout ?? ""); } catch { /* A failed native command may not return JSON. */ }
+  const write = (line) => console.error(`${RED}${line}${RESET}`);
+  if (printSetupClientDiagnostics(report, write)) return;
+  reportSetupDeploymentFailure(client, stage, {
+    home: memoraxCodeHome(), version: packageVersion(), commandResult, failureReason, write,
+  });
+}
+
+async function readPersistedClientSelection() {
   const path = memoraxCodeConfigPath();
   if (!existsSync(path)) return undefined;
+  let clients;
   try {
-    const clients = parse(readFileSync(path, "utf8"))?.clients;
-    if (!clients || typeof clients !== "object" || typeof clients.codex !== "boolean" || typeof clients.claude !== "boolean") return undefined;
-    return [
-      clients.codex ? "codex" : undefined,
-      clients.claude ? "claude" : undefined,
-      clients.opencode === true ? "opencode" : undefined,
-    ].filter(Boolean);
+    clients = parse(readFileSync(path, "utf8"))?.clients;
   } catch {
     return undefined;
   }
+  if (clients === undefined) return undefined;
+  const prototype = clients && typeof clients === "object" ? Object.getPrototypeOf(clients) : undefined;
+  if ((prototype !== Object.prototype && prototype !== null)
+    || LIFECYCLE_CLIENT_IDS.some((client) => Object.hasOwn(clients, client) && typeof clients[client] !== "boolean")) {
+    setupFailure("config", { details: { configState: "preserved" } });
+    process.exit(1);
+  }
+  if (!LIFECYCLE_CLIENT_IDS.some((client) => typeof clients[client] === "boolean")) return undefined;
+  clients = await resolveCodeBuddyClientSelection(clients, { memoraxCodeHome: memoraxCodeHome() });
+  return {
+    selected: SETUP_CLIENTS.filter((client) => clients[client] === true),
+    explicit: SETUP_CLIENTS.filter((client) => typeof clients[client] === "boolean"),
+  };
 }
 
 function readPersistedDshSelection() {
@@ -759,21 +1071,102 @@ function readPersistedDshSelection() {
   }
 }
 
-function writeClientSelectionConfig(clients) {
+function clientSelectionMigrationPath() {
+  return join(memoraxCodeHome(), "runtime", "setup", "client-selection-migration.json");
+}
+
+function markClientSelectionMigrated() {
+  try {
+    writePrivateJsonRecord(clientSelectionMigrationPath(), { version: 1 }, { durableBoundary: memoraxCodeHome() });
+  } catch {
+    // The cleanup already succeeded; a later setup can only repeat it.
+    logRed("The client selection migration could not be recorded; a later setup will run it again.");
+  }
+}
+
+function writeClientSelectionConfig(clients, configuredClients = SETUP_CLIENTS, undecidedClients = []) {
   const path = memoraxCodeConfigPath();
-  return updateConfigFileAtomically({
+  return updateConfigFileWithLock({
     path,
-    defaultText: setManagedClientSelection(defaultMemoraxCodeConfig(), clients),
-    transform: (text) => setManagedClientSelection(text, clients),
+    defaultText: setManagedClientSelection(defaultMemoraxCodeConfig(), clients, configuredClients, undecidedClients),
+    transform: (text) => setManagedClientSelection(text, clients, configuredClients, undecidedClients),
     parseToml: parse,
-    warn: (message) => log(message),
+    warn: () => {},
+    onFailure: (details) => setupFailure("config", { details }),
   });
 }
 
-function setManagedClientSelection(text, clients) {
-  const withOpenCode = setTomlField(text, "clients", "opencode", String(clients.includes("opencode")));
-  const withClaude = setTomlField(withOpenCode, "clients", "claude", String(clients.includes("claude")));
-  return setTomlField(withClaude, "clients", "codex", String(clients.includes("codex")));
+// Activation was decided from the config read when setup started. A selection
+// changed since then wins, so only a field that is still absent becomes true.
+function recordActivatedClients(clients) {
+  return updateConfigFileWithLock({
+    path: memoraxCodeConfigPath(),
+    transform: (text, config) => setManagedClientSelection(
+      text,
+      clients,
+      clients.filter((client) => config.clients && !Object.hasOwn(config.clients, client)),
+    ),
+    parseToml: parse,
+    warn: () => {},
+    onFailure: (details) => setupFailure("config", { details }),
+  });
+}
+
+function sameClientSelection(left, right) {
+  return left.length === right.length && left.every((client, index) => client === right[index]);
+}
+
+function sameLifecycleClientSelection(currentClients, previousClients, { includeDsh = false } = {}) {
+  const current = includeDsh ? [...currentClients, "dsh"] : currentClients;
+  const previous = includeDsh ? [...previousClients, "dsh"] : previousClients;
+  return sameClientSelection(current, previous);
+}
+
+// Read-only view of the Backend's active client marker. Setup consumes it to
+// decide whether update reconciliation can be skipped; the Backend keeps sole
+// authority to write it. A missing, malformed, or unreadable record denies
+// reuse instead of assuming an unchanged runtime.
+async function readRestoredLifecycleClients() {
+  const path = join(memoraxCodeHome(), "runtime", "backend", "managed-clients.json");
+  if (!existsSync(path)) return undefined;
+  let record;
+  try {
+    record = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return undefined;
+  }
+  if (!record || typeof record !== "object" || Array.isArray(record)) return undefined;
+  if (typeof record.codex !== "boolean" || typeof record.claude !== "boolean") return undefined;
+  if (LIFECYCLE_CLIENT_IDS.some((client) => (
+    record[client] !== undefined && typeof record[client] !== "boolean"
+  ))) return undefined;
+  try {
+    return await resolveCodeBuddyClientSelection(record, { memoraxCodeHome: memoraxCodeHome() });
+  } catch {
+    return undefined;
+  }
+}
+
+function restoredLifecycleClientsMatch(restoredClients, lifecycleClients, includeDsh) {
+  if (!restoredClients) return false;
+  return LIFECYCLE_CLIENT_IDS.every((client) => (
+    (restoredClients[client] === true)
+      === (client === "dsh" ? includeDsh : lifecycleClients.includes(client))
+  ));
+}
+
+function setManagedClientSelection(text, clients, configuredClients = SETUP_CLIENTS, undecidedClients = []) {
+  let updated = text;
+  for (const client of ["opencode", "claude", "codebuddy", "workbuddy", "trae", "cursor", "qoder", "codex"]) {
+    if (undecidedClients.includes(client)) {
+      updated = setTomlField(updated, "clients", client, undefined);
+    } else if (configuredClients.includes(client)) {
+      updated = setTomlField(updated, "clients", client, String(clients.includes(client)));
+    }
+  }
+  // DSH stays enabled when omitted. Writing it keeps the selection recognizable
+  // after a first setup that found no other client.
+  return existingSetup ? updated : setTomlField(updated, "clients", "dsh", "true");
 }
 
 function writeMemoraxConfig({ userId, endpoint, outputLanguage, apiKey }) {
@@ -805,12 +1198,13 @@ function writeMemoraxConfig({ userId, endpoint, outputLanguage, apiKey }) {
       addFields,
     );
   };
-  return updateConfigFileAtomically({
+  return updateConfigFileWithLock({
     path,
     defaultText: applyFields(defaultMemoraxCodeConfig()),
     transform: applyFields,
     parseToml: parse,
-    warn: (message) => log(message),
+    warn: () => {},
+    onFailure: (details) => setupFailure("config", { details }),
   });
 }
 
@@ -826,15 +1220,18 @@ function defaultMemoraxCodeConfig() {
     "claude = true # Manage the Claude adapter.",
     "dsh = true # Manage the DeepSeek Harness adapter when Profiles exist.",
     "opencode = true # Manage the OpenCode adapter.",
+    "codebuddy = true # Manage the CodeBuddy CLI adapter.",
+    "workbuddy = true # Manage the WorkBuddy adapter.",
+    "trae = true # Manage the Trae adapter.",
+    "cursor = true # Manage the Cursor adapter.",
+    "qoder = true # Manage the Qoder adapter.",
     "",
     "# MemoraX remote-memory connection.",
     "[memorax]",
     `# endpoint = "${MEMORAX_DEFAULT_BASE_URL}" # MemoraX service URL.`,
     '# user_id = "" # Stable username; requests derive a workspace-scoped namespace.',
     "",
-    "# Automatic Hook retrieval is opt-in.",
-    "[memory.retrieval]",
-    "enabled = false # Auto-inject retrieved memories into supported client prompts.",
+    DEFAULT_JEV_CONFIG_TEXT.trimEnd(),
     "",
     "# Automatic writeback sends selected prompts and final answers to MemoraX.",
     "[memory.writeback]",
@@ -850,9 +1247,9 @@ function defaultMemoraxCodeConfig() {
     "",
     "# Relevant repo reads batch generated repo-memory updates by commit count or elapsed time.",
     "[memory.repo_update]",
-    'policy = "adaptive" # every-commit / commit-count / daily / pull-request / pull-request-or-daily / adaptive.',
+    'policy = "daily" # every-commit / commit-count / daily / pull-request / pull-request-or-daily / adaptive.',
     "commit_threshold = 5 # Pending local commits needed by commit-count and adaptive.",
-    "cooldown_hours = 24 # Pending-commit age used by daily, pull-request-or-daily, and adaptive.",
+    "cooldown_hours = 72 # Hours since the last successful update; used by daily, pull-request-or-daily, and adaptive.",
     "",
     "# Local traces may contain prompts, responses, recalled memories, and local paths.",
     "[trace.codex]",
@@ -871,17 +1268,38 @@ function defaultMemoraxCodeConfig() {
     "enabled = true # Enable local OpenCode session memory trace collection.",
     "capture_content = true # Store content in local OpenCode trace events.",
     "",
+    "[trace.codebuddy]",
+    "enabled = true # Enable local CodeBuddy session memory trace collection.",
+    "capture_content = true # Store content in local CodeBuddy trace events.",
+    "",
+    "[trace.workbuddy]",
+    "enabled = true # Enable local WorkBuddy session memory trace collection.",
+    "capture_content = true # Store content in local WorkBuddy trace events.",
+    "",
+    "[trace.trae]",
+    "enabled = true # Enable local Trae session memory trace collection.",
+    "capture_content = true # Store content in local Trae trace events.",
+    "",
+    "[trace.cursor]",
+    "enabled = true # Enable local Cursor session memory trace collection.",
+    "capture_content = true # Store content in local Cursor trace events.",
+    "",
+    "[trace.qoder]",
+    "enabled = true # Enable local Qoder session memory trace collection.",
+    "capture_content = true # Store content in local Qoder trace events.",
+    "",
   ].join("\n");
 }
 
 function seedMissingMemoraxCodeConfig() {
   const path = memoraxCodeConfigPath();
-  return updateConfigFileAtomically({
+  return updateConfigFileWithLock({
     path,
     defaultText: defaultMemoraxCodeConfig(),
-    transform: (text) => text,
+    transform: appendMissingJevConfig,
     parseToml: parse,
-    warn: (message) => log(message),
+    warn: () => {},
+    onFailure: (details) => setupFailure("config", { details }),
   });
 }
 
@@ -940,6 +1358,21 @@ function runCommonPreflight() {
   if (skipOpenCodeAdapterInstall) {
     log("OpenCode adapter setup is disabled for this setup; other client setup can still continue.");
   }
+  if (skipCodeBuddyAdapterInstall) {
+    log("CodeBuddy CLI adapter setup is disabled for this setup; other client setup can still continue.");
+  }
+  if (skipWorkBuddyAdapterInstall) {
+    log("WorkBuddy adapter setup is disabled for this setup; other client setup can still continue.");
+  }
+  if (skipTraeAdapterInstall) {
+    log("Trae adapter setup is disabled for this setup; other client setup can still continue.");
+  }
+  if (skipCursorAdapterInstall) {
+    log("Cursor adapter setup is disabled for this setup; other client setup can still continue.");
+  }
+  if (skipQoderAdapterInstall) {
+    log("Qoder adapter setup is disabled for this setup; other client setup can still continue.");
+  }
   return {};
 }
 
@@ -952,15 +1385,26 @@ function runCodexPreflight({ integrationSelected = true } = {}) {
       : "Codex CLI";
   log(`${runtimeLabel}: ${commandSummary(version) ?? "not runnable"}`);
   if (version.status !== 0) {
-    return { ok: false, pluginCache: { marketplaceName: CLI_MARKETPLACE_NAME, versions: [] } };
+    if (codexRuntime.source !== "unavailable" || version.error?.code !== "ENOENT") setupDeploymentFailure("codex", "discover", version);
+    return { ok: false, failed: codexRuntime.source !== "unavailable", pluginCache: { marketplaceName: CLI_MARKETPLACE_NAME, versions: [] } };
   }
   const pluginCache = installedPluginCache();
   log(`Existing Codex plugin cache: ${pluginCache.versions.length > 0 ? `found (${pluginCache.versions.join(", ")})` : "not installed"}`);
+  const pluginRegistration = inspectCodexPluginRegistrationForSetup();
+  if (!pluginRegistration.verified) {
+    log("Codex plugin state: could not be verified; setup will attempt a full activation.");
+  } else if (!pluginRegistration.registered) {
+    log("Codex plugin state: not installed in Codex; setup will repair it.");
+  } else if (!pluginRegistration.enabled) {
+    log("Codex plugin state: disabled; setup will attempt to enable it.");
+  } else {
+    log(`Codex plugin state: enabled${pluginRegistration.version ? ` (${pluginRegistration.version})` : ""}.`);
+  }
   log(`Codex client process: ${codexClientRunning() ? "running" : "not detected"}`);
   log(integrationSelected
     ? "Keeping Codex provider config unchanged and enabling the shared memory hook integration."
     : "Keeping Codex provider config unchanged while checking whether to enable its integration.");
-  return { ok: true, pluginCache };
+  return { ok: true, pluginCache, pluginRegistration };
 }
 
 function runClaudePreflight({ integrationSelected = true } = {}) {
@@ -971,7 +1415,10 @@ function runClaudePreflight({ integrationSelected = true } = {}) {
       ? "Claude VS Code runtime"
       : "Claude CLI";
   log(`${runtimeLabel}: ${commandSummary(version) ?? "not runnable"}`);
-  if (version.status !== 0) return { ok: false };
+  if (version.status !== 0) {
+    if (claudeRuntime.source !== "unavailable" || version.error?.code !== "ENOENT") setupDeploymentFailure("claude", "discover", version);
+    return { ok: false, failed: claudeRuntime.source !== "unavailable" };
+  }
   log(integrationSelected
     ? "Keeping Claude Code provider config unchanged and enabling the shared memory Hook integration."
     : "Keeping Claude Code provider config unchanged while checking whether to enable its integration.");
@@ -999,6 +1446,66 @@ function runOpenCodePreflight({ integrationSelected = true } = {}) {
   return { ok: true };
 }
 
+function runCodeBuddyPreflight({ client, integrationSelected = true }) {
+  const runtime = client === "workbuddy" ? workBuddyRuntime : codeBuddyRuntime;
+  const label = clientLabel(client);
+  const version = runtime.source === "unavailable"
+    ? { status: 1 }
+    : runExternalCommand(runtime.command, ["--version"], { print: false, timeout: 10_000 });
+  log(`${label}: ${commandSummary(version) ?? "not runnable"}`);
+  const home = client === "workbuddy" ? defaultWorkBuddyHome() : defaultCodeBuddyHome();
+  log(`${label} data directory: ${existsSync(home) ? "found" : "not detected"}`);
+  if (version.status !== 0) {
+    if (runtime.source === "unavailable") return { ok: false };
+    setupDeploymentFailure(client, "discover", version);
+    const detail = firstOutputLine({ stderr: version.stderr })
+      ?? version.error?.message
+      ?? `version check exited with ${version.status ?? version.signal ?? "unknown status"}`;
+    logRed(`${label} runtime was found but could not run: ${detail}`);
+    return { ok: false, failed: true };
+  }
+  log(integrationSelected
+    ? `Keeping ${label} provider config unchanged and enabling the shared memory Hook integration.`
+    : `Keeping ${label} provider config unchanged while checking whether to enable its integration.`);
+  return { ok: true };
+}
+
+function runTraePreflight({ integrationSelected = true } = {}) {
+  const home = defaultTraeHome();
+  const detected = traeInstallationDetected();
+  log(`Trae data directory: ${existsSync(home) ? `found (${home})` : "not detected"}`);
+  log(`Trae application: ${detected ? "detected" : "not detected"}`);
+  if (!detected) return { ok: false };
+  log(integrationSelected
+    ? "Keeping Trae provider settings unchanged and installing the shared memory Global Hooks and Skill."
+    : "Keeping Trae provider settings unchanged while checking whether to enable its integration.");
+  return { ok: true };
+}
+
+function runCursorPreflight({ integrationSelected = true } = {}) {
+  const home = defaultCursorHome();
+  const detected = cursorInstallationDetected();
+  log(`Cursor data directory: ${existsSync(home) ? `found (${home})` : "not detected"}`);
+  log(`Cursor application: ${detected ? "detected" : "not detected"}`);
+  if (!detected) return { ok: false };
+  log(integrationSelected
+    ? "Keeping Cursor provider settings unchanged and installing the shared memory Hooks and Skill."
+    : "Keeping Cursor provider settings unchanged while checking whether to enable its integration.");
+  return { ok: true };
+}
+
+function runQoderPreflight({ integrationSelected = true } = {}) {
+  const home = defaultQoderHome();
+  const detected = qoderInstallationDetected();
+  log(`Qoder data directory: ${existsSync(home) ? `found (${home})` : "not detected"}`);
+  log(`Qoder application: ${detected ? "detected" : "not detected"}`);
+  if (!detected) return { ok: false };
+  log(integrationSelected
+    ? "Keeping Qoder provider settings unchanged and installing the shared memory Hooks and Skill."
+    : "Keeping Qoder provider settings unchanged while checking whether to enable its integration.");
+  return { ok: true };
+}
+
 function installedPluginCache() {
   for (const marketplaceName of [CLI_MARKETPLACE_NAME, PERSONAL_MARKETPLACE_NAME]) {
     const versions = installedPluginCacheVersions(marketplaceName);
@@ -1007,6 +1514,39 @@ function installedPluginCache() {
     }
   }
   return { marketplaceName: CLI_MARKETPLACE_NAME, versions: [] };
+}
+
+function inspectCodexPluginRegistrationForSetup() {
+  const result = runNodeMemoraxCodeCommand(["codex-plugin", "registration", "--json"], {
+    print: false,
+    // Outlast the Backend's 10 s Codex plugin list timeout plus Node startup.
+    timeout: 20_000,
+  });
+  if (result.status !== 0) {
+    return { verified: false, ready: false, registered: false, enabled: false };
+  }
+  try {
+    const report = JSON.parse(String(result.stdout ?? ""));
+    if (!report
+      || report.ok !== true
+      || report.action !== "codex-plugin-registration"
+      || typeof report.available !== "boolean"
+      || typeof report.registered !== "boolean"
+      || typeof report.enabled !== "boolean"
+      || (report.version !== undefined && typeof report.version !== "string")) {
+      return { verified: false, ready: false, registered: false, enabled: false };
+    }
+    return {
+      verified: true,
+      ready: report.registered && report.enabled,
+      available: report.available,
+      registered: report.registered,
+      enabled: report.enabled,
+      ...(report.version ? { version: report.version } : {}),
+    };
+  } catch {
+    return { verified: false, ready: false, registered: false, enabled: false };
+  }
 }
 
 function installedPluginCacheVersions(marketplaceName) {
@@ -1032,18 +1572,70 @@ async function startBackendAndCheck({
   skipOpenCodeAdapter = false,
   opencodeAdapterRequired = !skipOpenCodeAdapter,
   opencodeSkipReason,
+  skipCodeBuddyAdapter = false,
+  codebuddyAdapterRequired = !skipCodeBuddyAdapter,
+  codebuddySkipReason,
+  skipWorkBuddyAdapter = false,
+  workbuddyAdapterRequired = !skipWorkBuddyAdapter,
+  workbuddySkipReason,
+  skipTraeAdapter = false,
+  skipCursorAdapter = false,
+  skipQoderAdapter = false,
+  traeAdapterRequired = !skipTraeAdapter,
+  cursorAdapterRequired = !skipCursorAdapter,
+  qoderAdapterRequired = !skipQoderAdapter,
+  traeSkipReason,
+  cursorSkipReason,
+  qoderSkipReason,
+  reuseRestoredBackend = false,
 } = {}) {
   const adapterFlags = clientLifecycleFlags({ clientMode });
-  const startArgs = ["start", ...adapterFlags];
+  const startArgs = ["start", ...adapterFlags, "--json"];
   const statusArgs = ["status", ...adapterFlags];
   const optionalDshEnv = { [DSH_OPTIONAL_ENV]: "1" };
   let statusResult;
-  const result = await reconcileSetup({
-    start: () => runMemoraxCodeCommand(startArgs, {
-      ...pendingClientHookRuntimeEnv(),
-      ...optionalDshEnv,
-    }),
-    stop: () => runMemoraxCodeCommand(["stop", ...adapterFlags]),
+  let result;
+  if (reuseRestoredBackend) {
+    try {
+      const checked = runMemoraxCodeCommand(statusArgs, optionalDshEnv, { print: false });
+      if (checked.status === 0 && memoraxCodeEnabled(checked, {
+        codexAdapterRequired: !skipCodexAdapter,
+        claudeAdapterRequired,
+        opencodeAdapterRequired,
+        codebuddyAdapterRequired,
+        workbuddyAdapterRequired,
+        traeAdapterRequired,
+        cursorAdapterRequired,
+        qoderAdapterRequired,
+      })) {
+        await activatePackagedClientHookRuntime({
+          packageRoot: dirname(scriptDir),
+          memoraxCodeHome: memoraxCodeHome(),
+          generation: stagedHookRuntime,
+        });
+        statusResult = checked;
+        logGreen("Reusing the Backend restored during package update; status verified.");
+        result = { status: "enabled", reason: "restored-ready", recovered: false };
+      }
+    } catch {
+      // Fall back to the complete reconciliation below if the optimization
+      // cannot prove that the restored runtime is ready.
+    }
+  }
+  if (!result) result = await reconcileSetup({
+    start: () => {
+      const started = runMemoraxCodeCommand(startArgs, {
+        ...pendingClientHookRuntimeEnv(),
+        ...optionalDshEnv,
+      }, { print: false });
+      printSetupStartResult(started);
+      return started;
+    },
+    stop: () => {
+      const stopped = runMemoraxCodeCommand(["stop", ...adapterFlags, "--json"], {}, { print: false });
+      printSetupStartResult(stopped);
+      return stopped;
+    },
     status: () => {
       statusResult = runMemoraxCodeCommand(statusArgs, optionalDshEnv);
       return statusResult;
@@ -1052,12 +1644,19 @@ async function startBackendAndCheck({
       codexAdapterRequired: !skipCodexAdapter,
       claudeAdapterRequired,
       opencodeAdapterRequired,
+      codebuddyAdapterRequired,
+      workbuddyAdapterRequired,
+      traeAdapterRequired,
+      cursorAdapterRequired,
+      qoderAdapterRequired,
     }),
     onEvent: (event) => {
       if (event.type === "start" && event.attempt === 1) {
         logGreen("Starting backend with `memorax-code start`...");
       } else if (event.type === "start-failed" && event.attempt === 1) {
-        logRed("Backend start failed during setup.");
+        logRed(event.reason === "adapter-setup-failed"
+          ? "Client integration setup failed; the Backend is running."
+          : "MemoraX Code start failed during setup.");
       } else if (event.type === "stop") {
         logRed("Attempting automatic recovery: `memorax-code stop` then `memorax-code start`...");
       } else if (event.type === "diagnostic-status") {
@@ -1082,10 +1681,32 @@ async function startBackendAndCheck({
           claudeSkipReason,
           skipOpenCodeAdapter,
           opencodeSkipReason,
+          skipCodeBuddyAdapter,
+          codebuddySkipReason,
+          workbuddySkipReason,
+          skipTraeAdapter,
+          skipCursorAdapter,
+          skipQoderAdapter,
+          traeSkipReason,
+          cursorSkipReason,
+          qoderSkipReason,
         });
       }
     },
   });
+  if (result.status !== "enabled") {
+    const commandResult = result.commandResult;
+    let report;
+    try { report = JSON.parse(commandResult?.stdout ?? ""); } catch { /* Legacy commands may return text. */ }
+    // start/stop already displayed their Backend diagnostic. Keep its ID and
+    // record instead of writing a second setup copy of the same failure.
+    if (!report?.diagnostic && !report?.clientFailures?.length && result.reason !== "adapter-setup-failed") {
+      const kind = result.reason === "recovery-stop-failed" ? "stop"
+        : result.reason === "status-failed" ? "status"
+          : result.reason === "not-ready" ? "readiness" : "start";
+      setupFailure(kind, { commandResult });
+    }
+  }
   return {
     status: result.status,
     dshAdapterEnabled: result.status === "enabled" && statusResult
@@ -1093,6 +1714,9 @@ async function startBackendAndCheck({
       : false,
     dshAdapterUnavailable: result.status === "enabled" && statusResult
       ? dshAdapterUnavailable(statusResult)
+      : false,
+    traeGlobalHooksActivationRequired: result.status === "enabled" && statusResult
+      ? traeGlobalHooksActivationRequired(statusResult)
       : false,
   };
 }
@@ -1104,8 +1728,20 @@ function printReconcileFailure(result, {
   claudeSkipReason,
   skipOpenCodeAdapter,
   opencodeSkipReason,
+  skipCodeBuddyAdapter,
+  codebuddySkipReason,
+  workbuddySkipReason,
+  skipTraeAdapter,
+  skipCursorAdapter,
+  skipQoderAdapter,
+  traeSkipReason,
+  cursorSkipReason,
+  qoderSkipReason,
 }) {
-  if (result.reason === "hook-runtime-activation-failed") {
+  if (result.reason === "adapter-setup-failed") {
+    logRed("Automatic stop/start recovery was skipped because the Backend is running; setup remains incomplete.");
+    log("Fix the reported client installation error, then retry `memorax-code setup`.");
+  } else if (result.reason === "hook-runtime-activation-failed") {
     logRed("Client Hook runtime activation failed; automatic lifecycle recovery was skipped.");
     logRed("The previously active runtime remains authoritative.");
   } else if (result.reason === "lifecycle-lock-timeout") {
@@ -1114,6 +1750,10 @@ function printReconcileFailure(result, {
   } else if (result.reason === "runtime-authority-failed") {
     logRed("Automatic stop/start recovery is skipped because persisted Backend runtime authority requires explicit repair.");
     printRuntimeAuthorityFailureSuggestions(result.code);
+  } else if (["lifecycle-lock-failed", "backend-start-failed"].includes(result.reason)) {
+    logRed("Automatic stop/start recovery was skipped; fix the reported Backend failure before retrying setup.");
+  } else if (result.reason === "recovery-stop-failed") {
+    logRed("Automatic recovery stopped because the stop command failed; no replacement Backend was started.");
   } else if (result.reason === "start-failed-after-recovery") {
     printFailureSuggestions();
   } else if (result.reason === "not-ready") {
@@ -1121,6 +1761,11 @@ function printReconcileFailure(result, {
       codexSkipReason,
       claudeSkipReason,
       opencodeSkipReason,
+      codebuddySkipReason,
+      workbuddySkipReason,
+      traeSkipReason,
+      cursorSkipReason,
+      qoderSkipReason,
     });
   }
 }
@@ -1133,6 +1778,11 @@ function dshAdapterReady(statusResult) {
 function dshAdapterUnavailable(statusResult) {
   const output = `${statusResult.stdout ?? ""}\n${statusResult.stderr ?? ""}`;
   return /\bDSH adapter:\s*unavailable\b/im.test(stripAnsi(output));
+}
+
+function traeGlobalHooksActivationRequired(statusResult) {
+  const output = `${statusResult.stdout ?? ""}\n${statusResult.stderr ?? ""}`;
+  return /\bTrae adapter:\s*ok\b[^\r\n]*\bhook-runtime=unverified\b/im.test(stripAnsi(output));
 }
 
 function pendingClientHookRuntimeEnv() {
@@ -1157,10 +1807,10 @@ function clientLifecycleFlags({ clientMode = "all" } = {}) {
 }
 
 function clientModeFor(clients, { includeDsh = false } = {}) {
-  const selected = ["codex", "claude", "dsh", "opencode"].filter((client) => (
+  const selected = ["codex", "claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor", "qoder"].filter((client) => (
     client === "dsh" ? includeDsh : clients.includes(client)
   ));
-  if (selected.length === 4) return "all";
+  if (selected.length === LIFECYCLE_CLIENT_IDS.length) return "all";
   return selected.length > 0 ? selected.join(",") : "none";
 }
 
@@ -1177,26 +1827,46 @@ function clientSelectionMessage(clients, { dshSelected = false } = {}) {
       clients.includes("claude") ? "Claude Code" : undefined,
       "DeepSeek Harness",
       clients.includes("opencode") ? "OpenCode" : undefined,
+      clients.includes("codebuddy") ? "CodeBuddy CLI" : undefined,
+      clients.includes("workbuddy") ? "WorkBuddy" : undefined,
+      clients.includes("trae") ? "Trae" : undefined,
+      clients.includes("cursor") ? "Cursor" : undefined,
+      clients.includes("qoder") ? "Qoder" : undefined,
     ].filter(Boolean);
     return `Configuring MemoraX Code for ${joinedLabels(labels)}.`;
   }
   const hasCodex = clients.includes("codex");
   const hasClaude = clients.includes("claude");
   const hasOpenCode = clients.includes("opencode");
-  if (hasCodex && hasClaude && hasOpenCode) return "Configuring MemoraX Code for Codex, Claude Code, and OpenCode.";
-  if (hasCodex && hasClaude) return "Configuring MemoraX Code for Codex and Claude Code.";
-  if (hasCodex && hasOpenCode) return "Configuring MemoraX Code for Codex and OpenCode.";
-  if (hasClaude && hasOpenCode) return "Configuring MemoraX Code for Claude Code and OpenCode.";
-  if (hasCodex) return "Configuring MemoraX Code for Codex only.";
-  if (hasClaude) return "Configuring MemoraX Code for Claude Code only.";
-  if (hasOpenCode) return "Configuring MemoraX Code for OpenCode only.";
+  const hasCodeBuddy = clients.includes("codebuddy");
+  const hasWorkBuddy = clients.includes("workbuddy");
+  const hasTrae = clients.includes("trae");
+  const hasCursor = clients.includes("cursor");
+  const hasQoder = clients.includes("qoder");
+  const labels = [
+    hasCodex ? "Codex" : undefined,
+    hasClaude ? "Claude Code" : undefined,
+    hasOpenCode ? "OpenCode" : undefined,
+    hasCodeBuddy ? "CodeBuddy CLI" : undefined,
+    hasWorkBuddy ? "WorkBuddy" : undefined,
+    hasTrae ? "Trae" : undefined,
+    hasCursor ? "Cursor" : undefined,
+    hasQoder ? "Qoder" : undefined,
+  ].filter(Boolean);
+  if (labels.length > 0) return `Configuring MemoraX Code for ${joinedLabels(labels)}.`;
   return "Skipping client adapter setup for this setup.";
 }
 
 function clientLabel(client) {
   if (client === "codex") return "Codex";
   if (client === "claude") return "Claude Code";
-  return "OpenCode";
+  if (client === "dsh") return "DeepSeek Harness";
+  if (client === "opencode") return "OpenCode";
+  if (client === "codebuddy") return "CodeBuddy CLI";
+  if (client === "workbuddy") return "WorkBuddy";
+  if (client === "trae") return "Trae";
+  if (client === "cursor") return "Cursor";
+  return "Qoder";
 }
 
 function detectedClientMessage(clients, dshProfiles = []) {
@@ -1225,8 +1895,49 @@ function stringOption(value) {
   return trimmed ? trimmed : undefined;
 }
 
-function runMemoraxCodeCommand(args, extraEnv = {}) {
+function printSetupStartResult(result) {
+  let report = startLifecycleReport(result);
+  if (!report) {
+    try {
+      const candidate = JSON.parse(result.stdout ?? "");
+      if (candidate?.action === "stop" && typeof candidate.ok === "boolean") report = candidate;
+    } catch { /* Preserve the legacy text output below. */ }
+  }
+  if (!report) {
+    printCommandOutput(result.stdout, BACKEND_PREFIX);
+  } else {
+    if (typeof report.message === "string") logRed(report.message);
+    const diagnosed = printSetupBackendDiagnostic(report, (line) => console.error(`${RED}${line}${RESET}`));
+    printSetupClientDiagnostics(report, (line) => console.error(`${RED}${line}${RESET}`));
+    if (report.backend?.ok === false && !diagnosed) {
+      const code = report.backend.errorCode ? ` code=${report.backend.errorCode}` : "";
+      logRed(`Backend: not ok${code} ${report.backend.error ?? report.backend.reason ?? "start failed"}`);
+    }
+    const warnings = report.backend?.warnings;
+    for (const warning of Array.isArray(warnings) ? warnings : []) {
+      if (typeof warning?.message === "string") {
+        log(`Warning: ${warning.message}${warning.errorCode ? ` code=${warning.errorCode}` : ""}`);
+      }
+    }
+    for (const adapter of failedLifecycleAdapters(report)) {
+      const details = [
+        `action=${adapter.action ?? "enable"}`,
+        adapter.stage ? `stage=${adapter.stage}` : undefined,
+        adapter.errorCode ? `code=${adapter.errorCode}` : undefined,
+      ].filter(Boolean).join(" ");
+      const optionalDsh = adapter.client === "dsh" && adapter.optional === true;
+      const message = `${clientLabel(adapter.client)} adapter: ${optionalDsh ? "unavailable" : "not ok"} ${details} ${adapter.error ?? adapter.message ?? adapter.reason ?? "installation failed"}`;
+      if (optionalDsh) log(message);
+      else logRed(message);
+    }
+  }
+  printCommandOutput(result.stderr, BACKEND_PREFIX);
+  if (result.error) logRed("Failed to run the Backend lifecycle command; see the setup diagnostic for its operation and system code.");
+}
+
+function runMemoraxCodeCommand(args, extraEnv = {}, { print = true } = {}) {
   return runNodeMemoraxCodeCommand(args, {
+    print,
     env: { ...process.env, ...extraEnv, MEMORAX_CODE_BACKEND_SUPPRESS_GUIDANCE: "1" },
     outputPrefix: BACKEND_PREFIX,
   });
@@ -1235,12 +1946,14 @@ function runMemoraxCodeCommand(args, extraEnv = {}) {
 function runNodeMemoraxCodeCommand(args, {
   env = process.env,
   print = true,
+  printOnFailure = false,
   outputPrefix = PREFIX,
   timeout,
 } = {}) {
   return runNodeCliCommand(memoraxCodeBin, args, {
     env,
     print,
+    printOnFailure,
     outputPrefix,
     timeout,
   });
@@ -1268,13 +1981,13 @@ function runExternalCommand(command, args, { env = process.env, print = true, ou
   return runCommand(command, args, { env, print, outputPrefix, timeout });
 }
 
-function runCommand(command, args, { env = process.env, print = true, outputPrefix = PREFIX, timeout } = {}) {
+function runCommand(command, args, { env = process.env, print = true, printOnFailure = false, outputPrefix = PREFIX, timeout } = {}) {
   let invocation;
   try {
     invocation = resolveWindowsCliInvocation(command, args, { env });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (print) logRed(message);
+    if (print || printOnFailure) logRed(message);
     return { status: 1, stdout: "", stderr: message, error };
   }
   const result = spawnSync(invocation.command, invocation.args, {
@@ -1283,11 +1996,12 @@ function runCommand(command, args, { env = process.env, print = true, outputPref
     stdio: ["ignore", "pipe", "pipe"],
     ...(timeout ? { timeout } : {}),
   });
-  if (print) {
+  const showOutput = print || (printOnFailure && result.status !== 0);
+  if (showOutput) {
     printCommandOutput(result.stdout, outputPrefix);
     printCommandOutput(result.stderr, outputPrefix);
   }
-  if (result.error && print) logRed(`Failed to run \`${[command, ...args].join(" ")}\`: ${result.error.message}`);
+  if (result.error && showOutput) logRed(`Failed to run \`${[command, ...args].join(" ")}\`: ${result.error.message}`);
   return result;
 }
 
@@ -1354,11 +2068,22 @@ function printNextSteps({
   claudeAdapterEnabled = true,
   dshAdapterEnabled = false,
   opencodeAdapterEnabled = true,
+  codebuddyAdapterEnabled = true,
+  workbuddyAdapterEnabled = true,
+  traeAdapterEnabled = true,
+  cursorAdapterEnabled = true,
+  qoderAdapterEnabled = true,
+  traeGlobalHooksActivationRequired = false,
 } = {}) {
   const clientText = enabledClientText({
     codexAdapterEnabled,
     claudeAdapterEnabled,
     opencodeAdapterEnabled,
+    codebuddyAdapterEnabled,
+    workbuddyAdapterEnabled,
+    traeAdapterEnabled,
+    cursorAdapterEnabled,
+    qoderAdapterEnabled: qoderAdapterEnabled && !existingSetup,
   });
   if (clientText && existingSetup) {
     logGreen(`${bold("The new Hook runtime is active")}; existing sessions with the stable shell select it on their next user prompt.`);
@@ -1368,18 +2093,29 @@ function printNextSteps({
   }
   if (dshAdapterEnabled) {
     logGreen(`${bold("Restart or refresh DeepSeek Harness")} so its Profiles load the installed MemoraX Code plugin.`);
-  } else if (!clientText) {
+  } else if (!clientText && !qoderAdapterEnabled) {
     logGreen(`${bold("MemoraX Code backend is running")}; client adapters were skipped for this install.`);
   }
   if (codexAdapterEnabled && !existingSetup) {
     logGreen(`After restart, ${bold("enable the MemoraX Code Codex Adapter plugin")} from Codex Plugins or CLI \`/plugins\` if it is not already enabled.`);
   }
+  if (traeAdapterEnabled && traeGlobalHooksActivationRequired) {
+    logGreen(`${bold("Open Trae Settings and enable Global Hooks once")}, then start a new Trae session.`);
+  }
+  if (qoderAdapterEnabled && existingSetup) {
+    logGreen(`${bold("Restart Qoder and open a new task")} to load the updated MemoraX Code Hooks and Skill.`);
+  }
   const statusCommands = statusCommandText({
     codexAdapterEnabled,
     claudeAdapterEnabled,
     opencodeAdapterEnabled,
+    codebuddyAdapterEnabled,
+    workbuddyAdapterEnabled,
+    traeAdapterEnabled,
+    cursorAdapterEnabled,
+    qoderAdapterEnabled,
   });
-  if (clientText || !dshAdapterEnabled) {
+  if (clientText || qoderAdapterEnabled || !dshAdapterEnabled) {
     log(`If MemoraX Code is not active ${existingSetup ? "on the next prompt" : "in new sessions"}, run ${statusCommands}.`);
   }
   if (dshAdapterEnabled) {
@@ -1391,11 +2127,21 @@ function enabledClientText({
   codexAdapterEnabled = true,
   claudeAdapterEnabled = true,
   opencodeAdapterEnabled = true,
+  codebuddyAdapterEnabled = true,
+  workbuddyAdapterEnabled = true,
+  traeAdapterEnabled = true,
+  cursorAdapterEnabled = true,
+  qoderAdapterEnabled = true,
 } = {}) {
   const labels = [
     codexAdapterEnabled ? "Codex" : undefined,
     claudeAdapterEnabled ? "Claude Code" : undefined,
     opencodeAdapterEnabled ? "OpenCode" : undefined,
+    codebuddyAdapterEnabled ? "CodeBuddy CLI" : undefined,
+    workbuddyAdapterEnabled ? "WorkBuddy" : undefined,
+    traeAdapterEnabled ? "Trae" : undefined,
+    cursorAdapterEnabled ? "Cursor" : undefined,
+    qoderAdapterEnabled ? "Qoder" : undefined,
   ].filter(Boolean);
   if (labels.length < 2) return labels[0] ?? "";
   if (labels.length === 2) return `${labels[0]} or ${labels[1]}`;
@@ -1406,24 +2152,37 @@ function statusCommandText({
   codexAdapterEnabled = true,
   claudeAdapterEnabled = true,
   opencodeAdapterEnabled = true,
+  codebuddyAdapterEnabled = true,
+  workbuddyAdapterEnabled = true,
+  traeAdapterEnabled = true,
+  cursorAdapterEnabled = true,
+  qoderAdapterEnabled = true,
 } = {}) {
   const commands = ["`memorax-code status`"];
   if (codexAdapterEnabled) commands.push("`memorax-code-codex status`");
   if (claudeAdapterEnabled) commands.push("`memorax-code-claude status`");
   if (opencodeAdapterEnabled) commands.push("`memorax-code-opencode status`");
+  if (codebuddyAdapterEnabled) commands.push("`memorax-code-codebuddy status`");
+  if (workbuddyAdapterEnabled) commands.push("`memorax-code status --clients workbuddy`");
+  if (traeAdapterEnabled) commands.push("`memorax-code-trae status`");
+  if (cursorAdapterEnabled) commands.push("`memorax-code-cursor status`");
+  if (qoderAdapterEnabled) commands.push("`memorax-code-qoder status`");
   if (commands.length === 1) return commands[0];
   if (commands.length === 2) return `${commands[0]} and ${commands[1]}`;
   return `${commands.slice(0, -1).join(", ")}, and ${commands.at(-1)}`;
 }
 
-function printPostinstallSummary(backendAndAdaptersStatus, degraded = false) {
+function printPostinstallSummary(backendAndAdaptersStatus, degraded = false, codexHooksUntrusted = false) {
   log("Package: Installed");
   const backendStatusLabel = backendAndAdaptersStatus === "enabled"
-    ? blueBold(degraded ? "Enabled (degraded)" : "Enabled")
+    ? blueBold(degraded || codexHooksUntrusted ? "Enabled (degraded)" : "Enabled")
     : backendAndAdaptersStatus === "unavailable"
       ? redBold("Unavailable")
       : "Not verified";
   log(`Backend and selected adapters: ${backendStatusLabel}`);
+  if (codexHooksUntrusted) {
+    log(`Codex Hooks: ${redBold("Not authorized")}. Review and authorize them with \`memorax-code codex-plugin trust-hooks\`.`);
+  }
   const memoraxStatus = readMemoraxInstallStatus();
   if (!memoraxStatus) {
     logRed("MemoraX memory: Status unavailable");
@@ -1445,13 +2204,17 @@ function printPostinstallSummary(backendAndAdaptersStatus, degraded = false) {
   }
 }
 
-function readMemoraxInstallStatus() {
+function readMemoraxInstallStatus({ diagnose = false } = {}) {
   const result = runNodeMemoraxCliCommand(
     ["status", "--json", "--config-only"],
     { print: false, timeout: 10_000 },
   );
-  if (result.error || result.signal || (result.status !== 0 && result.status !== 1)) {
+  const unavailable = (stage) => {
+    if (diagnose) setupFailure("connection", { commandResult: result, details: { stage } });
     return undefined;
+  };
+  if (result.error || result.signal || (result.status !== 0 && result.status !== 1)) {
+    return unavailable("command");
   }
   try {
     const report = JSON.parse(String(result.stdout ?? ""));
@@ -1461,7 +2224,7 @@ function readMemoraxInstallStatus() {
       || typeof report.ok !== "boolean"
       || !isRecord(report.config)
       || typeof report.config.configured !== "boolean") {
-      return undefined;
+      return unavailable("invalid_response");
     }
     const configuredResult = result.status === 0
       && report.ok === true
@@ -1470,15 +2233,16 @@ function readMemoraxInstallStatus() {
       && report.ok === false
       && report.config.configured === false;
     if (!configuredResult && !unconfiguredResult) {
-      return undefined;
+      return unavailable("invalid_response");
     }
     if (unconfiguredResult) {
+      if (diagnose) setupFailure("connection", { details: { stage: "unconfigured" } });
       return { configured: false };
     }
     if (!isRecord(report.config.writeback)
       || typeof report.config.writeback.globalEnabled !== "boolean"
       || typeof report.config.writeback.writebackEnabled !== "boolean") {
-      return undefined;
+      return unavailable("invalid_response");
     }
     return {
       configured: true,
@@ -1486,21 +2250,31 @@ function readMemoraxInstallStatus() {
       writebackEnabled: report.config.writeback.writebackEnabled,
     };
   } catch {
-    return undefined;
+    return unavailable("invalid_json");
   }
 }
 
-function printUnavailableDiagnostics({ codexSkipReason, claudeSkipReason, opencodeSkipReason } = {}) {
+function printUnavailableDiagnostics({ codexSkipReason, claudeSkipReason, opencodeSkipReason, codebuddySkipReason, workbuddySkipReason, traeSkipReason, cursorSkipReason, qoderSkipReason } = {}) {
   logRed("MemoraX Code is not enabled for new client sessions.");
-  logRed("Check `memorax-code status`, `memorax-code-codex status`, `memorax-code-claude status`, and `memorax-code-opencode status` for Backend and adapter details.");
-  logRed("If Codex, Claude Code, OpenCode, or DeepSeek Harness is open, restart or refresh it after fixing the reported status.");
+  logRed("Check `memorax-code status` and the selected adapter status commands for Backend and integration details.");
+  logRed("If Codex, Claude Code, OpenCode, CodeBuddy CLI, WorkBuddy, Trae, Cursor, Qoder, or DeepSeek Harness is open, restart or refresh it after fixing the reported status.");
   if (codexSkipReason) printCodexSkippedDiagnostics(codexSkipReason);
   if (claudeSkipReason) printClaudeSkippedDiagnostics(claudeSkipReason);
   if (opencodeSkipReason) printOpenCodeSkippedDiagnostics(opencodeSkipReason);
+  if (codebuddySkipReason) printCodeBuddySkippedDiagnostics("codebuddy");
+  if (workbuddySkipReason) printCodeBuddySkippedDiagnostics("workbuddy");
+  if (traeSkipReason) printTraeSkippedDiagnostics(traeSkipReason);
+  if (cursorSkipReason) printCursorSkippedDiagnostics(cursorSkipReason);
+  if (qoderSkipReason) printQoderSkippedDiagnostics(qoderSkipReason);
   printCommonCommands({
     codexAdapterEnabled: !codexSkipReason,
     claudeAdapterEnabled: !claudeSkipReason,
     opencodeAdapterEnabled: !opencodeSkipReason,
+    codebuddyAdapterEnabled: !codebuddySkipReason,
+    workbuddyAdapterEnabled: !workbuddySkipReason,
+    traeAdapterEnabled: !traeSkipReason,
+    cursorAdapterEnabled: !cursorSkipReason,
+    qoderAdapterEnabled: !qoderSkipReason,
   });
 }
 
@@ -1519,6 +2293,27 @@ function printClaudeSkippedDiagnostics() {
 function printOpenCodeSkippedDiagnostics() {
   logRed("OpenCode adapter setup was skipped for this setup, so MemoraX Code left the OpenCode integration unchanged.");
   log("Run `memorax-code start --clients opencode` after installing OpenCode, then restart or refresh OpenCode.");
+}
+
+function printCodeBuddySkippedDiagnostics(client) {
+  const label = clientLabel(client);
+  logRed(`${label} adapter setup was skipped for this setup, so MemoraX Code left the ${label} integration unchanged.`);
+  log(`Run \`memorax-code start --clients ${client}\` after installing ${label}, then restart or refresh it.`);
+}
+
+function printTraeSkippedDiagnostics() {
+  logRed("Trae adapter setup was skipped for this setup, so MemoraX Code left Trae unchanged.");
+  log("Run `memorax-code start --clients trae` after installing Trae, then enable Global Hooks in Trae Settings and start a new session.");
+}
+
+function printCursorSkippedDiagnostics() {
+  logRed("Cursor adapter setup was skipped for this setup, so MemoraX Code left Cursor unchanged.");
+  log("Run `memorax-code start --clients cursor` after installing Cursor, then restart or refresh Cursor and start a new session.");
+}
+
+function printQoderSkippedDiagnostics() {
+  logRed("Qoder adapter setup was skipped for this setup, so MemoraX Code left Qoder unchanged.");
+  log("Run `memorax-code start --clients qoder` after installing Qoder, then restart or refresh Qoder and start a new session.");
 }
 
 function printFailureSuggestions() {
@@ -1550,6 +2345,11 @@ function printCommonCommands({
   codexAdapterEnabled = true,
   claudeAdapterEnabled = true,
   opencodeAdapterEnabled = true,
+  codebuddyAdapterEnabled = true,
+  workbuddyAdapterEnabled = true,
+  traeAdapterEnabled = true,
+  cursorAdapterEnabled = true,
+  qoderAdapterEnabled = true,
 } = {}) {
   log("Common commands:");
   log("- `memorax-code status`: check the local backend and adapter state.");
@@ -1559,12 +2359,22 @@ function printCommonCommands({
   if (codexAdapterEnabled) log("- `memorax-code-codex sessions`: verify recent native Codex session registration.");
   if (claudeAdapterEnabled) log("- `memorax-code-claude sessions`: verify recent native Claude Code session registration.");
   if (opencodeAdapterEnabled) log("- `memorax-code-opencode doctor`: verify the managed OpenCode plugin, runtime evidence, and Backend health.");
+  if (codebuddyAdapterEnabled) log("- `memorax-code-codebuddy status`: verify the managed CodeBuddy CLI plugin and Hook integration.");
+  if (workbuddyAdapterEnabled) log("- `memorax-code status --clients workbuddy`: verify the managed WorkBuddy plugin and Hook integration.");
+  if (traeAdapterEnabled) log("- `memorax-code-trae status`: verify the managed Trae Global Hooks and Skill integration.");
+  if (cursorAdapterEnabled) log("- `memorax-code-cursor status`: verify the managed Cursor Hooks and Skill integration.");
+  if (qoderAdapterEnabled) log("- `memorax-code-qoder status`: verify the managed Qoder Hooks and Skill integration.");
 }
 
 function memoraxCodeEnabled(statusResult, {
   codexAdapterRequired = true,
   claudeAdapterRequired = true,
   opencodeAdapterRequired = true,
+  codebuddyAdapterRequired = true,
+  workbuddyAdapterRequired = true,
+  traeAdapterRequired = true,
+  cursorAdapterRequired = true,
+  qoderAdapterRequired = true,
 } = {}) {
   const output = `${statusResult.stdout ?? ""}\n${statusResult.stderr ?? ""}`;
   const normalized = stripAnsi(output);
@@ -1576,11 +2386,21 @@ function memoraxCodeEnabled(statusResult, {
   const codexAdapterOk = /Codex adapter:\s*ok\b/im.test(normalized);
   const claudeAdapterOk = /Claude adapter:\s*ok\b/im.test(normalized);
   const opencodeAdapterOk = /OpenCode adapter:\s*ok\b/im.test(normalized);
+  const codebuddyAdapterOk = /CodeBuddy adapter:\s*ok\b/im.test(normalized);
+  const workbuddyAdapterOk = /WorkBuddy adapter:\s*ok\b/im.test(normalized);
+  const traeAdapterOk = /Trae adapter:\s*ok\b/im.test(normalized);
+  const cursorAdapterOk = /Cursor adapter:\s*ok\b/im.test(normalized);
+  const qoderAdapterOk = /Qoder adapter:\s*ok\b/im.test(normalized);
   return backendOk
     && serviceOk
     && (!codexAdapterRequired || codexAdapterOk)
     && (!claudeAdapterRequired || claudeAdapterOk)
-    && (!opencodeAdapterRequired || opencodeAdapterOk);
+    && (!opencodeAdapterRequired || opencodeAdapterOk)
+    && (!codebuddyAdapterRequired || codebuddyAdapterOk)
+    && (!workbuddyAdapterRequired || workbuddyAdapterOk)
+    && (!traeAdapterRequired || traeAdapterOk)
+    && (!cursorAdapterRequired || cursorAdapterOk)
+    && (!qoderAdapterRequired || qoderAdapterOk);
 }
 
 function log(message) {

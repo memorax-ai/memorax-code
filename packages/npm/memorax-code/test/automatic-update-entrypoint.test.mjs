@@ -1,0 +1,282 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { chmod, cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { basename, delimiter, dirname, join } from "node:path";
+import test from "node:test";
+import { fileURLToPath } from "node:url";
+
+const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+
+test("automatic update installs an exact latest version and runs non-interactive reconciliation", async (t) => {
+  const fixture = await createFixture(t);
+  await writeSetupCompletion(fixture.memoraxCodeHome, "0.1.9");
+  const result = runAutomaticUpdate(fixture);
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(await readJsonLines(fixture.npmLogPath), [
+    ["view", "@memorax/memorax-code@latest", "version", "--json"],
+    ["install", "-g", "@memorax/memorax-code@0.1.10"],
+  ]);
+  assert.deepEqual(await readJsonLines(fixture.setupLogPath), [{
+    automaticUpdateMode: "1",
+    home: fixture.memoraxCodeHome,
+    newClients: "",
+    updateMode: "1",
+  }]);
+  const state = JSON.parse(await readFile(
+    join(fixture.memoraxCodeHome, "runtime", "install", "automatic-update.json"),
+    "utf8",
+  ));
+  assert.equal(state.installedVersion, "0.1.10");
+  assert.deepEqual(Object.keys(state).sort(), ["installedVersion", "nextCheckAt", "version"]);
+});
+
+test("automatic update activates a newly installed client inside the registry window", async (t) => {
+  const fixture = await createFixture(t);
+  await writeSetupCompletion(fixture.memoraxCodeHome, "0.1.9");
+  // Claude is the only undecided client, so other local installs cannot affect the result.
+  await writeFile(join(fixture.memoraxCodeHome, "config.toml"), [
+    "[clients]", "codex = true", "opencode = false", "codebuddy = false", "workbuddy = false",
+    "trae = false", "cursor = false", "qoder = false", "",
+  ].join("\n"));
+  const statePath = join(fixture.memoraxCodeHome, "runtime", "install", "automatic-update.json");
+  await mkdir(dirname(statePath), { recursive: true });
+  const state = {
+    version: 1,
+    installedVersion: "0.1.9",
+    nextCheckAt: new Date(Date.now() + 60 * 60 * 1_000).toISOString(),
+  };
+  await writeFile(statePath, JSON.stringify(state));
+
+  const result = runAutomaticUpdate(fixture, { MEMORAX_CODE_CLAUDE_COMMAND: process.execPath });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(await readJsonLines(fixture.npmLogPath), []);
+  assert.deepEqual((await readJsonLines(fixture.setupLogPath)).map((entry) => entry.newClients), ["claude"]);
+  assert.deepEqual(JSON.parse(await readFile(statePath, "utf8")), state);
+});
+
+test("automatic update reports npm registry authentication failure without response text", async (t) => {
+  const fixture = await createFixture(t);
+  await writeSetupCompletion(fixture.memoraxCodeHome, "0.1.9");
+  const result = runAutomaticUpdate(fixture, { MEMORAX_CODE_TEST_VIEW_ERROR: "E401" });
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /UPDATE_VERSION_CHECK_FAILED.*version_check.*E401.*HTTP 401/);
+  assert.doesNotMatch(result.stderr, /private-registry-response-canary/);
+  const directory = join(fixture.memoraxCodeHome, "runtime", "diagnostics");
+  const files = await readdir(directory);
+  assert.equal(files.length, 1);
+  const text = await readFile(join(directory, files[0]), "utf8");
+  const record = JSON.parse(text);
+  assert.equal(record.httpStatus, 401);
+  assert.equal(record.systemCode, "E401");
+  assert.equal(record.commandExitCode, 7);
+  assert.doesNotMatch(text, /private-registry-response-canary/);
+  assert.deepEqual(await readJsonLines(fixture.setupLogPath), []);
+});
+
+test("failed automatic installation records the actual replaced version and retry deadline", async (t) => {
+  const fixture = await createFixture(t);
+  await writeSetupCompletion(fixture.memoraxCodeHome, "0.1.9");
+  const startedAt = Date.now();
+  const result = runAutomaticUpdate(fixture, { MEMORAX_CODE_TEST_NPM_FAIL: "1" });
+  assert.equal(result.status, 1);
+  assert.deepEqual(await readJsonLines(fixture.setupLogPath), []);
+  const state = JSON.parse(await readFile(join(fixture.memoraxCodeHome, "runtime", "install", "automatic-update.json"), "utf8"));
+  assert.equal(state.installedVersion, "0.1.10");
+  assert.ok(Date.parse(state.nextCheckAt) >= startedAt + 15 * 60 * 1_000);
+  assert.ok(Date.parse(state.nextCheckAt) <= Date.now() + 15 * 60 * 1_000);
+  assert.equal(JSON.parse(await readFile(join(fixture.root, "package.json"), "utf8")).version, "0.1.10");
+  const repeated = runAutomaticUpdate(fixture);
+  assert.equal(repeated.status, 0, repeated.stderr);
+  assert.equal((await readJsonLines(fixture.npmLogPath)).length, 2, "the failed replacement version must be throttled until its retry deadline");
+});
+
+test("successful npm exit cannot hide installation at an unexpected version", async (t) => {
+  const fixture = await createFixture(t);
+  await writeSetupCompletion(fixture.memoraxCodeHome, "0.1.9");
+  const result = runAutomaticUpdate(fixture, { MEMORAX_CODE_TEST_NPM_VERSION: "0.1.11" });
+  assert.equal(result.status, 1);
+  assert.deepEqual(await readJsonLines(fixture.setupLogPath), []);
+  const saved = JSON.parse(await readFile(join(fixture.memoraxCodeHome, "runtime", "diagnostics", (await readdir(join(fixture.memoraxCodeHome, "runtime", "diagnostics")))[0]), "utf8"));
+  assert.equal(saved.errorCode, "UPDATE_INSTALLED_PACKAGE_MISMATCH");
+  assert.equal(saved.targetVersion, "0.1.10");
+  assert.equal(saved.installedVersion, "0.1.11");
+  const state = JSON.parse(await readFile(join(fixture.memoraxCodeHome, "runtime", "install", "automatic-update.json"), "utf8"));
+  assert.equal(state.installedVersion, "0.1.11");
+});
+
+test("automatic update respects the explicit opt-out", async (t) => {
+  const fixture = await createFixture(t);
+  await writeSetupCompletion(fixture.memoraxCodeHome, "0.1.9");
+  const result = runAutomaticUpdate(fixture, { MEMORAX_CODE_AUTO_UPDATE: "false" });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(await readJsonLines(fixture.npmLogPath), []);
+  assert.deepEqual(await readJsonLines(fixture.setupLogPath), []);
+});
+
+async function createFixture(t) {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-automatic-entrypoint-"));
+  const memoraxCodeHome = join(root, "memorax-code-home");
+  const home = join(root, "home");
+  const fakeBin = join(root, "fake-bin");
+  const npmLogPath = join(root, "npm.jsonl");
+  const setupLogPath = join(root, "setup.jsonl");
+  await Promise.all([
+    "bin/memorax-code.mjs",
+    "lib/automatic-update.mjs",
+    "lib/client-discovery.mjs",
+    "lib/package-update.mjs",
+    "lib/package-transition.mjs",
+    "lib/update-diagnostics.mjs",
+    "lib/setup-diagnostics.mjs",
+    "lib/client-hook-runtime.mjs",
+    "lib/node-version.mjs",
+    "lib/npm-invocation.mjs",
+    "lib/resolve-claude-command.mjs",
+    "lib/resolve-codex-command.mjs",
+    "lib/resolve-codebuddy-command.mjs",
+    "lib/run-entrypoint.mjs",
+    "lib/setup-api-key-input.mjs",
+    "lib/vscode-extension-command.mjs",
+    "lib/windows-cli-invocation.mjs",
+    "lib/windows-user-path.mjs",
+  ].map(async (relativePath) => {
+    const target = join(root, relativePath);
+    await mkdir(dirname(target), { recursive: true });
+    await cp(join(packageRoot, relativePath), target);
+  }));
+  const commonRoot = join(packageRoot, "..", "..", "ts", "memorax-code-adapter-common", "src");
+  await Promise.all([
+    "clients/codebuddy-command.mjs",
+    "config-utils.mjs", "diagnostic-record.mjs", "deployment-failure.mjs",
+    "automatic-update-state.mjs",
+    "runtime-record.mjs",
+    "windows-directory-retry.mjs",
+    "package-recovery.mjs",
+    "setup-completion.mjs",
+  ].map(async (relativePath) => {
+    const target = join(root, "lib", "memorax-code-adapter-common", "src", relativePath);
+    await mkdir(dirname(target), { recursive: true });
+    await cp(join(commonRoot, relativePath), target);
+  }));
+  await Promise.all(["trae", "cursor", "qoder"].map(async (client) => {
+    const adapterPaths = join(`memorax-code-${client}-adapter`, "src", "adapter-paths.mjs");
+    const target = join(root, "lib", adapterPaths);
+    await mkdir(dirname(target), { recursive: true });
+    await cp(join(packageRoot, "..", "..", "ts", adapterPaths), target);
+  }));
+  await mkdir(join(root, "node_modules"));
+  await symlink(
+    join(packageRoot, "..", "..", "ts", "memorax-code-backend", "node_modules", "smol-toml"),
+    join(root, "node_modules", "smol-toml"),
+    "dir",
+  );
+  await Promise.all([fakeBin, home].map((path) => mkdir(path, { recursive: true })));
+  await writeFile(join(root, "package.json"), `${JSON.stringify({
+    name: "@memorax/memorax-code",
+    version: "0.1.9",
+    type: "module",
+  })}\n`);
+  await writeFile(join(root, "bin", "memorax-code-setup.mjs"), [
+    "import { appendFileSync } from 'node:fs';",
+    "appendFileSync(process.env.MEMORAX_CODE_TEST_SETUP_LOG, JSON.stringify({",
+    "  automaticUpdateMode: process.env.MEMORAX_CODE_SETUP_AUTOMATIC_UPDATE,",
+    "  home: process.env.MEMORAX_CODE_HOME,",
+    "  newClients: process.env.MEMORAX_CODE_SETUP_NEW_CLIENTS,",
+    "  updateMode: process.env.MEMORAX_CODE_SETUP_UPDATE,",
+    "}) + '\\n');",
+    "",
+  ].join("\n"));
+  await writeFile(join(root, "bin", "memorax-cli.mjs"), "process.exit(1);\n");
+  const backendEntrypoint = join(root, "lib", "memorax-code-backend", "dist", "memorax-code.js");
+  await mkdir(dirname(backendEntrypoint), { recursive: true });
+  await writeFile(backendEntrypoint, "process.exit(0);\n");
+
+  const npmModule = join(fakeBin, "npm.mjs");
+  await writeFile(npmModule, [
+    "#!/usr/bin/env node",
+    "import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';",
+    "import { join } from 'node:path';",
+    "const args = process.argv.slice(2);",
+    "appendFileSync(process.env.MEMORAX_CODE_TEST_NPM_LOG, JSON.stringify(args) + '\\n');",
+    "if (args[0] === 'view' && process.env.MEMORAX_CODE_TEST_VIEW_ERROR) {",
+    "  console.log(JSON.stringify({ error: { code: process.env.MEMORAX_CODE_TEST_VIEW_ERROR, detail: 'private-registry-response-canary' } }));",
+    "  process.exit(7);",
+    "}",
+    "if (args[0] === 'view') console.log(JSON.stringify('0.1.10'));",
+    "if (args[0] === 'install') {",
+    `  const metadataPath = ${JSON.stringify(join(root, "package.json"))};`,
+    "  const metadata = JSON.parse(readFileSync(metadataPath, 'utf8'));",
+    "  writeFileSync(metadataPath, JSON.stringify({ ...metadata, version: process.env.MEMORAX_CODE_TEST_NPM_VERSION ?? '0.1.10' }));",
+    "  if (process.env.MEMORAX_CODE_TEST_NPM_FAIL === '1') process.exit(23);",
+    "  const path = join(process.env.MEMORAX_CODE_HOME, 'runtime', 'setup', 'setup-completion.json');",
+    "  const record = JSON.parse(readFileSync(path, 'utf8'));",
+    "  writeFileSync(path, JSON.stringify({ ...record, completedByVersion: '0.1.10' }) + '\\n');",
+    "}",
+    "",
+  ].join("\n"));
+  if (process.platform !== "win32") {
+    await chmod(npmModule, 0o755);
+    await symlink(basename(npmModule), join(fakeBin, "npm"));
+  }
+  t.after(() => rm(root, { recursive: true, force: true }));
+  return {
+    root,
+    memoraxCodeHome,
+    home,
+    fakeBin,
+    npmModule,
+    npmLogPath,
+    setupLogPath,
+  };
+}
+
+function runAutomaticUpdate(fixture, extraEnv = {}) {
+  return spawnSync(process.execPath, [
+    join(fixture.root, "bin", "memorax-code.mjs"),
+    "update",
+    "--automatic",
+    "--home",
+    fixture.memoraxCodeHome,
+  ], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      HOME: fixture.home,
+      MEMORAX_CODE_NPM_EXEC_PATH: fixture.npmModule,
+      MEMORAX_CODE_TEST_NPM_LOG: fixture.npmLogPath,
+      MEMORAX_CODE_TEST_SETUP_LOG: fixture.setupLogPath,
+      PATH: `${fixture.fakeBin}${delimiter}${process.env.PATH ?? ""}`,
+      ...extraEnv,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 5_000,
+  });
+}
+
+async function writeSetupCompletion(memoraxCodeHome, version) {
+  const path = join(memoraxCodeHome, "runtime", "setup", "setup-completion.json");
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, `${JSON.stringify({
+    version: 1,
+    state: "complete",
+    completedAt: "2026-08-30T08:00:00.000Z",
+    completedByVersion: version,
+  })}\n`);
+}
+
+async function readJsonLines(path) {
+  try {
+    return (await readFile(path, "utf8"))
+      .trim()
+      .split(/\r?\n/)
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+  } catch (error) {
+    if (error?.code === "ENOENT") return [];
+    throw error;
+  }
+}

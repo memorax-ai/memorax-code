@@ -1,10 +1,11 @@
 #!/usr/bin/env node
+import { postBackendCommand } from "../../memorax-code-adapter-common/src/backend-command.mjs";
 import { resolveBackendConnection } from "../../memorax-code-adapter-common/src/backend-connection.mjs";
 import { readStdinJson } from "../../memorax-code-adapter-common/src/config-utils.mjs";
 import { scheduleMissingRepoMemoryBuild } from "../../memorax-code-adapter-common/src/repo-memory/repo-memory-auto-build.mjs";
 import { isRepoMemoryJobWorker } from "../../memorax-code-adapter-common/src/repo-memory/repo-memory-job-context.mjs";
 
-const RETRIEVAL_BACKEND_TIMEOUT_MS = 12_000;
+const TURN_START_BACKEND_TIMEOUT_MS = 12_000;
 const DEFAULT_BACKEND_TIMEOUT_MS = 5_000;
 
 if (isRepoMemoryJobWorker()) process.exit(0);
@@ -34,15 +35,10 @@ try {
       debugEnv: "MEMORAX_CODE_CLAUDE_HOOK_DEBUG",
       pluginRoot: process.env.CLAUDE_PLUGIN_ROOT,
     });
-    const additionalContext = stringValue(response?.additionalContext);
     const systemMessage = stringValue(response?.userNotice);
-    if (additionalContext || systemMessage) {
+    if (systemMessage) {
       process.stdout.write(`${JSON.stringify({
-        ...(systemMessage ? { systemMessage } : {}),
-        ...(additionalContext ? { hookSpecificOutput: {
-          hookEventName: "UserPromptSubmit",
-          additionalContext,
-        } } : {}),
+        systemMessage,
       })}\n`);
     }
   } else if (event === "Stop") {
@@ -71,15 +67,13 @@ async function postMemoryService(path, body) {
   const connection = resolveBackendConnection();
   const timeoutMs = parsePositiveInt(
     process.env.MEMORAX_CODE_CLAUDE_MEMORY_HOOK_TIMEOUT_MS,
-    path === "/memory/turn-start" ? RETRIEVAL_BACKEND_TIMEOUT_MS : DEFAULT_BACKEND_TIMEOUT_MS,
+    path === "/memory/turn-start" ? TURN_START_BACKEND_TIMEOUT_MS : DEFAULT_BACKEND_TIMEOUT_MS,
   );
-  const headers = { "content-type": "application/json", connection: "close" };
-  if (connection.token) headers["x-memorax-code-backend-token"] = connection.token;
-  const response = await fetch(new URL(path, connection.url), {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(timeoutMs),
+  const response = await postBackendCommand({
+    connection,
+    path,
+    body,
+    timeoutMs,
   });
   if (!response.ok) {
     await response.arrayBuffer().catch(() => undefined);

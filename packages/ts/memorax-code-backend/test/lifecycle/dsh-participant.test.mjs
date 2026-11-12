@@ -17,6 +17,29 @@ import { freePort } from "../support/helpers.mjs";
 
 const cliPath = fileURLToPath(new URL("../../dist/memorax-code.js", import.meta.url));
 
+test("an explicit unavailable Desktop launcher fails before native Profile mutation", async () => {
+  const fixture = await createFixture();
+  const desktopProfilePath = join(fixture.dshHome, "profiles", "desktop", "package.json");
+  mkdirSync(dirname(desktopProfilePath), { recursive: true });
+  writeJson(desktopProfilePath, {
+    name: "dsh-profile-desktop", private: true, dependencies: {},
+    dsh: { profile: { bundles: ["@deepseek-ai/dsh-web"] } },
+  });
+  try {
+    const started = runCli(fixture, "start", [
+      "--clients", "dsh", "--dsh-desktop-command", join(fixture.root, "missing-desktop-launcher"),
+    ]);
+    assert.equal(started.status, 1, started.stderr);
+    assert.equal(JSON.parse(started.stdout).dshAdapter.reason, "dsh_desktop_command_unavailable");
+    assert.equal(existsSync(fixture.statePath), false);
+    assert.equal(profileHasAdapter(desktopProfilePath), false);
+    assert.equal(readFileIfExists(fixture.dshLog).includes("add-begin"), false);
+  } finally {
+    runCli(fixture, "stop", ["--clients", "none"]);
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("Backend lifecycle stages, activates, retains, package-retires, and restores the DSH participant", async () => {
   const fixture = await createFixture();
   try {
@@ -46,7 +69,7 @@ test("Backend lifecycle stages, activates, retains, package-retires, and restore
     assert.equal(upgradedReport.ok, true);
     assert.equal(upgradedReport.dshAdapter.enabled, true);
     assert.equal(upgradedReport.dshAdapter.version, "0.1.0-rc.7");
-    assert.equal(upgradedReport.dshAdapter.dshVersionTested, false);
+    assert.deepEqual(Object.keys(upgradedReport.dshAdapter).filter((key) => /tested/i.test(key)), []);
     assert.equal(readFileSync(fixture.statePath, "utf8"), stateBeforeUpgradeStatus);
 
     const reconciled = runCli(fixture, "start", ["--clients", "dsh"], {
@@ -129,6 +152,8 @@ test("DSH recovery revision is serialized with a concurrent user stop and stale 
     assert.equal(profileHasAdapter(fixture.profilePath), false);
     assert.equal(existsSync(fixture.pidPath), false);
     const calls = readFileSync(fixture.dshLog, "utf8").trim().split("\n");
+    assert.ok(calls.includes("add-end enabled=false"));
+    assert.ok(calls.includes("remove enabled=false"));
     assert.ok(calls.indexOf("add-end enabled=false") < calls.indexOf("remove enabled=false"));
 
     const stateBeforeStaleRecovery = readFileSync(fixture.statePath, "utf8");
@@ -234,6 +259,41 @@ test("failed DSH deselection restores every previously enabled Profile", async (
     assert.equal(profileHasAdapter(webProfilePath), true);
   } finally {
     runCli(fixture, "stop", ["--clients", "none"]);
+    rmSync(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("failed client reselection retains restored DSH for unqualified cleanup", async () => {
+  const fixture = await createFixture();
+  const blockedCodeBuddyHome = join(fixture.root, "blocked-codebuddy-home");
+  writeFileSync(blockedCodeBuddyHome, "not a directory\n");
+  try {
+    const started = runCli(fixture, "start", ["--clients", "dsh"]);
+    assert.equal(started.status, 0, `${started.stdout}\n${started.stderr}`);
+
+    const failed = runCli(fixture, "start", [
+      "--clients", "codebuddy",
+      "--codebuddy-home", blockedCodeBuddyHome,
+    ]);
+    assert.equal(failed.status, 1, `${failed.stdout}\n${failed.stderr}`);
+    const report = JSON.parse(failed.stdout);
+    assert.equal(report.backend.reason, "codebuddy_adapter_enable_failed_backend_recovered");
+    assert.equal(report.backend.ok, true);
+    assert.equal(report.dshAdapter.enabled, true);
+    const activeClients = readJson(join(fixture.memoraxCodeHome, "runtime", "backend", "managed-clients.json"));
+    assert.equal(activeClients.dsh, true);
+    assert.equal(activeClients.codebuddy, true);
+
+    const stopped = runCli(fixture, "stop");
+    assert.equal(stopped.status, 0, `${stopped.stdout}\n${stopped.stderr}`);
+    const stoppedReport = JSON.parse(stopped.stdout);
+    assert.equal(stoppedReport.dshAdapter.enabled, false);
+    assert.equal(stoppedReport.codebuddyAdapter.ok, true);
+    assert.equal(readJson(fixture.statePath).enabled, false);
+    assert.equal(profileHasAdapter(fixture.profilePath), false);
+    assert.equal(existsSync(fixture.pidPath), false);
+  } finally {
+    runCli(fixture, "stop", ["--clients", "dsh,codebuddy"]);
     rmSync(fixture.root, { recursive: true, force: true });
   }
 });

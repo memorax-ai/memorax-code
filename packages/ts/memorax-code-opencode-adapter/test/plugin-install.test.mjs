@@ -1,6 +1,8 @@
 import { strict as assert } from "node:assert";
 import { spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import fs from "node:fs";
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -16,15 +18,18 @@ import {
 } from "../src/plugin-install.mjs";
 
 test("OpenCode config discovery honors its explicit and XDG homes", () => {
+  const home = join(tmpdir(), "opencode-discovery-home");
+  const customHome = join(home, "custom-opencode");
+  const xdgHome = join(home, "xdg-config");
   assert.equal(
-    defaultOpenCodeConfigDir({ OPENCODE_CONFIG_DIR: "/custom/opencode", XDG_CONFIG_HOME: "/ignored" }, "/home/user"),
-    "/custom/opencode",
+    defaultOpenCodeConfigDir({ OPENCODE_CONFIG_DIR: customHome, XDG_CONFIG_HOME: xdgHome }, home),
+    customHome,
   );
   assert.equal(
-    defaultOpenCodeConfigDir({ XDG_CONFIG_HOME: "/xdg/config" }, "/home/user"),
-    "/xdg/config/opencode",
+    defaultOpenCodeConfigDir({ XDG_CONFIG_HOME: xdgHome }, home),
+    join(xdgHome, "opencode"),
   );
-  assert.equal(defaultOpenCodeConfigDir({}, "/home/user"), "/home/user/.config/opencode");
+  assert.equal(defaultOpenCodeConfigDir({}, home), join(home, ".config", "opencode"));
 });
 
 test("OpenCode CLI path discovery recognizes the staged npm package layout", async () => {
@@ -60,7 +65,7 @@ test("OpenCode plugin install materializes a managed loader, canonical skill, an
     assert.match(loader, new RegExp(escapeRegex(`"openCodeConfigDir":${JSON.stringify(fixture.openCodeConfigDir)}`)));
     assert.match(loader, new RegExp(escapeRegex(`"memoraxCodeCommand":${JSON.stringify(fixture.memoraxCodeCommand)}`)));
     assert.match(loader, new RegExp(escapeRegex(`"nodePath":${JSON.stringify(process.execPath)}`)));
-    assert.match(loader, /"cliBinDir":"\/managed\/bin"/);
+    assert.match(loader, new RegExp(escapeRegex(`"cliBinDir":${JSON.stringify(fixture.options.cliBinDir)}`)));
     const repoMemoryHelperLoader = await readFile(installed.repoMemoryHelperPath, "utf8");
     assert.match(repoMemoryHelperLoader, /^\/\/ Managed by MemoraX Code/);
     assert.match(
@@ -77,6 +82,17 @@ test("OpenCode plugin install materializes a managed loader, canonical skill, an
     assert.deepEqual(JSON.parse(helperRun.stdout), ["maintain", "--repo", fixture.root]);
     assert.equal(await readFile(join(installed.skillPath, "SKILL.md"), "utf8"), "# MemoraX Code\n");
     assert.equal(await readFile(join(installed.skillPath, "references", "search.md"), "utf8"), "search\n");
+    assert.deepEqual(
+      JSON.parse(await readFile(join(installed.skillPath, ".memorax-code-package.json"), "utf8")),
+      { version: 1, memoraxCodeHome: fixture.options.memoraxCodeHome, memoraxCodeCommand: fixture.memoraxCodeCommand },
+    );
+    const repoMemoryRun = spawnSync(
+      process.execPath,
+      [join(installed.skillPath, "scripts", "repo-memory.mjs"), "validate", fixture.root],
+      { encoding: "utf8" },
+    );
+    assert.equal(repoMemoryRun.status, 0, repoMemoryRun.stderr);
+    assert.deepEqual(JSON.parse(repoMemoryRun.stdout), ["repo-memory", "validate", fixture.root]);
     const state = JSON.parse(await readFile(installed.statePath, "utf8"));
     assert.equal(state.runtime, "opencode");
     assert.equal(state.openCodeConfigDir, fixture.openCodeConfigDir);
@@ -120,6 +136,33 @@ test("OpenCode plugin install materializes a managed loader, canonical skill, an
       await readFile(helperUpdated.repoMemoryHelperPath, "utf8"),
       /Repo Memory helper source SHA-256: [a-f0-9]{64}/,
     );
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("OpenCode skill metadata restores its configured memory home", async () => {
+  const fixture = await createFixture("skill-home");
+  try {
+    const installed = ensureOpenCodePluginInstalled(fixture.options);
+    assert.equal(installed.ok, true);
+    const metadataPath = join(installed.skillPath, ".memorax-code-package.json");
+    for (const memoraxCodeHome of [undefined, join(fixture.root, "different-memory-home")]) {
+      await writeFile(metadataPath, `${JSON.stringify({
+        version: 1,
+        memoraxCodeHome,
+        memoraxCodeCommand: fixture.memoraxCodeCommand,
+      }, null, 2)}\n`);
+      const stale = readOpenCodePluginStatus(fixture.options);
+      assert.equal(stale.skillCurrent, false);
+      assert.equal(stale.reason, "skill_stale");
+
+      const refreshed = ensureOpenCodePluginInstalled(fixture.options);
+      assert.equal(refreshed.changed, true);
+      assert.equal(readOpenCodePluginStatus(fixture.options).current, true);
+      const metadata = JSON.parse(await readFile(metadataPath, "utf8"));
+      assert.equal(metadata.memoraxCodeHome, fixture.options.memoraxCodeHome);
+    }
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
@@ -178,6 +221,66 @@ test("OpenCode plugin install refuses to overwrite a recorded loader without its
   }
 });
 
+test("OpenCode directory publication retries Windows contention and preserves exhausted failures", async () => {
+  const fixture = await createFixture("directory-contention");
+  const skillPath = join(fixture.openCodeConfigDir, "skills", "memorax-code");
+  const platform = Object.getOwnPropertyDescriptor(process, "platform");
+  const originalRename = fs.renameSync;
+  const originalRemove = fs.rmSync;
+  const publishError = Object.assign(new Error("directory publication denied"), { code: "EPERM" });
+  let persistent = false;
+  let skillRenames = 0;
+  let skillRemovals = 0;
+  fs.renameSync = (source, destination) => {
+    if (destination === skillPath && (++skillRenames === 1 || persistent)) throw publishError;
+    return originalRename(source, destination);
+  };
+  fs.rmSync = (target, ...args) => {
+    if (target === skillPath && ++skillRemovals === 1) {
+      throw Object.assign(new Error("directory removal busy"), { code: "EBUSY" });
+    }
+    if (persistent && target.startsWith(`${skillPath}.tmp-`) && fs.existsSync(target)) {
+      throw Object.assign(new Error("stage cleanup failed"), { code: "EIO" });
+    }
+    return originalRemove(target, ...args);
+  };
+  Object.defineProperty(process, "platform", { ...platform, value: "win32" });
+  syncBuiltinESMExports();
+  try {
+    const installed = ensureOpenCodePluginInstalled(fixture.options);
+    assert.equal(installed.ok, true);
+    assert.equal(await readFile(join(skillPath, "SKILL.md"), "utf8"), "# MemoraX Code\n");
+    assert.deepEqual([skillRenames, skillRemovals], [2, 2]);
+    assert.equal(ensureOpenCodePluginInstalled(fixture.options).changed, false);
+    assert.deepEqual([skillRenames, skillRemovals], [2, 2]);
+
+    const previousState = await readFile(installed.statePath, "utf8");
+    await writeFile(join(fixture.options.skillSourcePath, "SKILL.md"), "# Updated Skill\n");
+    persistent = true;
+    assert.throws(() => ensureOpenCodePluginInstalled(fixture.options), (error) => (
+      error === publishError && error.stage === "skill-publish" && error.code === "EPERM"
+    ));
+    assert.deepEqual(publishError.failure, {
+      errorCode: "CLIENT_SKILL_PUBLISH_FAILED", stage: "skill-publish", systemCode: "EPERM",
+      cleanupErrorCode: "CLIENT_CLEANUP_FAILED", cleanupSystemCode: "EIO",
+    });
+    assert.equal(JSON.stringify(publishError.failure).includes(fixture.root), false);
+    assert.equal(skillRenames, 7, "persistent contention must stop after the bounded retries");
+    assert.equal(await readFile(installed.statePath, "utf8"), previousState);
+    assert.equal(readOpenCodePluginStatus(fixture.options).enabled, false);
+
+    persistent = false;
+    assert.equal(ensureOpenCodePluginInstalled(fixture.options).ok, true);
+    assert.equal(await readFile(join(skillPath, "SKILL.md"), "utf8"), "# Updated Skill\n");
+  } finally {
+    Object.defineProperty(process, "platform", platform);
+    fs.renameSync = originalRename;
+    fs.rmSync = originalRemove;
+    syncBuiltinESMExports();
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("OpenCode plugin install removes newly created artifacts when state persistence fails", async () => {
   const fixture = await createFixture("state-write-failure");
   const blockedStateDir = join(fixture.options.memoraxCodeHome, "adapters", "opencode");
@@ -188,7 +291,13 @@ test("OpenCode plugin install removes newly created artifacts when state persist
     await mkdir(join(fixture.options.memoraxCodeHome, "adapters"), { recursive: true });
     await writeFile(blockedStateDir, "not a directory\n");
 
-    assert.throws(() => ensureOpenCodePluginInstalled(fixture.options));
+    assert.throws(() => ensureOpenCodePluginInstalled(fixture.options), (error) => {
+      assert.equal(error.failure.errorCode, "CLIENT_STATE_WRITE_FAILED");
+      assert.equal(error.failure.stage, "state-write");
+      assert.ok(["EEXIST", "ENOTDIR"].includes(error.failure.systemCode));
+      assert.equal(JSON.stringify(error.failure).includes(fixture.root), false);
+      return true;
+    });
     await assert.rejects(readFile(pluginPath), /ENOENT/);
     await assert.rejects(readFile(join(skillPath, "SKILL.md")), /ENOENT/);
     await assert.rejects(readFile(helperPath), /ENOENT/);
@@ -297,6 +406,7 @@ async function createFixture(name) {
   const memoraxCodeCommand = join(root, "Package With Spaces", "bin", "memorax-code.mjs");
   const skillSourcePath = join(root, "canonical-skill");
   await mkdir(join(skillSourcePath, "references"), { recursive: true });
+  await mkdir(join(skillSourcePath, "scripts"), { recursive: true });
   await mkdir(join(root, "Adapter With Spaces"), { recursive: true });
   await mkdir(join(root, "Adapter With Spaces", "hooks"), { recursive: true });
   await mkdir(join(root, "Package With Spaces", "bin"), { recursive: true });
@@ -305,9 +415,16 @@ async function createFixture(name) {
     repoMemoryHelperSourcePath,
     "process.stdout.write(JSON.stringify(process.argv.slice(2)));\n",
   );
-  await writeFile(memoraxCodeCommand, "#!/usr/bin/env node\n");
+  await writeFile(
+    memoraxCodeCommand,
+    "#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify(process.argv.slice(2)));\n",
+  );
   await writeFile(join(skillSourcePath, "SKILL.md"), "# MemoraX Code\n");
   await writeFile(join(skillSourcePath, "references", "search.md"), "search\n");
+  await copyFile(
+    new URL("../../memorax-code-codex-adapter/skills/memorax-code/scripts/repo-memory.mjs", import.meta.url),
+    join(skillSourcePath, "scripts", "repo-memory.mjs"),
+  );
   return {
     root,
     openCodeConfigDir,
@@ -321,7 +438,7 @@ async function createFixture(name) {
       repoMemoryHelperSourcePath,
       skillSourcePath,
       memoraxCodeCommand,
-      cliBinDir: "/managed/bin",
+      cliBinDir: join(root, "managed-bin"),
     },
   };
 }

@@ -10,6 +10,8 @@ try {
   const sessionId = stringValue(input.session_id) ?? stringValue(input.sessionId);
   const envFile = stringValue(process.env.CLAUDE_ENV_FILE);
   if (sessionId && envFile) {
+    // This Hook's environment cannot reach later shell commands; Claude's env
+    // file carries their explicit trace-session binding across that boundary.
     await appendFile(envFile, [
       "export MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT='claude'",
       `export MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID=${shellSingleQuote(sessionId)}`,

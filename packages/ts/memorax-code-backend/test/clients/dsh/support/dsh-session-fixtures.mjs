@@ -92,3 +92,33 @@ export function dshTurnInterval({
     events,
   };
 }
+
+export function dshFormat4TurnInterval(options) {
+  const interval = dshTurnInterval(options);
+  Object.assign(interval.sessionHeader, { version: 4, isSeeded: false, delegationDepth: 0 });
+  // Current DSH enters a step before committing its admitted user messages.
+  const [stepStart] = interval.events.splice(3, 1);
+  interval.events.splice(1, 0, stepStart);
+  for (const event of interval.events) {
+    if (event.type === "user/message" && event.data.source.kind === "plugin") {
+      event.data.source = { kind: "plugin:memorax-code-dsh", form: "recall" };
+    }
+    if (event.type === "assistant/message") event.data.stream = [];
+    if (event.type === "tool/result") {
+      const message = event.data.message;
+      const [result] = message.content;
+      event.data.message = {
+        ...message,
+        role: "tool",
+        toolCallId: result.toolCallId,
+        content: result.content,
+        isError: result.isError,
+      };
+    }
+  }
+  interval.events.forEach((event, index) => {
+    event.seq = interval.startSeq + index;
+    event.time = 1_700_000_000_000 + index;
+  });
+  return interval;
+}

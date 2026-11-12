@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import fsPromises, { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
@@ -9,18 +9,23 @@ import { promisify } from "node:util";
 import { runMemoryCli } from "../../dist/memory/cli.js";
 import {
   traceContextFromClaudeHookBody,
+  traceContextFromCodeBuddyHookBody,
+  traceContextFromCursorHookBody,
   traceContextFromDshTurnStart,
   traceContextFromHookBody,
   traceContextFromOpenCodeHookBody,
 } from "../../dist/trace/context.js";
 import {
   claudeTracePaths,
+  clientTracePaths,
+  codeBuddyTracePaths,
   dshTracePaths,
   openCodeTracePaths,
   tracePaths,
 } from "../../dist/trace/config.js";
 import {
   writeCurrentClaudeTurn,
+  writeCurrentCodeBuddyTurn,
   writeCurrentCodexTurn,
   writeCurrentTraceTurn,
 } from "../../dist/trace/store.js";
@@ -56,13 +61,12 @@ test("memory CLI status reports configured MemoraX and enabled add gate by defau
   assert.equal(result.addEnabled, true);
 });
 
-test("memory CLI config-only status does not resolve or persist workspace scope", async () => {
+test("memory CLI config-only status does not resolve or persist workspace scope", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-cli-config-only-"));
   const memoraxCodeHome = join(root, "memorax-code-home");
   const workspace = join(root, "workspace");
   await mkdir(workspace, { recursive: true });
-
-  const result = await runMemoryCli(["status", "--config-only"], {
+  const options = {
     cwd: workspace,
     env: {
       MEMORAX_CODE_HOME: memoraxCodeHome,
@@ -70,15 +74,29 @@ test("memory CLI config-only status does not resolve or persist workspace scope"
       MEMORAX_CODE_MEMORAX_API_KEY: "secret",
       MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
     },
-  });
+  };
+  const realpath = t.mock.method(fsPromises, "realpath");
+  const workspaceProbes = () => realpath.mock.calls.filter(({ arguments: args }) => args[0] === workspace);
 
-  assert.equal(result.ok, true);
-  assert.equal(result.action, "memory.status");
-  assert.equal(result.provider, "memory.memorax");
-  assert.equal(result.config.configured, true);
-  assert.equal("repository" in result, false);
-  assert.equal(result.workspace, undefined);
-  assert.equal(result.effectiveUserId, undefined);
+  try {
+    const result = await runMemoryCli(["status", "--config-only"], options);
+    assert.equal(result.ok, true);
+    assert.equal(result.action, "memory.status");
+    assert.equal(result.provider, "memory.memorax");
+    assert.equal(result.config.configured, true);
+    assert.equal("repository" in result, false);
+    assert.equal(result.workspace, undefined);
+    assert.equal(result.effectiveUserId, undefined);
+    assert.equal(workspaceProbes().length, 0, "config-only status must not probe the workspace");
+    assert.deepEqual(await readdir(root), ["workspace"]);
+    assert.deepEqual(await readdir(workspace), []);
+
+    const scoped = await runMemoryCli(["status"], options);
+    assert.equal(scoped.workspaceScope, "bound");
+    assert.ok(workspaceProbes().length > 0, "ordinary status must exercise the workspace probe");
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("memory CLI searches within a readable non-Git workspace scope", async () => {
@@ -116,40 +134,54 @@ test("memory CLI searches within a readable non-Git workspace scope", async () =
   assert.equal(requests[0].user_id, "user-1@notes");
 });
 
-test("memory CLI reuses the current non-Git turn scope from a nested cwd", async () => {
+test("memory CLI preserves non-Git turn scope across trace settings", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-cli-local-turn-"));
-  const memoraxCodeHome = join(root, "memorax-code-home");
+  t.after(() => rm(root, { recursive: true, force: true }));
   const workspace = join(root, "notes");
   const nested = join(workspace, "src");
   await mkdir(nested, { recursive: true });
-  await writeCurrentCodexTurn(traceContextFromHookBody({
-    session_id: "session-local-turn",
-    turn_id: "turn-local-turn",
-    cwd: workspace,
-  }), { memoraxCodeHome });
-  const requests = [];
-
-  const result = await runMemoryCli(["search", "--query", "nested workspace note"], {
-    cwd: nested,
-    env: {
+  for (const [enabled, captureContent] of [["true", "true"], ["false", "true"], ["true", "false"]]) {
+    const memoraxCodeHome = join(root, `home-${enabled}-${captureContent}`);
+    const env = {
       CODEX_THREAD_ID: "session-local-turn",
       MEMORAX_CODE_HOME: memoraxCodeHome,
       MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
       MEMORAX_CODE_MEMORAX_API_KEY: "secret",
       MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
-    },
-    fetchImpl: async (_url, init) => {
-      requests.push(JSON.parse(init.body));
-      return new Response(JSON.stringify({ success: true, data: { data: [] } }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    },
-  });
-
-  assert.equal(result.ok, true);
-  assert.equal(result.effectiveUserId, "user-1@notes");
-  assert.equal(requests[0].user_id, "user-1@notes");
+      MEMORAX_CODE_CODEX_TRACE_ENABLED: enabled,
+      MEMORAX_CODE_CODEX_TRACE_CAPTURE_CONTENT: captureContent,
+    };
+    await writeCurrentCodexTurn(traceContextFromHookBody({
+      session_id: "session-local-turn",
+      turn_id: "turn-local-turn",
+      cwd: workspace,
+    }), { memoraxCodeHome, env });
+    const requests = [];
+    const options = {
+      cwd: nested,
+      env,
+      fetchImpl: async (url, init) => {
+        requests.push(JSON.parse(init.body));
+        const data = String(url).endsWith("/add") ? { task_id: "scope-add", status: "queued" } : { data: [] };
+        return new Response(JSON.stringify({ success: true, data }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    };
+    const result = await runMemoryCli(["search", "--query", "nested workspace note"], options);
+    assert.equal(result.ok, true);
+    assert.equal(result.effectiveUserId, "user-1@notes", `trace enabled=${enabled}, captureContent=${captureContent}`);
+    assert.equal(requests[0].user_id, "user-1@notes");
+    if (enabled === "false") {
+      const added = await runMemoryCli([
+        "add", "--memory", "Keep the original workspace scope.", "--type", "procedural", "--reason", "Explicit test save.",
+      ], options);
+      assert.equal(added.ok, true);
+      assert.equal(added.effectiveUserId, "user-1@notes");
+      assert.equal(requests[1].user_id, "user-1@notes");
+    }
+  }
 });
 
 test("memory CLI rejects a nested repository outside the current turn scope", async () => {
@@ -187,7 +219,7 @@ test("memory CLI rejects a nested repository outside the current turn scope", as
   assert.equal(result.workspaceScopeReason, "workspace_scope_mismatch");
   assert.equal(
     result.userAction,
-    "Start a new Codex, Claude Code, DSH, or OpenCode session from the target repository or local workspace.",
+    "Start a new Codex, Claude Code, CodeBuddy CLI, WorkBuddy, DSH, OpenCode, or Cursor session from the target repository or local workspace.",
   );
   assert.equal(requestCount, 0);
 });
@@ -308,7 +340,7 @@ test("memory CLI gives the same scope recovery guidance for a Claude turn", asyn
   assert.equal(result.workspaceScopeReason, "workspace_scope_mismatch");
   assert.equal(
     result.userAction,
-    "Start a new Codex, Claude Code, DSH, or OpenCode session from the target repository or local workspace.",
+    "Start a new Codex, Claude Code, CodeBuddy CLI, WorkBuddy, DSH, OpenCode, or Cursor session from the target repository or local workspace.",
   );
   assert.equal(requestCount, 0);
 });
@@ -352,49 +384,118 @@ test("memory CLI accepts a sibling linked worktree from the current turn reposit
   assert.equal(requests[0].user_id, "user-1@Project");
 });
 
-test("memory CLI uses Codex-General for a projectless current turn", async () => {
+test("memory CLI preserves projectless turn scope across trace settings", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-cli-projectless-"));
-  const memoraxCodeHome = join(root, "memorax-code-home");
+  t.after(() => rm(root, { recursive: true, force: true }));
   const taskRoot = join(root, "2026-07-13", "new-chat-2");
   const taskWork = join(taskRoot, "work");
   await mkdir(taskWork, { recursive: true });
-  await writeCurrentCodexTurn(traceContextFromHookBody({
-    session_id: "session-projectless",
-    turn_id: "turn-projectless",
-    cwd: taskRoot,
-    workspace_kind: "projectless",
-  }), { memoraxCodeHome });
-
-  const result = await runMemoryCli(["status"], {
-    cwd: taskWork,
-    env: {
+  for (const [enabled, captureContent] of [["true", "true"], ["false", "true"], ["true", "false"]]) {
+    const memoraxCodeHome = join(root, `home-${enabled}-${captureContent}`);
+    const env = {
       CODEX_THREAD_ID: "session-projectless",
       MEMORAX_CODE_HOME: memoraxCodeHome,
       MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
       MEMORAX_CODE_MEMORAX_API_KEY: "secret",
       MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
-    },
-  });
-
-  assert.equal(result.ok, true);
-  assert.equal(result.scopeKind, "codex-projectless");
-  assert.equal(result.workspace, "Codex-General");
-  assert.equal(result.effectiveUserId, "user-1@Codex-General");
+      MEMORAX_CODE_CODEX_TRACE_ENABLED: enabled,
+      MEMORAX_CODE_CODEX_TRACE_CAPTURE_CONTENT: captureContent,
+    };
+    await writeCurrentCodexTurn(traceContextFromHookBody({
+      session_id: "session-projectless",
+      turn_id: "turn-projectless",
+      cwd: taskRoot,
+      workspace_kind: "projectless",
+    }), { memoraxCodeHome, env });
+    const requests = [];
+    const options = {
+      cwd: taskWork,
+      env,
+      fetchImpl: async (url, init) => {
+        requests.push(JSON.parse(init.body));
+        const data = String(url).endsWith("/add") ? { task_id: "general-add", status: "queued" } : { data: [] };
+        return new Response(JSON.stringify({ success: true, data }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
+      },
+    };
+    const result = await runMemoryCli(["search", "--query", "projectless scope"], options);
+    assert.equal(result.ok, true);
+    assert.equal(result.scopeKind, "general", `trace enabled=${enabled}, captureContent=${captureContent}`);
+    assert.equal(result.workspace, "General");
+    assert.equal(result.effectiveUserId, "user-1@General");
+    assert.equal(requests[0].user_id, "user-1@General");
+    if (enabled === "false") {
+      const added = await runMemoryCli([
+        "add", "--memory", "Keep shared general preferences.", "--type", "preference", "--reason", "Explicit test save.",
+      ], options);
+      assert.equal(added.ok, true);
+      assert.equal(added.effectiveUserId, "user-1@General");
+      assert.equal(requests[1].user_id, "user-1@General");
+      assert.equal(requests[1].metadata.memorax_code_memory_scope, "general.v1");
+    }
+  }
 });
 
-test("memory CLI uses Codex-General when a projectless current turn has no cwd", async () => {
+test("memory CLI binds a Cursor projectless turn without cwd to General", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-cli-cursor-projectless-"));
+  const commandWorkspace = join(root, "cursor-command-workspace");
+  const memoraxCodeHome = join(root, "memorax-code-home");
+  await mkdir(commandWorkspace, { recursive: true });
+  const sessionId = "cursor-projectless-session";
+  const env = {
+    MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT: "cursor",
+    MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID: sessionId,
+    MEMORAX_CODE_HOME: memoraxCodeHome,
+    MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+    MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+    MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+  };
+  await writeCurrentTraceTurn(traceContextFromCursorHookBody({
+    client: "cursor", sessionId, turnId: "cursor-projectless-turn", workspaceKind: "projectless",
+  }), { memoraxCodeHome, env });
+  const requests = [];
+  const options = {
+    cwd: commandWorkspace,
+    env,
+    fetchImpl: async (url, init) => {
+      requests.push(JSON.parse(init.body));
+      const data = String(url).endsWith("/add") ? { task_id: "cursor-general-add", status: "queued" } : { data: [] };
+      return new Response(JSON.stringify({ success: true, data }), {
+        status: 200, headers: { "content-type": "application/json" },
+      });
+    },
+  };
+  try {
+    const search = await runMemoryCli(["search", "--query", "Cursor General scope"], options);
+    assert.equal(search.ok, true);
+    assert.equal(search.effectiveUserId, "user-1@General");
+    const add = await runMemoryCli([
+      "add", "--memory", "Keep Cursor General preferences.", "--type", "preference", "--reason", "Explicit test save.",
+    ], options);
+    assert.equal(add.ok, true);
+    assert.equal(add.effectiveUserId, "user-1@General");
+    assert.deepEqual(requests.map(({ user_id }) => user_id), ["user-1@General", "user-1@General"]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("memory CLI validates command cwd before using a projectless turn without cwd", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-cli-projectless-no-cwd-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
   const memoraxCodeHome = join(root, "memorax-code-home");
   const commandWorkspace = join(root, "arbitrary-command-workspace");
+  const repository = join(root, "repository");
   await mkdir(commandWorkspace, { recursive: true });
+  await createRepositoryMetadata(repository, "My-Project");
   await writeCurrentCodexTurn(traceContextFromHookBody({
     session_id: "session-projectless-no-cwd",
     turn_id: "turn-projectless-no-cwd",
     workspace_kind: "projectless",
   }), { memoraxCodeHome });
 
-  const result = await runMemoryCli(["status"], {
-    cwd: commandWorkspace,
+  const requests = [];
+  const options = {
     env: {
       CODEX_THREAD_ID: "session-projectless-no-cwd",
       MEMORAX_CODE_HOME: memoraxCodeHome,
@@ -402,12 +503,38 @@ test("memory CLI uses Codex-General when a projectless current turn has no cwd",
       MEMORAX_CODE_MEMORAX_API_KEY: "secret",
       MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
     },
-  });
-
-  assert.equal(result.ok, true);
-  assert.equal(result.scopeKind, "codex-projectless");
-  assert.equal(result.workspace, "Codex-General");
-  assert.equal(result.effectiveUserId, "user-1@Codex-General");
+    fetchImpl: async (url, init) => {
+      requests.push(JSON.parse(init.body));
+      const data = String(url).endsWith("/add") ? { task_id: "general-add", status: "queued" } : { data: [] };
+      return new Response(JSON.stringify({ success: true, data }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    },
+  };
+  for (const [cwd, failureReason] of [
+    [commandWorkspace, undefined],
+    [repository, "workspace_scope_mismatch"],
+    [join(root, "missing"), "workspace_scope_unavailable"],
+  ]) {
+    const requestCount = requests.length;
+    for (const args of [
+      ["search", "--query", "Keep General within a verified non-Git workspace."],
+      ["add", "--memory", "Shared preference.", "--type", "preference", "--reason", "Explicit test save."],
+    ]) {
+      const result = await runMemoryCli(args, { ...options, cwd });
+      assert.equal(result.ok, failureReason === undefined, `${args[0]} in ${cwd}`);
+      if (failureReason) {
+        assert.equal(result.workspaceScopeReason, failureReason);
+      } else {
+        assert.equal(result.scopeKind, "general");
+        assert.equal(result.workspace, "General");
+        assert.equal(result.effectiveUserId, "user-1@General");
+      }
+    }
+    assert.equal(requests.length - requestCount, failureReason ? 0 : 2);
+  }
+  assert.deepEqual(requests.map((request) => request.user_id), ["user-1@General", "user-1@General"]);
 });
 
 test("memory CLI blocks a cwd outside the current Codex turn scope", async () => {
@@ -810,64 +937,227 @@ test("memory CLI search binds to Claude trace without writing the same-id Codex 
   }
 });
 
-test("memory CLI search binds to OpenCode trace instead of an inherited Codex thread", async () => {
-  const root = await mkdtemp(join(tmpdir(), "memorax-code-cli-opencode-trace-"));
-  const sessionId = "shared-opencode-cli-session";
-  const codexWorkspace = join(root, "codex-workspace");
-  const openCodeWorkspace = join(root, "opencode-workspace");
-  const openCodeNestedCwd = join(openCodeWorkspace, "src");
+test("memory CLI search binds to the current WorkBuddy trace and workspace", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-cli-workbuddy-trace-"));
+  const sessionId = "workbuddy-cli-session";
+  const workspace = join(root, "workbuddy-workspace");
+  const nestedCwd = join(workspace, "src");
+  const otherWorkspace = join(root, "other-workspace");
   await Promise.all([
-    mkdir(codexWorkspace, { recursive: true }),
-    mkdir(openCodeNestedCwd, { recursive: true }),
+    mkdir(nestedCwd, { recursive: true }),
+    mkdir(otherWorkspace, { recursive: true }),
   ]);
-  await writeCurrentCodexTurn(traceContextFromHookBody({
+  await writeCurrentTraceTurn(traceContextFromCodeBuddyHookBody({
+    client: "workbuddy",
     session_id: sessionId,
-    turn_id: "codex-turn",
-    cwd: codexWorkspace,
-  }), { memoraxCodeHome: root });
-  await writeCurrentTraceTurn(traceContextFromOpenCodeHookBody({
-    sessionId,
-    userMessageId: "opencode-user-message",
-    cwd: openCodeWorkspace,
-  }), {
-    client: "opencode",
-    memoraxCodeHome: root,
-  });
+    turn_id: "workbuddy-turn",
+    cwd: workspace,
+  }), { client: "workbuddy", memoraxCodeHome: root });
   const requests = [];
+  const env = {
+    MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT: "workbuddy",
+    MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID: sessionId,
+    MEMORAX_CODE_HOME: root,
+    MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+    MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+    MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+  };
+  const fetchImpl = async (_url, init) => {
+    requests.push(JSON.parse(init.body));
+    return new Response(JSON.stringify({ success: true, data: { data: [] } }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
 
-  const result = await runMemoryCli(["search", "--query", "OpenCode trace bridge"], {
-    env: {
-      CODEX_THREAD_ID: sessionId,
-      MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT: "opencode",
-      MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID: sessionId,
-      MEMORAX_CODE_HOME: root,
-      MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
-      MEMORAX_CODE_MEMORAX_API_KEY: "secret",
-      MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
-    },
-    cwd: openCodeNestedCwd,
-    fetchImpl: async (_url, init) => {
-      requests.push(JSON.parse(init.body));
-      return new Response(JSON.stringify({ success: true, data: { data: [] } }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    },
+  const search = await runMemoryCli(["search", "--query", "WorkBuddy trace bridge"], {
+    cwd: nestedCwd,
+    env,
+    fetchImpl,
   });
-
-  assert.equal(result.ok, true);
+  assert.equal(search.ok, true);
   assert.equal(requests.length, 1);
-  assert.equal(requests[0].user_id, "user-1@opencode-workspace");
-  const events = (await readFile(openCodeTracePaths(root).eventsJsonl(sessionId), "utf8"))
+  assert.equal(requests[0].user_id, "user-1@workbuddy-workspace");
+
+  const rejected = await runMemoryCli(["search", "--query", "must not cross workspaces"], {
+    cwd: otherWorkspace,
+    env,
+    fetchImpl,
+  });
+  assert.equal(rejected.ok, false);
+  assert.match(rejected.error, /does not match the current WorkBuddy turn repository\/workspace scope/);
+  assert.equal(rejected.workspaceScopeReason, "workspace_scope_mismatch");
+  assert.equal(
+    rejected.userAction,
+    "Start a new Codex, Claude Code, CodeBuddy CLI, WorkBuddy, DSH, OpenCode, or Cursor session from the target repository or local workspace.",
+  );
+  assert.equal(requests.length, 1);
+
+  const events = (await readFile(clientTracePaths("workbuddy", root).eventsJsonl(sessionId), "utf8"))
     .trim()
     .split("\n")
     .map((line) => JSON.parse(line));
   assert.equal(events.length, 1);
   assert.equal(events[0].type, "memory_cli_search");
-  assert.equal(events[0].trace.client, "opencode");
-  assert.equal(events[0].trace.turn_id, "opencode-user-message");
+  assert.equal(events[0].source, "memory_cli");
+  assert.equal(events[0].trace.client, "workbuddy");
+  assert.equal(events[0].trace.session_id, sessionId);
+  assert.equal(events[0].trace.turn_id, "workbuddy-turn");
   assert.equal(events[0].trace.context_origin, "current-turn-file");
-  await assert.rejects(readFile(tracePaths(root).eventsJsonl(sessionId), "utf8"));
+});
+
+test("memory CLI keeps same-ID client bindings separate from an inherited Codex thread", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-cli-general-client-trace-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const sessionId = "shared-cli-session";
+  const clients = [
+    { client: "opencode", workspace: join(root, "Default Project"), turnId: "opencode-user-message", paths: openCodeTracePaths },
+    { client: "workbuddy", workspace: join(root, "WorkBuddy"), turnId: "workbuddy-turn", paths: (home) => clientTracePaths("workbuddy", home) },
+    { client: "codex", workspace: join(root, "new-chat"), turnId: "codex-turn", paths: tracePaths },
+    { client: "codebuddy", workspace: join(root, "cli-workspace"), turnId: "codebuddy-turn", paths: codeBuddyTracePaths },
+    { client: "cursor", workspace: join(root, "cursor-workspace"), turnId: "cursor-turn", paths: (home) => clientTracePaths("cursor", home) },
+  ];
+  for (const { workspace } of clients) await mkdir(join(workspace, "work"), { recursive: true });
+  await writeCurrentCodexTurn(traceContextFromHookBody({
+    session_id: sessionId,
+    turn_id: "codex-turn",
+    cwd: clients[2].workspace,
+    workspace_kind: "projectless",
+  }), { memoraxCodeHome: root });
+  for (const { client, workspace, turnId } of [clients[1], clients[3]]) {
+    await writeCurrentTraceTurn(traceContextFromCodeBuddyHookBody({
+      client,
+      session_id: sessionId,
+      turn_id: turnId,
+      cwd: workspace,
+      ...(client === "workbuddy" ? { workspace_kind: "projectless" } : {}),
+    }), { client, memoraxCodeHome: root });
+  }
+  await writeCurrentTraceTurn(traceContextFromOpenCodeHookBody({
+    sessionId,
+    userMessageId: "opencode-user-message",
+    cwd: clients[0].workspace,
+    workspaceKind: "projectless",
+  }), { client: "opencode", memoraxCodeHome: root });
+  await writeCurrentTraceTurn(traceContextFromCursorHookBody({
+    sessionId,
+    turnId: "cursor-turn",
+    cwd: clients[4].workspace,
+  }), { client: "cursor", memoraxCodeHome: root });
+  const requests = [];
+  const fetchImpl = async (_url, init) => {
+    requests.push(JSON.parse(init.body));
+    return new Response(JSON.stringify({ success: true, data: { data: [] } }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  for (const [index, { client, workspace, turnId, paths }] of clients.entries()) {
+    const options = {
+      env: {
+        CODEX_THREAD_ID: sessionId,
+        ...(client === "codex" ? {} : (client === "codebuddy" || client === "workbuddy") ? {
+          CODEBUDDY_SESSION_ID: sessionId,
+        } : {
+          MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT: client,
+          MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID: sessionId,
+        }),
+        MEMORAX_CODE_HOME: root,
+        MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+        MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+        MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+      },
+      cwd: join(workspace, "work"),
+      fetchImpl,
+    };
+    const result = await runMemoryCli(["search", "--query", "shared general preference"], options);
+    assert.equal(result.ok, true, client);
+    assert.equal(result.scopeKind, ["codebuddy", "cursor"].includes(client) ? "local-directory" : "general", client);
+    assert.equal(requests.length, index + 1);
+    assert.equal(requests[index].user_id, client === "cursor" ? "user-1@cursor-workspace" : client === "codebuddy" ? "user-1@cli-workspace" : "user-1@General", client);
+    const events = (await readFile(paths(root).eventsJsonl(sessionId), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    assert.equal(events.length, 1, client);
+    assert.equal(events[0].type, "memory_cli_search");
+    assert.equal(events[0].trace.client, client);
+    assert.equal(events[0].trace.session_id, sessionId);
+    assert.equal(events[0].trace.turn_id, turnId);
+    assert.equal(events[0].trace.context_origin, "current-turn-file");
+    if (index === 0) {
+      await assert.rejects(readFile(tracePaths(root).eventsJsonl(sessionId), "utf8"));
+      await assert.rejects(readFile(codeBuddyTracePaths(root).eventsJsonl(sessionId), "utf8"));
+    }
+    const rejected = await runMemoryCli(["search", "--query", "must stay in the current workspace"], {
+      ...options,
+      cwd: clients[(index + 1) % clients.length].workspace,
+    });
+    assert.equal(rejected.ok, false, client);
+    assert.equal(rejected.workspaceScopeReason, "workspace_scope_mismatch", client);
+    assert.equal(requests.length, index + 1, "shared remote identity must not permit a different local workspace");
+  }
+  const workBuddyWorkspace = clients[1].workspace;
+  await writeCurrentCodeBuddyTurn(traceContextFromCodeBuddyHookBody({
+    session_id: sessionId,
+    turn_id: "codebuddy-shared-workspace",
+    cwd: workBuddyWorkspace,
+  }), { memoraxCodeHome: root });
+  const nativeOptions = {
+    cwd: join(workBuddyWorkspace, "work"),
+    env: {
+      CODEBUDDY_SESSION_ID: sessionId,
+      MEMORAX_CODE_HOME: root,
+      MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+      MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+      MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+    },
+    fetchImpl,
+  };
+  const ambiguous = await runMemoryCli(["search", "--query", "ambiguous native client"], nativeOptions);
+  assert.equal(ambiguous.ok, false);
+  assert.match(ambiguous.error, /cannot uniquely bind/);
+  assert.equal(requests.length, clients.length);
+  for (const client of ["workbuddy", "codebuddy"]) {
+    const explicit = await runMemoryCli(["search", "--query", "explicit native client"], {
+      ...nativeOptions,
+      env: {
+        ...nativeOptions.env,
+        MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT: client,
+        MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID: sessionId,
+      },
+    });
+    assert.equal(explicit.ok, true, client);
+    assert.equal(explicit.scopeKind, client === "workbuddy" ? "general" : "local-directory", client);
+  }
+  for (const scenario of ["missing", "stale"]) {
+    const fallbackSessionId = `${scenario}-native-session`;
+    if (scenario === "stale") {
+      for (const client of ["codebuddy", "workbuddy"]) {
+        await writeCurrentTraceTurn(traceContextFromCodeBuddyHookBody({
+          client,
+          session_id: fallbackSessionId,
+          turn_id: "expired-turn",
+          cwd: workBuddyWorkspace,
+          workspace_kind: "projectless",
+        }), { client, memoraxCodeHome: root, now: () => new Date(0) });
+      }
+    }
+    const previousRequests = requests.length;
+    const fallback = await runMemoryCli(["search", "--query", `${scenario} native turn uses cwd`], {
+      ...nativeOptions,
+      cwd: clients[3].workspace,
+      env: { ...nativeOptions.env, CODEBUDDY_SESSION_ID: fallbackSessionId },
+    });
+    assert.equal(fallback.ok, true, scenario);
+    assert.equal(fallback.scopeKind, "local-directory", scenario);
+    assert.equal(fallback.effectiveUserId, "user-1@cli-workspace", scenario);
+    assert.equal(requests.length, previousRequests + 1, scenario);
+    assert.equal(requests.at(-1).user_id, "user-1@cli-workspace", scenario);
+    for (const client of ["codebuddy", "workbuddy"]) {
+      await assert.rejects(readFile(clientTracePaths(client, root).eventsJsonl(fallbackSessionId), "utf8"));
+    }
+  }
 });
 
 test("memory CLI binds DSH search and add to the current turn scope", async () => {
@@ -1160,7 +1450,7 @@ test("memory CLI add writes a Codex trace event from current turn bridge", async
   }
 });
 
-test("memory CLI search ignores stale or disabled current turn bridge without failing", async () => {
+test("memory CLI search tolerates missing or stale current-turn state", async () => {
   const requests = [];
   const server = createServer(async (req, res) => {
     const chunks = [];

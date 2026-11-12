@@ -1,54 +1,16 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { runMemoryCli } from "../../../dist/memory/cli.js";
 import { createOpenCodeMemoryHookRuntime } from "../../../dist/clients/opencode/memory-hook-runtime.js";
 import { openCodeMessageTurn } from "../../../dist/clients/opencode/message-turn.js";
 import { openCodeTracePaths } from "../../../dist/trace/config.js";
-import {
-  parseTurnStartCommand,
-  parseWritebackCommand,
-} from "../../../dist/memory/hook-command.js";
+import { createMemoryTurnCoordinator } from "../../../dist/memory/turn-coordinator.js";
 
 const TEST_WORKSPACE = fileURLToPath(new URL("../../..", import.meta.url));
-
-test("OpenCode Hook commands keep a closed client-specific schema", () => {
-  assert.equal(parseTurnStartCommand({
-    version: 1,
-    client: "opencode",
-    sessionId: "session-1",
-    userMessageId: "user-1",
-    prompt: "Use the OpenCode SDK turn.",
-    cwd: TEST_WORKSPACE,
-  }).ok, true);
-  assert.equal(parseWritebackCommand({
-    version: 1,
-    client: "opencode",
-    sessionId: "session-1",
-    userMessageId: "user-1",
-    assistantMessageId: "assistant-1",
-    messages: [],
-  }).ok, true);
-  assert.equal(parseTurnStartCommand({
-    version: 1,
-    client: "opencode",
-    sessionId: "session-1",
-    userMessageId: "user-1",
-    prompt: "Do not accept another client's transcript field.",
-    transcriptPath: "/tmp/transcript.jsonl",
-  }).ok, false);
-  assert.equal(parseWritebackCommand({
-    version: 1,
-    client: "opencode",
-    sessionId: "session-1",
-    userMessageId: "user-1",
-    assistantMessageId: "assistant-1",
-    messages: [],
-    lastAssistantMessage: "Hook text is not OpenCode writeback authority.",
-  }).ok, false);
-});
 
 test("OpenCode SDK messages materialize only an exact completed normal turn", () => {
   const valid = openCodeMessageTurn(openCodeMessages(), {
@@ -64,6 +26,8 @@ test("OpenCode SDK messages materialize only an exact completed normal turn", ()
       assistantMessageId: "assistant-1",
       userPrompt: "OpenCode user prompt.",
       assistantReply: "OpenCode assistant reply.",
+      userTimestamp: 1_700_000_000_000,
+      assistantTimestamp: 1_700_000_060_000,
       outcome: "completed",
     },
   });
@@ -95,6 +59,8 @@ test("OpenCode SDK messages materialize only an exact completed normal turn", ()
       assistantMessageId: "assistant-1",
       userPrompt: "OpenCode user prompt.",
       assistantReply: "",
+      userTimestamp: 1_700_000_000_000,
+      assistantTimestamp: 1_700_000_060_000,
       outcome: "interrupted",
     },
   });
@@ -130,6 +96,8 @@ test("OpenCode SDK messages materialize only an exact completed normal turn", ()
       assistantMessageId: "assistant-1",
       userPrompt: "OpenCode user prompt.",
       assistantReply: "",
+      userTimestamp: 1_700_000_000_000,
+      assistantTimestamp: 1_700_000_060_000,
       outcome: "interrupted",
     },
   });
@@ -149,6 +117,8 @@ test("OpenCode SDK messages materialize a completed compaction continuation as t
       assistantMessageId: "assistant-final",
       userPrompt: "OpenCode user prompt.",
       assistantReply: "OpenCode final reply.",
+      userTimestamp: 1_700_000_000_000,
+      assistantTimestamp: 1_700_000_300_000,
       outcome: "completed",
     },
   });
@@ -188,6 +158,8 @@ test("OpenCode SDK messages materialize a completed compaction continuation as t
       assistantMessageId: "assistant-final",
       userPrompt: "OpenCode user prompt.",
       assistantReply: "",
+      userTimestamp: 1_700_000_000_000,
+      assistantTimestamp: 1_700_000_300_000,
       outcome: "interrupted",
     },
   });
@@ -244,6 +216,8 @@ test("OpenCode finalizes an explicit MessageAbortedError without writeback", asy
       { type: "turn_start", outcome: undefined },
       { type: "turn_end", outcome: "interrupted" },
     ]);
+    assert.deepEqual(events.map(({ source }) => source), ["opencode-plugin", "opencode-plugin"]);
+    assert.deepEqual(events.map(({ trace }) => trace.client), ["opencode", "opencode"]);
     assert.equal(JSON.parse(await readFile(paths.currentTurnPath, "utf8")).turn_state, "interrupted");
   } finally {
     runtime.close();
@@ -251,10 +225,9 @@ test("OpenCode finalizes an explicit MessageAbortedError without writeback", asy
   }
 });
 
-test("OpenCode runtime reuses retrieval, scope, writeback, and quota notices", async () => {
+test("OpenCode runtime routes SDK content and carries write quota to the next prompt", async () => {
   const memoraxCodeHome = await mkdtemp(join(tmpdir(), "memorax-code-opencode-runtime-"));
   const requests = [];
-  let searchCalls = 0;
   const runtime = createOpenCodeMemoryHookRuntime({
     memoraxCodeHome,
     env: {
@@ -271,22 +244,8 @@ test("OpenCode runtime reuses retrieval, scope, writeback, and quota notices", a
     fetchImpl: async (url, init) => {
       const request = { url: String(url), body: JSON.parse(init.body) };
       requests.push(request);
-      const searching = request.url.endsWith("/v1/memories/search");
-      if (searching) searchCalls += 1;
-      return new Response(JSON.stringify(searching ? {
-        success: true,
-        data: {
-          task_id: "search-1",
-          status: "completed",
-          data: [{
-            id: "memory-1",
-            memory: "OpenCode can reuse the shared retrieval runtime.",
-            score: 0.9,
-            metadata: { memory_type: "core" },
-          }],
-          ...(searchCalls === 1 ? { balances: [quotaBalance("memory_search", 10)] } : {}),
-        },
-      } : {
+      assert.match(request.url, /\/v1\/memories\/add$/);
+      return new Response(JSON.stringify({
         success: true,
         data: {
           task_id: "writeback-1",
@@ -309,9 +268,7 @@ test("OpenCode runtime reuses retrieval, scope, writeback, and quota notices", a
       cwd: TEST_WORKSPACE,
       workspaceKind: "project",
     });
-    assert.match(start.additionalContext, /shared retrieval runtime/);
-    assert.equal(start.userNotice, "memory_search: 10");
-    assert.doesNotMatch(start.additionalContext, /memory_search/);
+    assert.equal(start.additionalContext, undefined);
 
     assert.deepEqual(await runtime.writeback({
       version: 1,
@@ -323,14 +280,17 @@ test("OpenCode runtime reuses retrieval, scope, writeback, and quota notices", a
       cwd: TEST_WORKSPACE,
       workspaceKind: "project",
     }), { ok: true, scheduled: true });
-    await waitFor(() => requests.length === 2);
+    await waitFor(() => requests.length === 1);
     assert.deepEqual(requests.map((request) => new URL(request.url).pathname), [
-      "/v1/memories/search",
       "/v1/memories/add",
     ]);
-    assert.deepEqual(requests[1].body.messages.map(({ role, content }) => ({ role, content })), [
+    assert.deepEqual(requests[0].body.messages.map(({ role, content }) => ({ role, content })), [
       { role: "user", content: "OpenCode user prompt." },
       { role: "assistant", content: "OpenCode assistant reply." },
+    ]);
+    assert.deepEqual(requests[0].body.messages.map(({ timestamp }) => timestamp), [
+      1_700_000_000_000,
+      1_700_000_060_000,
     ]);
 
     const next = await runtime.recordTurnStart({
@@ -343,9 +303,158 @@ test("OpenCode runtime reuses retrieval, scope, writeback, and quota notices", a
       workspaceKind: "project",
     });
     assert.equal(next.userNotice, "memory_write: 9");
-    assert.doesNotMatch(next.additionalContext, /memory_write/);
+    assert.equal(next.additionalContext, undefined);
+    const repeated = await runtime.recordTurnStart({
+      version: 1, client: "opencode", sessionId: "session-1", userMessageId: "user-2",
+      prompt: "OpenCode second prompt.", cwd: TEST_WORKSPACE, workspaceKind: "project",
+    });
+    assert.equal(repeated.userNotice, undefined);
+    assert.equal(requests.length, 1);
   } finally {
     runtime.close();
+    await rm(memoraxCodeHome, { recursive: true, force: true });
+  }
+});
+
+test("OpenCode default chat shares General across automatic Add and nested Skill commands", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-opencode-general-"));
+  const workspace = join(root, "Documents", "Default Project");
+  const nested = join(workspace, "work");
+  await mkdir(nested, { recursive: true });
+  const env = {
+    MEMORAX_CODE_HOME: join(root, "home"),
+    MEMORAX_CODE_OPENCODE_TRACE_ENABLED: "false",
+    MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
+    MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
+    MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "false",
+    MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+    MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+    MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+  };
+  const requests = [];
+  const fetchImpl = async (url, init) => {
+    requests.push({ url: String(url), body: JSON.parse(init.body) });
+    const data = String(url).endsWith("/add") ? { task_id: "general-add", status: "queued" } : { data: [] };
+    return new Response(JSON.stringify({ success: true, data }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  };
+  const runtime = createOpenCodeMemoryHookRuntime({ env, fetchImpl });
+  const command = {
+    version: 1,
+    client: "opencode",
+    sessionId: "session-1",
+    userMessageId: "user-1",
+    cwd: workspace,
+    workspaceKind: "projectless",
+  };
+  try {
+    assert.deepEqual(await runtime.recordTurnStart({ ...command, prompt: "OpenCode user prompt." }), { ok: true });
+    assert.deepEqual(await runtime.writeback({
+      ...command,
+      assistantMessageId: "assistant-1",
+      messages: openCodeMessages(),
+    }), { ok: true, scheduled: true });
+    await waitFor(() => requests.length === 1);
+    assert.deepEqual(requests[0].body.messages.map(({ role, content }) => ({ role, content })), [
+      { role: "user", content: "OpenCode user prompt." },
+      { role: "assistant", content: "OpenCode assistant reply." },
+    ]);
+    const options = {
+      cwd: nested,
+      env: {
+        ...env,
+        MEMORAX_CODE_MEMORY_CLI_TRACE_CLIENT: "opencode",
+        MEMORAX_CODE_MEMORY_CLI_TRACE_SESSION_ID: "session-1",
+      },
+      fetchImpl,
+    };
+    const search = await runMemoryCli(["search", "--query", "general preference"], options);
+    const added = await runMemoryCli([
+      "add", "--memory", "Keep shared general preferences.", "--type", "preference", "--reason", "Explicit test save.",
+    ], options);
+    assert.equal(search.ok, true);
+    assert.equal(added.ok, true);
+    assert.equal(search.effectiveUserId, "user-1@General");
+    assert.equal(added.effectiveUserId, "user-1@General");
+    assert.deepEqual(requests.map(({ url }) => new URL(url).pathname), [
+      "/v1/memories/add", "/v1/memories/search", "/v1/memories/add",
+    ]);
+    assert.ok(requests.every(({ body }) => body.user_id === "user-1@General"));
+    for (const index of [0, 2]) {
+      assert.equal(requests[index].body.metadata.memorax_code_memory_scope, "general.v1");
+      assert.equal(requests[index].body.metadata.memorax_code_workspace, "General");
+    }
+  } finally {
+    runtime.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("OpenCode SDK completion requires a prior scope binding but not unexpired turn metadata", async () => {
+  const memoraxCodeHome = await mkdtemp(join(tmpdir(), "memorax-code-opencode-bound-scope-"));
+  const writebacks = [];
+  let now = Date.now();
+  const turnCoordinator = createMemoryTurnCoordinator({
+    now: () => now,
+    ttlMs: 1,
+    automaticWriteback: (input) => { writebacks.push(input); return { accepted: true }; },
+  });
+  const runtime = createOpenCodeMemoryHookRuntime({
+    memoraxCodeHome,
+    now: () => now,
+    turnCoordinator,
+    env: {
+      MEMORAX_CODE_HOME: memoraxCodeHome,
+      MEMORAX_CODE_OPENCODE_TRACE_ENABLED: "false",
+      MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
+      MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+      MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+      MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+    },
+  });
+  const command = {
+    version: 1,
+    client: "opencode",
+    sessionId: "session-1",
+    userMessageId: "user-1",
+    assistantMessageId: "assistant-final",
+    messages: compactedOpenCodeMessages(),
+    cwd: TEST_WORKSPACE,
+    workspaceKind: "project",
+  };
+  try {
+    assert.deepEqual(await runtime.writeback(command), {
+      ok: true, scheduled: false, reason: "workspace_scope_unavailable",
+    });
+    assert.deepEqual(writebacks, []);
+    await runtime.recordTurnStart({
+      version: 1,
+      client: "opencode",
+      sessionId: command.sessionId,
+      userMessageId: command.userMessageId,
+      prompt: "The Hook prompt is not writeback content authority.",
+      cwd: TEST_WORKSPACE,
+      workspaceKind: "project",
+    });
+    assert.equal(runtime.size(), 1);
+    now += 10;
+    turnCoordinator.pruneExpired();
+    assert.equal(runtime.size(), 0);
+    assert.deepEqual(await runtime.writeback(command), { ok: true, scheduled: true });
+    assert.equal(runtime.size(), 0);
+    assert.equal(writebacks.length, 1);
+    assert.equal(writebacks[0].client, "opencode");
+    assert.equal(writebacks[0].userText, "OpenCode user prompt.");
+    assert.equal(writebacks[0].assistantText, "OpenCode final reply.");
+    assert.equal(writebacks[0].userTimestamp, 1_700_000_000_000);
+    assert.equal(writebacks[0].assistantTimestamp, 1_700_000_300_000);
+    assert.equal(writebacks[0].traceContext.turnId, "user-1");
+    assert.equal(writebacks[0].memoryObservabilitySource, "opencode_plugin_writeback");
+  } finally {
+    runtime.close();
+    turnCoordinator.close();
     await rm(memoraxCodeHome, { recursive: true, force: true });
   }
 });
@@ -357,7 +466,7 @@ function openCodeMessages() {
         id: "user-1",
         sessionID: "session-1",
         role: "user",
-        time: { created: 1 },
+        time: { created: 1_700_000_000_000 },
       },
       parts: [textPart("user-1", "OpenCode user prompt.")],
     },
@@ -367,7 +476,7 @@ function openCodeMessages() {
         sessionID: "session-1",
         role: "assistant",
         parentID: "user-1",
-        time: { created: 2, completed: 3 },
+        time: { created: 1_700_000_001_000, completed: 1_700_000_060_000 },
       },
       parts: [textPart("assistant-1", "OpenCode assistant reply.")],
     },
@@ -383,7 +492,7 @@ function compactedOpenCodeMessages() {
         sessionID: "session-1",
         role: "assistant",
         parentID: "user-1",
-        time: { created: 2, completed: 3 },
+        time: { created: 1_700_000_001_000, completed: 1_700_000_060_000 },
       },
       parts: [],
     },
@@ -392,7 +501,7 @@ function compactedOpenCodeMessages() {
         id: "user-compaction",
         sessionID: "session-1",
         role: "user",
-        time: { created: 4 },
+        time: { created: 1_700_000_120_000 },
       },
       parts: [{
         ...part("compaction", "user-compaction"),
@@ -405,7 +514,7 @@ function compactedOpenCodeMessages() {
         id: "user-continuation",
         sessionID: "session-1",
         role: "user",
-        time: { created: 5 },
+        time: { created: 1_700_000_180_000 },
       },
       parts: [{
         ...textPart("user-continuation", "Continue."),
@@ -419,7 +528,7 @@ function compactedOpenCodeMessages() {
         sessionID: "session-1",
         role: "assistant",
         parentID: "user-continuation",
-        time: { created: 6, completed: 7 },
+        time: { created: 1_700_000_181_000, completed: 1_700_000_300_000 },
       },
       parts: [textPart("assistant-final", "OpenCode final reply.")],
     },

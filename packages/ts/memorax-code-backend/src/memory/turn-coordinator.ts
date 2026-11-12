@@ -3,15 +3,18 @@ import type {
   AutomaticMemoryWritebackEnqueue,
   AutomaticMemoryWritebackOptions,
   AutomaticMemoryWritebackRejectionReason,
+  AutomaticMemoryWritebackTiming,
 } from "./automatic-writeback.js";
 import type { ConfiguredRepositoryMemoryResult } from "./repository-session.js";
 import {
+  repositoryMemoryScopeCanBindGeneralWorkspace,
   repositoryMemoryScopeCanUpgradeFromDegradedGit,
   repositoryMemoryScopesMatch,
   type RepositoryMemoryScope,
   type RepositoryMemoryScopeFailureReason,
 } from "../repository/scope.js";
 import type { TraceContext } from "../trace/context.js";
+import { parseNativeMessageTimestamp } from "../shared/message-time.js";
 
 export type MemoryTurnClient = AutomaticMemoryWritebackClient;
 
@@ -25,6 +28,7 @@ export type MemoryTurnStart = MemoryTurnKey & Readonly<{
   cwd?: string;
   workspaceKind?: string;
   transcriptPath?: string;
+  databasePath?: string;
   eventStartSeq?: number;
   createdAt: number;
   sessionTurnIndex?: number;
@@ -54,19 +58,29 @@ export type MemoryTurnWritebackResult =
     metadataDisposition: Exclude<MemoryTurnMetadataDisposition, "consumed">;
   };
 
-export type MemoryTurnCompletion = Readonly<{
+export type MemoryTurnCompletion = Readonly<AutomaticMemoryWritebackTiming & {
   key: MemoryTurnKey;
   metadata?: MemoryTurnState;
   resolveRepositoryMemory: () => Promise<ConfiguredRepositoryMemoryResult>;
   userText: string;
   assistantText: string;
+  searchAssistantText?: string;
   writeback: Omit<AutomaticMemoryWritebackOptions, "userText" | "assistantText" | "repositoryScope">;
 }>;
 
-export type MemoryTurnDiscardReason = "interrupted" | "rolled_back";
+export type MemoryMaterializedTurn = Readonly<{
+  key: MemoryTurnKey;
+  repositoryScope: RepositoryMemoryScope;
+  userText: string;
+  assistantText: string;
+}>;
+
+export type MemoryTurnDiscardReason = "interrupted" | "rolled_back" | "superseded";
 
 export type MemoryTurnCoordinatorOptions = {
   automaticWriteback: AutomaticMemoryWritebackEnqueue;
+  onTurnMaterialized?: (turn: MemoryMaterializedTurn) => void;
+  onTurnDiscarded?: (key: MemoryTurnKey, reason: MemoryTurnDiscardReason) => void;
   now?: () => number;
   ttlMs?: number;
   maxEntries?: number;
@@ -110,6 +124,7 @@ export function createMemoryTurnCoordinator(options: MemoryTurnCoordinatorOption
         cwd: input.cwd,
         workspaceKind: input.workspaceKind,
         transcriptPath: input.transcriptPath,
+        databasePath: input.databasePath,
         eventStartSeq: input.eventStartSeq,
         createdAt: input.createdAt,
         sessionTurnIndex: input.sessionTurnIndex,
@@ -144,10 +159,19 @@ export function createMemoryTurnCoordinator(options: MemoryTurnCoordinatorOption
       switch (reason) {
         case "interrupted":
         case "rolled_back":
-          return turns.delete(turnKey(key));
+        case "superseded": {
+          const discarded = turns.delete(turnKey(key));
+          try {
+            options.onTurnDiscarded?.(key, reason);
+          } catch {
+            // Optional search guidance cannot change explicit metadata discard.
+          }
+          return discarded;
+        }
       }
     },
     async completeMaterializedTurn(input) {
+      const observedAt = now();
       const reject = (
         reason: MemoryTurnWritebackSkipReason,
       ): MemoryTurnWritebackResult => ({
@@ -172,15 +196,39 @@ export function createMemoryTurnCoordinator(options: MemoryTurnCoordinatorOption
         input.metadata?.repositoryScope
         && !repositoryMemoryScopesMatch(input.metadata.repositoryScope, currentScope)
       ) {
-        if (!repositoryMemoryScopeCanUpgradeFromDegradedGit(input.metadata.repositoryScope, currentScope)) {
+        if (
+          !repositoryMemoryScopeCanUpgradeFromDegradedGit(input.metadata.repositoryScope, currentScope)
+          && !repositoryMemoryScopeCanBindGeneralWorkspace(input.metadata.repositoryScope, currentScope)
+        ) {
           return reject("workspace_scope_mismatch");
         }
+        // First-cwd binding was validated by the session resolver; preserve this
+        // same Turn's QA while adopting the newly established physical root.
         repositoryScope = currentScope;
       }
+      try {
+        options.onTurnMaterialized?.({
+          key: input.key, repositoryScope, userText: input.userText,
+          assistantText: input.searchAssistantText ?? input.assistantText,
+        });
+      } catch {
+        // Optional search guidance cannot change automatic Add acceptance.
+      }
+      const userTimestamp = parseNativeMessageTimestamp(input.userTimestamp);
+      const assistantTimestamp = parseNativeMessageTimestamp(input.assistantTimestamp);
       const acceptance = options.automaticWriteback({
         ...input.writeback,
         userText: input.userText,
         assistantText: input.assistantText,
+        // Metadata.createdAt is a start observation, not native message time.
+        // Keep that distinction even when a legacy record has no timestamp.
+        userTimestamp: userTimestamp
+          ?? parseNativeMessageTimestamp(input.metadata?.createdAt) ?? observedAt,
+        assistantTimestamp: assistantTimestamp ?? observedAt,
+        userTimestampSource: userTimestamp === undefined
+          ? "observed" : input.userTimestampSource ?? "native",
+        assistantTimestampSource: assistantTimestamp === undefined
+          ? "observed" : input.assistantTimestampSource ?? "native",
         repositoryScope,
       });
       if (!acceptance.accepted) {
@@ -229,6 +277,8 @@ function turnMetadataDisposition(
   const key = turnKey(completion.key);
   const current = turns.get(key);
   if (!current) return "absent";
+  // Scope resolution can yield while the same Turn key is re-registered.
+  // Consume only the completion's original snapshot, preserving replacement state.
   if (!consume || !completion.metadata || current !== completion.metadata) return "retained";
   turns.delete(key);
   return "consumed";

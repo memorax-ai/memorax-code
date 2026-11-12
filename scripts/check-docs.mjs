@@ -18,7 +18,6 @@ import { fileURLToPath } from "node:url";
 const ROOT_MARKDOWN_FILES = [
   "README.md",
   "README.zh.md",
-  "INSTALL.md",
   "CONTRIBUTING.md",
   "SECURITY.md",
   "AGENTS.md",

@@ -6,6 +6,7 @@ import type {
   ClaudeTurnTokenUsage,
 } from "../clients/claude/transcript-turn.js";
 import type { CodexTurnActivity, CodexTurnTokenUsage } from "../clients/codex/rollout-turn.js";
+import type { CodeBuddyActivity } from "../clients/codebuddy/jsonl-history.js";
 import {
   TRACE_CLEANUP_DEBOUNCE_MS,
   TRACE_CURRENT_TURN_TTL_MS,
@@ -28,7 +29,7 @@ export type TraceTurnOutcome = "completed" | "interrupted";
 export type TraceCurrentTurnState = "open" | TraceTurnOutcome;
 export type CodexTurnOutcome = TraceTurnOutcome;
 export type CodexCurrentTurnState = TraceCurrentTurnState;
-export type TraceTurnActivity = CodexTurnActivity | ClaudeTurnActivity;
+export type TraceTurnActivity = CodexTurnActivity | ClaudeTurnActivity | CodeBuddyActivity;
 export type TraceTurnTokenUsage = CodexTurnTokenUsage | ClaudeTurnTokenUsage;
 
 export type TraceEventInput = Readonly<{
@@ -43,7 +44,7 @@ export type TraceEventInput = Readonly<{
   ok?: boolean;
   outcome?: TraceTurnOutcome;
   relatedTurns?: TraceRelatedTurn[];
-  activities?: TraceTurnActivity[];
+  activities?: readonly TraceTurnActivity[];
   usage?: TraceTurnTokenUsage;
   sessionTurnIndex?: number;
   request?: unknown;
@@ -162,6 +163,16 @@ export async function recordClaudeTraceEvent(
   return recordTraceEventForClient("claude", input);
 }
 
+export type CodeBuddyTraceEventInput = TraceEventInput;
+export type CodeBuddyCurrentTurnOptions = Omit<TraceCurrentTurnOptions, "client">;
+export type CodeBuddyTurnOutcome = TraceTurnOutcome;
+
+export async function recordCodeBuddyTraceEvent(
+  input: CodeBuddyTraceEventInput,
+): Promise<TraceEventWriteResult> {
+  return recordTraceEventForClient("codebuddy", input);
+}
+
 export function traceTurnEventId(
   traceContext: TraceContext | undefined,
   type: "turn_start" | "turn_end" | "turn_materialized",
@@ -187,10 +198,12 @@ export async function writeCurrentTraceTurn(
   const env = options.env ?? process.env;
   const memoraxCodeHome = options.memoraxCodeHome ?? memoraxCodeHomeForTrace(env);
   const config = options.config ?? clientTraceConfigFromEnv(client, traceEnv(env, memoraxCodeHome));
-  if (!config.enabled) return { written: false, reason: "disabled" };
   if (!traceContext?.sessionId) return { written: false, reason: "missing_trace_context" };
+  // CLI scope checks and interrupted-turn reconciliation need this bridge even without events.
   const paths = clientTracePaths(client, memoraxCodeHome);
-  const capturedAt = (options.now?.() ?? new Date()).toISOString();
+  const now = options.now?.() ?? new Date();
+  await pruneExpiredTraceSessions(paths.root, config, now, { debounce: true }).catch(() => undefined);
+  const capturedAt = now.toISOString();
   const record = `${JSON.stringify({
     schema_version: "1",
     turn_state: "open",
@@ -229,8 +242,9 @@ export async function readCurrentTraceTurn(
   options: TraceCurrentTurnReadOptions,
 ): Promise<
   | { ok: true; traceContext: TraceContext }
-  | { ok: false; reason: "disabled" | "missing" | "invalid" | "stale" | "session_mismatch" }
+  | { ok: false; reason: "missing" | "invalid" | "stale" | "session_mismatch" }
 > {
+  // Closed turns remain useful for later CLI correlation; reconciliation uses readOpenTraceTurn.
   const current = await readCurrentTraceTurnRecord(options);
   return current.ok
     ? { ok: true, traceContext: current.traceContext }
@@ -241,7 +255,7 @@ export async function readCurrentCodexTurn(
   options: CodexCurrentTurnOptions = {},
 ): Promise<
   | { ok: true; traceContext: TraceContext }
-  | { ok: false; reason: "disabled" | "missing" | "invalid" | "stale" | "session_mismatch" }
+  | { ok: false; reason: "missing" | "invalid" | "stale" | "session_mismatch" }
 > {
   return readCurrentTraceTurn({ ...options, client: "codex" });
 }
@@ -250,7 +264,7 @@ export async function readCurrentClaudeTurn(
   options: ClaudeCurrentTurnOptions = {},
 ): Promise<
   | { ok: true; traceContext: TraceContext }
-  | { ok: false; reason: "disabled" | "missing" | "invalid" | "stale" | "session_mismatch" }
+  | { ok: false; reason: "missing" | "invalid" | "stale" | "session_mismatch" }
 > {
   return readCurrentTraceTurn({ ...options, client: "claude" });
 }
@@ -259,7 +273,7 @@ export async function readOpenTraceTurn(
   options: TraceCurrentTurnReadOptions,
 ): Promise<
   | { ok: true; traceContext: TraceContext }
-  | { ok: false; reason: "disabled" | "missing" | "invalid" | "stale" | "session_mismatch" }
+  | { ok: false; reason: "missing" | "invalid" | "stale" | "session_mismatch" }
   | { ok: false; reason: "closed"; outcome: TraceTurnOutcome }
 > {
   const current = await readCurrentTraceTurnRecord(options);
@@ -274,7 +288,7 @@ export async function readOpenCodexTurn(
   options: CodexCurrentTurnOptions = {},
 ): Promise<
   | { ok: true; traceContext: TraceContext }
-  | { ok: false; reason: "disabled" | "missing" | "invalid" | "stale" | "session_mismatch" }
+  | { ok: false; reason: "missing" | "invalid" | "stale" | "session_mismatch" }
   | { ok: false; reason: "closed"; outcome: CodexTurnOutcome }
 > {
   return readOpenTraceTurn({ ...options, client: "codex" });
@@ -284,7 +298,7 @@ export async function readOpenClaudeTurn(
   options: ClaudeCurrentTurnOptions = {},
 ): Promise<
   | { ok: true; traceContext: TraceContext }
-  | { ok: false; reason: "disabled" | "missing" | "invalid" | "stale" | "session_mismatch" }
+  | { ok: false; reason: "missing" | "invalid" | "stale" | "session_mismatch" }
   | { ok: false; reason: "closed"; outcome: TraceTurnOutcome }
 > {
   return readOpenTraceTurn({ ...options, client: "claude" });
@@ -303,8 +317,6 @@ export async function markCurrentTraceTurnOutcome(
   }
   const env = options.env ?? process.env;
   const memoraxCodeHome = options.memoraxCodeHome ?? memoraxCodeHomeForTrace(env);
-  const config = options.config ?? clientTraceConfigFromEnv(client, traceEnv(env, memoraxCodeHome));
-  if (!config.enabled) return { updated: false, reason: "disabled" };
   if (!traceContext?.sessionId || !traceContext.turnId) {
     return { updated: false, reason: "missing_trace_context" };
   }
@@ -334,18 +346,31 @@ export async function markCurrentClaudeTurnOutcome(
   return markCurrentTraceTurnOutcome(traceContext, outcome, { ...options, client: "claude" });
 }
 
+export async function writeCurrentCodeBuddyTurn(
+  traceContext: TraceContext | undefined,
+  options: CodeBuddyCurrentTurnOptions = {},
+): Promise<{ written: true } | { written: false; reason: string }> {
+  return writeCurrentTraceTurn(traceContext, { ...options, client: "codebuddy" });
+}
+
+export async function markCurrentCodeBuddyTurnOutcome(
+  traceContext: TraceContext | undefined,
+  outcome: CodeBuddyTurnOutcome,
+  options: CodeBuddyCurrentTurnOptions = {},
+): Promise<{ updated: true } | { updated: false; reason: string }> {
+  return markCurrentTraceTurnOutcome(traceContext, outcome, { ...options, client: "codebuddy" });
+}
+
 async function readCurrentTraceTurnRecord(
   options: TraceCurrentTurnReadOptions,
 ): Promise<
   | { ok: true; traceContext: TraceContext; turnState: TraceCurrentTurnState }
-  | { ok: false; reason: "disabled" | "missing" | "invalid" | "stale" | "session_mismatch" }
+  | { ok: false; reason: "missing" | "invalid" | "stale" | "session_mismatch" }
 > {
   const client = options.client;
   if (!isTraceClient(client)) return { ok: false, reason: "invalid" };
   const env = options.env ?? process.env;
   const memoraxCodeHome = options.memoraxCodeHome ?? memoraxCodeHomeForTrace(env);
-  const config = options.config ?? clientTraceConfigFromEnv(client, traceEnv(env, memoraxCodeHome));
-  if (!config.enabled) return { ok: false, reason: "disabled" };
   const paths = clientTracePaths(client, memoraxCodeHome);
   const now = options.now?.() ?? new Date();
   const expectedSessionId = normalizedString(options.expectedSessionId);
@@ -364,6 +389,7 @@ async function readCurrentTraceTurnRecord(
     }
     if (sessionCurrent.reason !== "missing") return sessionCurrent;
 
+    // Global state can belong to another active session; only use it when the scoped file is absent and IDs match.
     const globalCurrent = await readCurrentTraceTurnPath(
       paths.currentTurnPath,
       now,
@@ -474,7 +500,7 @@ export async function pruneExpiredTraceSessionsForClient(
   const env = options.env ?? process.env;
   const memoraxCodeHome = options.memoraxCodeHome ?? memoraxCodeHomeForTrace(env);
   const config = options.config ?? clientTraceConfigFromEnv(client, traceEnv(env, memoraxCodeHome));
-  if (!config.enabled) return;
+  // Current-turn records still accumulate when event capture is disabled.
   const now = options.now?.() ?? new Date();
   const paths = clientTracePaths(client, memoraxCodeHome);
   await pruneExpiredTraceSessions(paths.root, config, now, { debounce: false });
@@ -510,7 +536,9 @@ function buildTraceEvent(
     ok: input.ok,
     outcome: input.outcome,
     related_turns: input.relatedTurns?.map(relatedTurnJson),
-    activities: input.activities,
+    activities: input.activities === undefined
+      ? undefined
+      : sanitizeTraceValue(input.activities, config, captureContent),
     usage: input.usage,
     session_turn_index: input.sessionTurnIndex,
     request: input.request === undefined ? undefined : sanitizeTraceValue(input.request, config, captureContent),
@@ -743,7 +771,8 @@ async function sessionActivityMs(sessionDir: string, fallbackMs: number): Promis
   const trace = await readExistingTraceJson(join(sessionDir, "trace.json"));
   const updatedAt = typeof trace?.updated_at === "string" ? Date.parse(trace.updated_at) : NaN;
   const candidates = [fallbackMs, Number.isFinite(updatedAt) ? updatedAt : 0];
-  for (const filename of ["trace.json", "events.jsonl"]) {
+  // Updating an existing file does not refresh the directory mtime, including state-only sessions.
+  for (const filename of ["trace.json", "events.jsonl", ".current-turn.json"]) {
     try {
       candidates.push((await stat(join(sessionDir, filename))).mtimeMs);
     } catch {

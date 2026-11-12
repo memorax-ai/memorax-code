@@ -1,6 +1,8 @@
 import type { BackendServiceOptions } from "./contracts.js";
+import type { DeploymentFailure } from "../../../memorax-code-adapter-common/src/deployment-failure.mjs";
 
 export type AdapterReport = {
+  failure?: DeploymentFailure;
   ok?: boolean;
   action?: string;
   installed?: boolean;
@@ -11,8 +13,6 @@ export type AdapterReport = {
   compatible?: boolean;
   version?: string;
   dshVersion?: string;
-  dshVersionTested?: boolean;
-  testedDshVersions?: string[];
   profiles?: unknown[];
   detectedProfiles?: string[];
   installedProfiles?: string[];
@@ -29,6 +29,8 @@ export type AdapterReport = {
   reason?: string;
   message?: string;
   error?: string;
+  errorCode?: string;
+  stage?: string;
   memoraxCodeHome?: string;
   codexHome?: string;
   openCodeConfigDir?: string;
@@ -47,12 +49,46 @@ export type AdapterReport = {
   codexSkills?: { ok?: boolean; status?: string };
   claudeSkills?: { ok?: boolean; status?: string };
   opencodeSkills?: { ok?: boolean; status?: string };
+  codebuddySkills?: { ok?: boolean; status?: string };
+  traeSkills?: { ok?: boolean; status?: string };
+  cursorSkills?: { ok?: boolean; status?: string };
+  qoderSkills?: { ok?: boolean; status?: string };
+  codebuddyHooks?: {
+    ok?: boolean;
+    status?: string;
+    configured?: boolean;
+    runtimeObserved?: boolean;
+    observationPath?: string;
+  };
+  traeHooks?: {
+    ok?: boolean;
+    status?: string;
+    configured?: boolean;
+    runtimeObserved?: boolean;
+    observationPath?: string;
+  };
+  cursorHooks?: {
+    ok?: boolean;
+    status?: string;
+    configured?: boolean;
+    runtimeObserved?: boolean;
+    observationPath?: string;
+  };
+  qoderHooks?: {
+    ok?: boolean;
+    status?: string;
+    configured?: boolean;
+    runtimeObserved?: boolean;
+    observationPath?: string;
+  };
+  globalHooksActivationRequired?: boolean;
   pluginInstall?: AdapterPluginLifecycleReport;
   pluginRemove?: AdapterPluginLifecycleReport;
   pluginStatus?: AdapterReport;
 };
 
 export type AdapterPluginLifecycleReport = {
+  failure?: DeploymentFailure;
   ok: boolean;
   action?: string;
   reason?: string;
@@ -69,10 +105,16 @@ export type AdapterLifecycleBackendContext = AdapterLifecycleContext & Readonly<
   backendUrl: string;
 }>;
 
+// Mutating phases run under the caller's Backend lifecycle lock; participant
+// locks, when needed, are acquired inside it.
 export type AdapterLifecycleParticipant<RemoveReport> = Readonly<{
   status(context: AdapterLifecycleBackendContext): Promise<AdapterReport>;
+  // Native installation may already enable Hooks; this is not a pure staging phase.
   prepareEnable(context: AdapterLifecycleBackendContext): Promise<AdapterReport>;
+  // Start activates gated runtime authority after Backend readiness. Rollback
+  // can also use this phase to restore previously enabled authority.
   activate?(context: AdapterLifecycleContext): Promise<AdapterReport>;
+  // Suspend recovery authority before Backend shutdown while retaining artifacts.
   quiesce?(context: AdapterLifecycleContext): Promise<AdapterReport>;
   disable(context: AdapterLifecycleContext): Promise<AdapterReport>;
   remove(context: AdapterLifecycleContext): Promise<RemoveReport>;

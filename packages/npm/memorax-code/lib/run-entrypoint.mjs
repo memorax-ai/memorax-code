@@ -1,8 +1,11 @@
-import { delimiter, dirname, join } from "node:path";
+import { readFileSync } from "node:fs";
+import { delimiter, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { unsupportedNodeVersionMessage } from "./node-version.mjs";
+import { resolveNpmExecPath } from "./npm-invocation.mjs";
 import { ensureClaudeCommandEnv } from "./resolve-claude-command.mjs";
 import { ensureCodexCommandEnv } from "./resolve-codex-command.mjs";
+import { ensureCodeBuddyCommandEnv, ensureWorkBuddyCommandEnv } from "./resolve-codebuddy-command.mjs";
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -41,14 +44,35 @@ export function ensureInstallWatchdogEnv(root = packageRoot) {
   }
 }
 
+export function ensureNpmPackageRuntimeEnv(root = packageRoot, options = {}) {
+  const env = options.env ?? process.env;
+  const resolvedRoot = resolve(root);
+  const metadata = JSON.parse(readFileSync(join(resolvedRoot, "package.json"), "utf8"));
+  const version = typeof metadata.version === "string" ? metadata.version.trim() : "";
+  if (!version) throw new Error("MemoraX Code package version is missing");
+  env.MEMORAX_CODE_NPM_PACKAGE_ROOT = resolvedRoot;
+  env.MEMORAX_CODE_NPM_PACKAGE_VERSION = version;
+  const npmExecPath = resolveNpmExecPath({ ...options, env });
+  if (npmExecPath) env.MEMORAX_CODE_NPM_EXEC_PATH = npmExecPath;
+}
+
 export async function runBackendEntrypoint(relativeEntrypoint) {
   if (!ensureSupportedNodeRuntime()) return;
-  ensureCodexCommandEnv();
-  ensureClaudeCommandEnv();
+  // Diagnostic history is local data; broken native commands must not delay it.
+  const diagnosticQuery = process.argv[2] === "logs"
+    && process.argv.slice(3).some((arg) => ["--diagnostics", "--id", "--limit"].some((name) => arg === name || arg.startsWith(`${name}=`)));
+  if (!diagnosticQuery) {
+    ensureCodexCommandEnv();
+    ensureClaudeCommandEnv();
+    ensureCodeBuddyCommandEnv();
+    ensureWorkBuddyCommandEnv();
+  }
   ensureBundledSkillEnv();
   ensureClaudeMarketplaceEnv();
   ensureInstallWatchdogEnv();
+  ensureNpmPackageRuntimeEnv();
   const entrypoint = join(packageRoot, "lib", "memorax-code-backend", "dist", relativeEntrypoint);
+  // Preserve the Backend entrypoint's main-module check when imported through an npm wrapper.
   const previousArgv1 = process.argv[1];
   process.argv[1] = entrypoint;
   try {
@@ -77,6 +101,31 @@ export async function runClaudeAdapterCli() {
 export async function runOpenCodeAdapterCli() {
   if (!ensureSupportedNodeRuntime()) return;
   const entrypoint = join(packageRoot, "lib", "memorax-code-opencode-adapter", "src", "cli.mjs");
+  await import(pathToFileURL(entrypoint).href);
+}
+
+export async function runCodeBuddyAdapterCli() {
+  if (!ensureSupportedNodeRuntime()) return;
+  ensureCodeBuddyCommandEnv();
+  const entrypoint = join(packageRoot, "lib", "memorax-code-codebuddy-adapter", "src", "cli.mjs");
+  await import(pathToFileURL(entrypoint).href);
+}
+
+export async function runTraeAdapterCli() {
+  if (!ensureSupportedNodeRuntime()) return;
+  const entrypoint = join(packageRoot, "lib", "memorax-code-trae-adapter", "src", "cli.mjs");
+  await import(pathToFileURL(entrypoint).href);
+}
+
+export async function runCursorAdapterCli() {
+  if (!ensureSupportedNodeRuntime()) return;
+  const entrypoint = join(packageRoot, "lib", "memorax-code-cursor-adapter", "src", "cli.mjs");
+  await import(pathToFileURL(entrypoint).href);
+}
+
+export async function runQoderAdapterCli() {
+  if (!ensureSupportedNodeRuntime()) return;
+  const entrypoint = join(packageRoot, "lib", "memorax-code-qoder-adapter", "src", "cli.mjs");
   await import(pathToFileURL(entrypoint).href);
 }
 

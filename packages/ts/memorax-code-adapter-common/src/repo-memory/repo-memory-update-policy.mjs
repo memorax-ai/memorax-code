@@ -1,6 +1,6 @@
-export const DEFAULT_REPO_MEMORY_UPDATE_POLICY = "adaptive";
+export const DEFAULT_REPO_MEMORY_UPDATE_POLICY = "daily";
 export const DEFAULT_REPO_MEMORY_COMMIT_THRESHOLD = 5;
-export const DEFAULT_REPO_MEMORY_COOLDOWN_HOURS = 24;
+export const DEFAULT_REPO_MEMORY_COOLDOWN_HOURS = 72;
 
 export const REPO_MEMORY_UPDATE_POLICIES = Object.freeze([
   "every-commit",

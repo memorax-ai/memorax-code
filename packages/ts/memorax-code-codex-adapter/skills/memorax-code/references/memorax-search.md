@@ -4,6 +4,8 @@ Use these instructions only to search reusable coding memory through `memorax-cl
 
 ## Scope
 
+Select the executable before constructing any Search command. In Windows PowerShell, use `memorax-cli.cmd`; on macOS and Linux, use `memorax-cli`. Never invoke `memorax-cli.ps1`. Never run `Set-ExecutionPolicy` or otherwise change PowerShell execution policy for MemoraX commands. If an unqualified Windows invocation is blocked before the CLI starts with `UnauthorizedAccess` or `PSSecurityException`, retry the same command once with `memorax-cli.cmd`, preserving all arguments, the active workspace, and environment variables.
+
 Run the CLI from the active task workspace. The installed Hook and session binding supply the authoritative workspace root; do not run `git rev-parse`, infer the root from Git metadata, or substitute an unrelated working directory. Do not make `memorax-cli status` a mandatory preflight; use it only to diagnose a configuration or scope failure.
 
 Coding memory uses `<MemoraX base username>@<normalized repository name>` for Git workspaces and the normalized folder name for genuine non-Git directories. MemoraX Code resolves `.git`, `gitdir`, and `commondir` without executing Git. Linked worktrees share one repository scope; another clone, repository, or non-Git directory retains a different local session key even when its readable name matches.
@@ -12,7 +14,7 @@ If a successful Search result reports `workspaceScopeFallbackReason: git_metadat
 
 Require a readable active workspace binding. A CLI command from a linked worktree of the bound repository is valid. If `memorax-cli search` reports `workspace_scope_mismatch` or `workspace_scope_unavailable`, do not bypass the scope or fall back to an unscoped username. Do not change the CLI working directory and retry. Tell the user that memory search was not executed and no request was sent to MemoraX, then present the CLI's `userAction` in natural language. Continue the current task using only live code and documentation.
 
-If `memorax-cli` is not on `PATH`, or memory is disabled, unconfigured, or unavailable, report that briefly and continue with live code or documentation. Authenticate through MemoraX Code configuration; never recover credentials from shell history or place tokens in prompts. Treat injected memory as a hypothesis and verify it against the current checkout.
+If the selected platform command is not on `PATH`, or memory is disabled, unconfigured, or unavailable, report that briefly and continue with live code or documentation. Authenticate through MemoraX Code configuration; never recover credentials from shell history or place tokens in prompts. Treat injected memory as a hypothesis and verify it against the current checkout.
 
 ## Search Decision
 
@@ -50,9 +52,20 @@ State a fact-sized relationship that can change the next action: a target under 
 
 For a complementary first-round pair, each query must stand alone and cover a different decision boundary. Use a complementary pair only when the provided context gives each decision boundary a distinct exact code, API, path, workflow, or project identifier; otherwise keep one focused combined query that preserves both user-stated facts. Do not merely restate the same question with synonyms. If the user describes only one tightly coupled decision, emit exactly one query. Use one or two stable exact identifiers when they sharpen the query, and integrate them grammatically instead of appending search tags or filler. Use only user-provided anchors and stable terms from live code or documentation; do not reconstruct unseen fact wording from recalled memory.
 
-Pass the query directly with `--query`. Put every dynamically generated query in single quotes, never double quotes. Treat `$HOME`, backticks, and `$(command)` as literal text inside those quotes. Replace each literal single quote in the value with the exact POSIX sequence `'\''`.
+Pass the query directly with `--query`. Put every dynamically generated query in single quotes, never double quotes. Apply the escaping rule for the active shell:
+
+- Windows PowerShell: single quotes keep `$HOME`, backticks, and `$(command)` literal. Replace each literal single quote in the value with two single quotes (`''`); for example, `don't` becomes `'don''t'`.
+- macOS and Linux: Treat `$HOME`, backticks, and `$(command)` as literal text inside the quotes. Replace each literal single quote in the value with the exact POSIX sequence `'\''`.
 
 Use these actual output shapes as examples. They are queries themselves, not full user prompts or instructions for the user. Each Chinese/English pair is a language variant: choose the one matching the user, never run both merely because both are shown. The comments explain the example only and are not part of emitted query text.
+
+On Windows PowerShell, the first example must be invoked as:
+
+```powershell
+memorax-cli.cmd search --query 'Trace 生产版本：升级后到达的记录中，应以哪个客户端版本字段判断由旧插件产生，而非新版本上传进程？'
+```
+
+On macOS and Linux, use the `memorax-cli search` forms below. For other Windows examples, preserve every argument but replace the leading executable with `memorax-cli.cmd`.
 
 ```bash
 # One tightly coupled decision: emit one query.
@@ -91,3 +104,5 @@ Do not apply this retry to `memorax-cli add`, authentication or configuration fa
 If a successful Search returns `quotaNotice`, or prints it as a quota-reminder line in the default CLI output, present the complete reminder once and prominently before the normal result summary. Do not reduce it to only a percentage or omit its account URL or anonymous-account claim details. A guest reminder may already contain the local Mark ID; present it once as part of the reminder, but do not repeat or separately quote it. Never run `memorax-code account --show-mark-id` for the user or ask for its output. Treat the reminder as user-facing operational output, not recalled memory, and continue the current task.
 
 Mention only an invariant, pitfall, convention, or validation idea that materially affects the answer. Ground claims about current implementation behavior in live code and checks.
+
+When an accepted result materially affects the task in a supported coding agent, follow the Natural Final-Answer Mention contract in `SKILL.md`. A successful Search alone is insufficient; do not disclose empty, rejected, merely confirmatory, or unused results.

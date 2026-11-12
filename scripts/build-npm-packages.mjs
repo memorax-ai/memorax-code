@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { buildClaudeMarketplace } from "../packages/ts/memorax-code-claude-adapter/scripts/build-marketplace.mjs";
 import { assertLocalTraceOnly } from "./check-local-trace-only.mjs";
 import {
+  assertRequiredNpmPackageFiles,
   isAllowedNpmPackFilePath,
   isAllowedNpmPackPath,
 } from "./npm-package-layout.mjs";
@@ -73,6 +74,10 @@ async function stageMainPackage(destination) {
     "lib/memorax-code-claude-adapter",
     "lib/memorax-code-dsh-adapter",
     "lib/memorax-code-opencode-adapter",
+    "lib/memorax-code-codebuddy-adapter",
+    "lib/memorax-code-trae-adapter",
+    "lib/memorax-code-cursor-adapter",
+    "lib/memorax-code-qoder-adapter",
   ]) {
     await mkdir(join(destination, path), { recursive: true });
   }
@@ -114,6 +119,22 @@ async function stageMainPackage(destination) {
     "packages/ts/memorax-code-opencode-adapter/package.json",
     join(destination, "lib/memorax-code-opencode-adapter/package.json"),
   );
+  await copyFile(
+    "packages/ts/memorax-code-codebuddy-adapter/package.json",
+    join(destination, "lib/memorax-code-codebuddy-adapter/package.json"),
+  );
+  await copyFile(
+    "packages/ts/memorax-code-trae-adapter/package.json",
+    join(destination, "lib/memorax-code-trae-adapter/package.json"),
+  );
+  await copyFile(
+    "packages/ts/memorax-code-cursor-adapter/package.json",
+    join(destination, "lib/memorax-code-cursor-adapter/package.json"),
+  );
+  await copyFile(
+    "packages/ts/memorax-code-qoder-adapter/package.json",
+    join(destination, "lib/memorax-code-qoder-adapter/package.json"),
+  );
 
   await buildClaudeMarketplace({
     outputDir: join(destination, "lib/memorax-code-claude-marketplace"),
@@ -145,111 +166,7 @@ async function validateSourceManifest() {
 }
 
 async function validateStaging(packageRoot) {
-  for (const requiredPath of [
-    "LICENSE",
-    "bin/memorax-code.mjs",
-    "bin/memorax-cli.mjs",
-    "bin/memorax-code-opencode.mjs",
-    "bin/memorax-code-npm-preinstall.mjs",
-    "bin/memorax-code-plugin-postinstall.mjs",
-    "bin/memorax-code-setup.mjs",
-    "lib/client-hook-runtime.mjs",
-    "lib/dsh-plugin-install.mjs",
-    "lib/node-version.mjs",
-    "lib/package-transition.mjs",
-    "lib/resolve-claude-command.mjs",
-    "lib/resolve-codex-command.mjs",
-    "lib/setup-memory-preferences.mjs",
-    "lib/setup-reconcile.mjs",
-    "lib/vscode-extension-command.mjs",
-    "lib/npm-invocation.mjs",
-    "lib/windows-cli-invocation.mjs",
-    "lib/trial-plugin-mark.mjs",
-    "lib/trial-provision-client.mjs",
-    "lib/trial-provision-flow.mjs",
-    "lib/trial-setup.mjs",
-    "lib/memorax-code-adapter-common/src/backend-connection.mjs",
-    "lib/memorax-code-adapter-common/src/config-utils.mjs",
-    "lib/memorax-code-adapter-common/src/hooks/client-hook-launcher.mjs",
-    "lib/memorax-code-adapter-common/src/clients/codex-plugin-artifact.mjs",
-    "lib/memorax-code-adapter-common/src/hooks/hook-runtime-generation.mjs",
-    "lib/memorax-code-adapter-common/src/hooks/memory-skill-reminder-policy.mjs",
-    "lib/memorax-code-adapter-common/src/memorax-code-config-file.mjs",
-    "lib/memorax-code-adapter-common/src/memorax-defaults.mjs",
-    "lib/memorax-code-adapter-common/src/runtime-record.mjs",
-    "lib/memorax-code-adapter-common/src/setup-completion.mjs",
-    "lib/memorax-code-adapter-common/src/credentials/linux-secret-service.mjs",
-    "lib/memorax-code-adapter-common/src/credentials/macos-keychain.mjs",
-    "lib/memorax-code-adapter-common/src/credentials/secure-command.mjs",
-    "lib/memorax-code-adapter-common/src/credentials/trial-credential-record.mjs",
-    "lib/memorax-code-adapter-common/src/credentials/trial-credential-store.mjs",
-    "lib/memorax-code-adapter-common/src/credentials/windows-dpapi.mjs",
-    "lib/memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs",
-    "lib/memorax-code-adapter-common/src/windows-cli-invocation.mjs",
-    "lib/memorax-code-adapter-common/src/repo-memory/repo-memory-auto-build.mjs",
-    "lib/memorax-code-adapter-common/src/repo-memory/repo-memory-job-context.mjs",
-    "lib/memorax-code-adapter-common/src/repo-memory/repo-memory-job-marker.mjs",
-    "lib/memorax-code-adapter-common/src/repo-memory/repo-memory-job-supervisor.mjs",
-    "lib/memorax-code-adapter-common/src/repo-memory/repo-memory-job-worker.mjs",
-    "lib/memorax-code-adapter-common/src/repo-memory/repo-procedure-memory-context.mjs",
-    "lib/memorax-code-adapter-common/src/repo-memory/repo-memory-update-policy-evaluator.mjs",
-    "lib/memorax-code-adapter-common/src/repo-memory/repo-memory-update-policy.mjs",
-    "lib/memorax-code-adapter-common/src/repo-memory/repo-user-profile-context.mjs",
-    "lib/memorax-code-backend/dist/server.js",
-    "lib/memorax-code-backend/dist/memorax-cli.js",
-    "lib/memorax-code-backend/dist/service-entrypoint.js",
-    "lib/memorax-code-backend/dist/windows-cli-invocation.js",
-    "lib/memorax-code-codex-adapter/skills/memorax-code/SKILL.md",
-    "lib/memorax-code-codex-adapter/assets/composer-icon.png",
-    "lib/memorax-code-codex-adapter/assets/logo.png",
-    "lib/memorax-code-codex-adapter/hooks/runtime-hook.mjs",
-    "lib/memorax-code-codex-adapter/hooks/runtime-shell.json",
-    "lib/memorax-code-codex-adapter/runtime-hooks/memory-writeback.mjs",
-    "lib/memorax-code-codex-adapter/src/workspace-kind.mjs",
-    "lib/memorax-code-claude-adapter/skills/memorax-code/SKILL.md",
-    "lib/memorax-code-claude-adapter/hooks/runtime-hook.mjs",
-    "lib/memorax-code-claude-adapter/hooks/runtime-shell.json",
-    "lib/memorax-code-claude-adapter/runtime-hooks/memory-turn.mjs",
-    "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/skills/memorax-code/SKILL.md",
-    "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/hooks/runtime-hook.mjs",
-    "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/hooks/runtime-shell.json",
-    "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/runtime-hooks/memory-turn.mjs",
-    "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/backend-connection.mjs",
-    "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/runtime-record.mjs",
-    "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/credentials/linux-secret-service.mjs",
-    "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/credentials/macos-keychain.mjs",
-    "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/credentials/secure-command.mjs",
-    "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/credentials/trial-credential-record.mjs",
-    "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/credentials/trial-credential-store.mjs",
-    "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/credentials/windows-dpapi.mjs",
-    "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs",
-    "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/hooks/memory-skill-reminder-policy.mjs",
-    "lib/memorax-code-dsh-adapter/package.json",
-    "lib/memorax-code-dsh-adapter/cordis.patch.yml",
-    "lib/memorax-code-dsh-adapter/src/index.mjs",
-    "lib/memorax-code-dsh-adapter/src/backend-client.mjs",
-    "lib/memorax-code-dsh-adapter/src/dsh-message.mjs",
-    "lib/memorax-code-dsh-adapter/src/dsh-version.mjs",
-    "lib/memorax-code-dsh-adapter/src/http-client.mjs",
-    "lib/memorax-code-dsh-adapter/src/personal-context-worker.mjs",
-    "lib/memorax-code-dsh-adapter/src/personal-context.mjs",
-    "lib/memorax-code-dsh-adapter/src/plugin.mjs",
-    "lib/memorax-code-dsh-adapter/src/profile-lifecycle.mjs",
-    "lib/memorax-code-dsh-adapter/src/protocol.mjs",
-    "lib/memorax-code-dsh-adapter/src/runtime-state.mjs",
-    "lib/memorax-code-dsh-adapter/hooks/repo-memory-job.mjs",
-    "lib/memorax-code-dsh-adapter/skills/memorax-code/SKILL.md",
-    "lib/memorax-code-opencode-adapter/src/plugin.mjs",
-    "lib/memorax-code-opencode-adapter/src/plugin-install.mjs",
-    "lib/memorax-code-opencode-adapter/src/cli.mjs",
-    "lib/memorax-code-opencode-adapter/src/repo-memory-server-runner.mjs",
-    "lib/memorax-code-opencode-adapter/hooks/repo-memory-job.mjs",
-    "lib/memorax-code-opencode-adapter/skills/memorax-code/SKILL.md",
-  ]) {
-    if (!(await stat(join(packageRoot, requiredPath)).catch(() => undefined))?.isFile()) {
-      throw new Error(`staged npm package is missing required runtime entrypoint: ${requiredPath}`);
-    }
-  }
+  await assertRequiredNpmPackageFiles(packageRoot);
   await walk(packageRoot, async (path, entry) => {
     const relativePath = relative(packageRoot, path);
     if (!isAllowedNpmPackPath(relativePath)) {
@@ -306,6 +223,7 @@ async function copyGeneratedTree(source, destination) {
     throw new Error(`unsupported generated npm package source: ${source}`);
   }
   const sourceRoot = join(repoRoot, source);
+  // Reject orphaned output from removed sources and missing output from new sources.
   const trackedBackendPrefix = "packages/ts/memorax-code-backend/src/";
   const trackedBackendSources = [...declaredSourceFiles]
     .filter((path) => path.startsWith(trackedBackendPrefix) && path.endsWith(".ts"))

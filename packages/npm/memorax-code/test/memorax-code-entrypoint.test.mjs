@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
-import { spawnSync } from "node:child_process";
-import { chmod, cp, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { chmod, cp, mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, join } from "node:path";
 import test from "node:test";
@@ -44,13 +45,16 @@ test("memorax-code fails closed for invalid or unsupported setup records", async
   for (const scenario of [
     {
       name: "invalid",
-      text: "{not-json\n",
+      text: '{"secret":"setup-record-canary",not-json\n',
+      errorCode: "SETUP_COMPLETION_RECORD_INVALID",
+      recordReason: "malformed_json",
       pattern: /setup completion record is invalid \(malformed_json\)/,
     },
     {
       name: "unsupported",
       text: `${JSON.stringify({ ...validSetupRecord(), version: 2 }, null, 2)}\n`,
       pattern: /setup completion record uses unsupported version 2/,
+      errorCode: "SETUP_COMPLETION_RECORD_UNSUPPORTED",
     },
   ]) {
     await t.test(scenario.name, async () => {
@@ -64,6 +68,14 @@ test("memorax-code fails closed for invalid or unsupported setup records", async
         assert.equal(result.error, undefined);
         assert.match(result.stderr, scenario.pattern);
         assert.match(result.stderr, /Inspect or repair this private record before running setup again/);
+        const diagnostics = await readSetupDiagnostics(fixture);
+        assert.equal(diagnostics.length, 1);
+        assert.equal(diagnostics[0].errorCode, scenario.errorCode);
+        assert.equal(diagnostics[0].stage, "setup_state");
+        assert.equal(diagnostics[0].recordReason, scenario.recordReason);
+        assert.ok(result.stderr.includes(`[${scenario.errorCode}] setup_state:`));
+        assert.ok(result.stderr.includes(`Diagnostic: ${diagnostics[0].id}`));
+        assert.doesNotMatch(`${result.stderr} ${JSON.stringify(diagnostics)}`, /setup-record-canary/);
         assert.equal(await pathExists(fixture.setupLogPath), false);
         assert.equal(await pathExists(fixture.backendLogPath), false);
       } finally {
@@ -118,6 +130,71 @@ test("setup propagates an explicit home to the setup process", async () => {
   }
 });
 
+test("setup reports a blocked lock release and retains any preceding setup authority failure", async () => {
+  const fixture = await createPackageFixture();
+  const entrypoint = join(fixture.root, "entrypoint-tty.mjs");
+  const lockPath = `${join(fixture.memoraxCodeHome, setupCompletionRelativePath)}.lock`;
+  try {
+    await writeFile(entrypoint, [
+      "import fs from 'node:fs';",
+      "import { syncBuiltinESMExports } from 'node:module';",
+      `const lockPath = ${JSON.stringify(lockPath)};`,
+      "const originalUnlink = fs.unlinkSync;",
+      "fs.unlinkSync = (path) => {",
+      "  if (path === lockPath) throw Object.assign(new Error('[safe-delete][SAFE_DELETE_BULK_CONFIRM_REQUIRED] confirmation required'), { code: 'EPERM' });",
+      "  return originalUnlink(path);",
+      "};",
+      "syncBuiltinESMExports();",
+      await readFile(entrypoint, "utf8"),
+    ].join("\n"));
+
+    const result = runCli(fixture, ["setup", "--existing-account"], {
+      assumeInteractive: true,
+      stdinIsTTY: true,
+    });
+
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /\[JSON_FILE_LOCK_RELEASE_FAILED\] lock:/);
+    const diagnostics = await readSetupDiagnostics(fixture);
+    assert.equal(diagnostics.length, 1);
+    assert.equal(diagnostics[0].errorCode, "JSON_FILE_LOCK_RELEASE_FAILED");
+    assert.equal(diagnostics[0].stage, "lock");
+    assert.equal(diagnostics[0].systemCode, "EPERM");
+    assert.ok(result.stderr.includes(`Diagnostic: ${diagnostics[0].id}`));
+    assert.equal(result.stderr.includes(lockPath), false);
+    assert.equal(JSON.stringify(diagnostics).includes(lockPath), false);
+    assert.doesNotMatch(`${result.stderr} ${JSON.stringify(diagnostics)}`, /SAFE_DELETE_BULK_CONFIRM_REQUIRED|confirmation required/);
+    assert.equal((await readJsonLines(fixture.setupLogPath)).length, 1);
+    assert.equal(await pathExists(lockPath), true);
+
+    await rm(lockPath);
+    await writeSetupRecordText(fixture.memoraxCodeHome, '{"secret":"setup-record-canary",not-json\n');
+    const failed = runCli(fixture, ["setup", "--existing-account"], {
+      assumeInteractive: true,
+      stdinIsTTY: true,
+    });
+    assert.equal(failed.error, undefined);
+    assert.equal(failed.status, 1);
+    const additional = (await readSetupDiagnostics(fixture)).filter((record) => record.id !== diagnostics[0].id);
+    assert.equal(additional.length, 1);
+    assert.equal(additional[0].errorCode, "SETUP_COMPLETION_RECORD_INVALID");
+    assert.equal(additional[0].stage, "setup_state");
+    assert.equal(additional[0].recordReason, "malformed_json");
+    assert.equal(additional[0].systemCode, undefined);
+    assert.equal(additional[0].cleanupErrorCode, "JSON_FILE_LOCK_RELEASE_FAILED");
+    assert.equal(additional[0].cleanupSystemCode, "EPERM");
+    assert.match(failed.stderr, /\[SETUP_COMPLETION_RECORD_INVALID\] setup_state:/);
+    assert.match(failed.stderr, /Cleanup also failed: JSON_FILE_LOCK_RELEASE_FAILED \(EPERM\)/);
+    assert.doesNotMatch(`${failed.stderr} ${JSON.stringify(additional)}`, /setup-record-canary|SAFE_DELETE_BULK_CONFIRM_REQUIRED|confirmation required/);
+    assert.equal(JSON.stringify(additional).includes(lockPath), false);
+    assert.equal((await readJsonLines(fixture.setupLogPath)).length, 1);
+    assert.equal(await pathExists(lockPath), true);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
 test("setup propagates the setup process exit code", async () => {
   const fixture = await createPackageFixture();
   try {
@@ -139,13 +216,12 @@ test("setup propagates the setup process exit code", async () => {
   }
 });
 
-test("update reviews clients and Hooks or migrates a configured legacy install", {
-  skip: process.platform === "win32",
-}, async (t) => {
-  for (const [name, completed, configured = false] of [
+test("update reconciles clients and verified Hooks or migrates a configured legacy install", async (t) => {
+  for (const [name, completed, configured = false, writeBackendPid = true] of [
     ["setup incomplete", false],
     ["configured legacy install", false, true],
-    ["setup complete", true],
+    ["setup complete with restored Backend PID", true],
+    ["setup complete with stopped Backend", true, false, false],
   ]) {
     await t.test(name, async () => {
       const fixture = await createPackageFixture();
@@ -157,13 +233,17 @@ test("update reviews clients and Hooks or migrates a configured legacy install",
           "#!/usr/bin/env node",
           "import { mkdirSync, writeFileSync } from 'node:fs';",
           "import { dirname, join } from 'node:path';",
-          "const path = join(process.env.MEMORAX_CODE_HOME, 'runtime', 'backend', 'backend.pid.json');",
-          "mkdirSync(dirname(path), { recursive: true });",
-          "writeFileSync(path, JSON.stringify({ pid: process.pid }) + '\\n');",
+          "if (process.env.MEMORAX_CODE_TEST_WRITE_BACKEND_PID === '1') {",
+          "  const path = join(process.env.MEMORAX_CODE_HOME, 'runtime', 'backend', 'backend.pid.json');",
+          "  mkdirSync(dirname(path), { recursive: true });",
+          "  writeFileSync(path, JSON.stringify({ pid: process.pid }) + '\\n');",
+          "}",
           "",
         ].join("\n"));
-        await chmod(npmModule, 0o755);
-        await symlink(basename(npmModule), join(fakeBin, "npm"));
+        if (process.platform !== "win32") {
+          await chmod(npmModule, 0o755);
+          await symlink(basename(npmModule), join(fakeBin, "npm"));
+        }
         if (completed) {
           await writeSetupRecord(fixture.memoraxCodeHome, validSetupRecord());
         }
@@ -172,6 +252,8 @@ test("update reviews clients and Hooks or migrates a configured legacy install",
           assumeInteractive: true,
           extraEnv: {
             PATH: `${fakeBin}${delimiter}${process.env.PATH ?? ""}`,
+            MEMORAX_CODE_NPM_EXEC_PATH: npmModule,
+            MEMORAX_CODE_TEST_WRITE_BACKEND_PID: writeBackendPid ? "1" : "0",
             ...(configured ? { MEMORAX_CODE_TEST_CONFIGURED: "1" } : {}),
           },
         });
@@ -188,7 +270,7 @@ test("update reviews clients and Hooks or migrates a configured legacy install",
             setupMode: "automatic",
           }]);
         } else {
-          assert.match(result.stderr, /reviewing client and Hook changes in the foreground/);
+          assert.match(result.stderr, /reconciling clients and verified Codex Hook changes in the foreground/);
           assert.deepEqual(await readJsonLines(fixture.setupLogPath), [{
             args: [],
             home: fixture.memoraxCodeHome,
@@ -211,12 +293,37 @@ test("root help documents setup and update", async () => {
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.error, undefined);
     assert.match(result.stdout, /^Usage: memorax-code \[command\] \[options\]/);
-    assert.match(result.stdout, /^  setup\s+Run or repair the interactive setup$/m);
+    assert.match(result.stdout, /^  setup\s+Run or repair setup$/m);
     assert.match(result.stdout, /^  account\s+Manage local MemoraX account information$/m);
     assert.match(result.stdout, /^  update\s+Update the globally installed npm package$/m);
+    assert.doesNotMatch(result.stdout, /repo-memory|user-profile/);
     assert.match(result.stdout, /Run `memorax-code setup` to complete first-time setup/);
     assert.equal(await pathExists(fixture.setupLogPath), false);
     assert.equal(await pathExists(fixture.backendLogPath), false);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("user-profile preserves piped helper output and exit status without requiring setup", async () => {
+  const fixture = await createPackageFixture();
+  try {
+    const helperEntrypoint = join(fixture.root, "lib", "memorax-code-backend", "dist", "user-profile.js");
+    await writeFile(helperEntrypoint, [
+      "process.stdout.write(JSON.stringify({ args: process.argv.slice(3), description: 'x'.repeat(128 * 1024) }) + '\\n');",
+      "process.exitCode = 7;",
+      "",
+    ].join("\n"));
+    const args = ["list", "--home", join(fixture.root, "home with spaces")];
+
+    const result = runCli(fixture, ["user-profile", ...args]);
+
+    assert.equal(result.error, undefined);
+    assert.equal(result.status, 7, result.stderr);
+    assert.deepEqual(JSON.parse(result.stdout), { args, description: "x".repeat(128 * 1024) });
+    assert.equal(await pathExists(fixture.setupLogPath), false);
+    assert.equal(await pathExists(fixture.backendLogPath), false);
+    assert.equal(await pathExists(join(fixture.memoraxCodeHome, setupCompletionRelativePath)), false);
   } finally {
     await fixture.cleanup();
   }
@@ -245,16 +352,17 @@ test("account command reveals only the requested local trial Mark ID", async () 
   }
 });
 
-test("setup help describes automatic, existing-account, and reconfigure modes", async () => {
+test("setup help describes interactive and non-interactive existing-account modes", async () => {
   const fixture = await createPackageFixture();
   try {
     const result = runCli(fixture, ["setup", "--help"]);
 
     assert.equal(result.status, 0, result.stderr);
     assert.equal(result.error, undefined);
-    assert.match(result.stdout, /^Usage: memorax-code setup \[--existing-account \| --reconfigure\] \[--home DIR\]/);
-    assert.match(result.stdout, /A complete existing\nconfiguration is reused automatically/);
+    assert.match(result.stdout, /^Usage: memorax-code setup \[--existing-account \| --reconfigure\] \[--non-interactive\] \[--home DIR\]/);
+    assert.match(result.stdout, /Plain setup reuses a complete configuration/);
     assert.match(result.stdout, /^  --existing-account\s+Configure an existing account instead of anonymous access$/m);
+    assert.match(result.stdout, /^  --non-interactive\s+With --existing-account, read the API Key from stdin and use defaults without prompting$/m);
     assert.match(result.stdout, /^  --reconfigure\s+Re-detect memory preferences instead of reusing configuration$/m);
     assert.equal(await pathExists(fixture.setupLogPath), false);
     assert.equal(await pathExists(fixture.backendLogPath), false);
@@ -301,6 +409,68 @@ test("setup rejects conflicting setup modes before starting setup", async () => 
   }
 });
 
+test("setup forwards an existing-account API key through private stdin without a TTY", async () => {
+  const fixture = await createPackageFixture();
+  const apiKey = `sk_${"P".repeat(43)}`;
+  try {
+    const result = await runCli(fixture, ["setup", "--existing-account", "--non-interactive"], {
+      inputChunks: [apiKey.slice(0, 9), apiKey.slice(9), "\r\n"],
+      timeout: 10_000,
+    });
+
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.error, undefined);
+    assert.deepEqual(await readJsonLines(fixture.setupLogPath), [{
+      args: ["--non-interactive"],
+      home: fixture.memoraxCodeHome,
+      setupMode: "existing-account",
+      stdinKeyHash: createHash("sha256").update(apiKey).digest("hex"),
+      keyInEnvironment: false,
+      stdinIsTTY: false,
+    }]);
+    assert.equal(`${result.stdout}\n${result.stderr}`.includes(apiKey), false);
+    assert.equal((await readFile(fixture.setupLogPath, "utf8")).includes(apiKey), false);
+    assert.equal(await pathExists(fixture.backendLogPath), false);
+  } finally {
+    await fixture.cleanup();
+  }
+});
+
+test("setup rejects invalid API key stdin before starting setup without exposing input", async (t) => {
+  const apiKey = `sk_${"I".repeat(43)}`;
+  for (const scenario of [
+    { name: "missing existing-account mode", args: ["--non-interactive"], input: apiKey },
+    { name: "reconfigure mode", args: ["--reconfigure", "--non-interactive"], input: apiKey },
+    { name: "key accidentally passed as an argument", args: ["--existing-account", "--non-interactive", apiKey], input: apiKey },
+    { name: "empty input", input: "" },
+    { name: "multiple lines", input: `${apiKey}\nsecond-line` },
+    { name: "NUL", input: `${apiKey}\0` },
+    { name: "oversized input", input: `${apiKey}${"x".repeat(16 * 1024)}` },
+    { name: "TTY input", input: apiKey, stdinIsTTY: true },
+  ]) {
+    await t.test(scenario.name, async () => {
+      const fixture = await createPackageFixture();
+      try {
+        const result = runCli(fixture, ["setup", ...(scenario.args ?? ["--existing-account", "--non-interactive"])], {
+          input: scenario.input,
+          stdinIsTTY: scenario.stdinIsTTY,
+        });
+
+        assert.equal(result.error, undefined);
+        assert.notEqual(result.status, 0);
+        assert.match(result.stderr, /API key|non-interactive|setup option/i);
+        assert.equal(`${result.stdout}\n${result.stderr}`.includes(apiKey), false);
+        assert.equal(await pathExists(fixture.setupLogPath), false);
+        assert.equal(await pathExists(fixture.backendLogPath), false);
+        assert.equal(await pathExists(join(fixture.memoraxCodeHome, "config.toml")), false);
+        assert.equal(await pathExists(join(fixture.memoraxCodeHome, setupCompletionRelativePath)), false);
+      } finally {
+        await fixture.cleanup();
+      }
+    });
+  }
+});
+
 test("unknown commands are still delegated to the Backend entrypoint", async () => {
   const fixture = await createPackageFixture();
   try {
@@ -315,6 +485,12 @@ test("unknown commands are still delegated to the Backend entrypoint", async () 
   }
 });
 
+async function readSetupDiagnostics(fixture) {
+  const directory = join(fixture.memoraxCodeHome, "runtime", "diagnostics");
+  const files = (await readdir(directory)).filter((name) => /^mc-.*\.json$/.test(name));
+  return await Promise.all(files.map(async (name) => JSON.parse(await readFile(join(directory, name), "utf8"))));
+}
+
 async function createPackageFixture() {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-entrypoint-test-"));
   const memoraxCodeHome = join(root, "memorax-code-home");
@@ -323,14 +499,25 @@ async function createPackageFixture() {
   const backendLogPath = join(root, "backend-calls.jsonl");
   const copiedFiles = [
     "bin/memorax-code.mjs",
+    "lib/automatic-update.mjs",
+    "lib/package-update.mjs",
+    "lib/package-transition.mjs",
+    "lib/update-diagnostics.mjs",
     "lib/client-hook-runtime.mjs",
     "lib/node-version.mjs",
     "lib/npm-invocation.mjs",
     "lib/resolve-claude-command.mjs",
     "lib/resolve-codex-command.mjs",
+    "lib/resolve-codebuddy-command.mjs",
     "lib/run-entrypoint.mjs",
+    "lib/setup-api-key-input.mjs",
+    "lib/setup-diagnostics.mjs",
+    "lib/trial-provision-client.mjs",
+    "lib/trial-provision-flow.mjs",
+    "lib/trial-plugin-mark.mjs",
     "lib/vscode-extension-command.mjs",
     "lib/windows-cli-invocation.mjs",
+    "lib/windows-user-path.mjs",
   ];
   for (const relativePath of copiedFiles) {
     const target = join(root, relativePath);
@@ -346,7 +533,16 @@ async function createPackageFixture() {
     "memorax-code-adapter-common",
     "src",
   );
-  for (const relativePath of ["config-utils.mjs", "runtime-record.mjs", "setup-completion.mjs"]) {
+  for (const relativePath of [
+    "clients/codebuddy-command.mjs",
+    "config-utils.mjs",
+    "diagnostic-record.mjs", "deployment-failure.mjs",
+    "automatic-update-state.mjs",
+    "runtime-record.mjs",
+    "windows-directory-retry.mjs",
+    "package-recovery.mjs",
+    "setup-completion.mjs",
+  ]) {
     const target = join(root, "lib", "memorax-code-adapter-common", "src", relativePath);
     await mkdir(dirname(target), { recursive: true });
     await cp(join(adapterCommonSource, relativePath), target);
@@ -369,6 +565,7 @@ async function createPackageFixture() {
     "",
   ].join("\n"));
   await writeFile(join(root, "lib", "trial-setup.mjs"), [
+    "export { trialProvisionFailureDetails as trialSetupFailureDetails } from './trial-provision-flow.mjs';",
     "export async function loadReadyTrialSetupCredential(options = {}) {",
     "  if (options.memoraxCodeHome !== process.env.MEMORAX_CODE_TEST_EXPECTED_ACCOUNT_HOME) {",
     "    throw new Error('unexpected MemoraX Code home');",
@@ -384,14 +581,26 @@ async function createPackageFixture() {
     "",
   ].join("\n"));
   await writeFile(join(root, "bin", "memorax-code-setup.mjs"), [
-    "import { appendFileSync } from 'node:fs';",
+    "import { appendFileSync, readFileSync } from 'node:fs';",
+    "import { createHash } from 'node:crypto';",
+    "const stdinKey = process.argv.includes('--non-interactive') ? readFileSync(0, 'utf8').replace(/\\r?\\n$/, '') : undefined;",
     "appendFileSync(process.env.MEMORAX_CODE_TEST_SETUP_LOG, JSON.stringify({",
     "  args: process.argv.slice(2),",
     "  home: process.env.MEMORAX_CODE_HOME,",
     "  setupMode: process.env.MEMORAX_CODE_SETUP_MODE ?? 'automatic',",
     "  ...(process.env.MEMORAX_CODE_SETUP_UPDATE === undefined ? {} : { updateMode: process.env.MEMORAX_CODE_SETUP_UPDATE }),",
+    "  ...(stdinKey === undefined ? {} : {",
+    "    stdinKeyHash: createHash('sha256').update(stdinKey).digest('hex'),",
+    "    keyInEnvironment: Object.values(process.env).some((value) => value.includes(stdinKey)),",
+    "    stdinIsTTY: process.stdin.isTTY === true,",
+    "  }),",
     "}) + '\\n');",
     "process.exit(Number(process.env.MEMORAX_CODE_TEST_SETUP_EXIT_CODE ?? 0));",
+    "",
+  ].join("\n"));
+  await writeFile(join(root, "entrypoint-tty.mjs"), [
+    "Object.defineProperty(process.stdin, 'isTTY', { value: true });",
+    "await import('./bin/memorax-code.mjs');",
     "",
   ].join("\n"));
   const backendEntrypoint = join(root, "lib", "memorax-code-backend", "dist", "memorax-code.js");
@@ -420,6 +629,9 @@ function runCli(fixture, args = [], {
   backendExitCode = 0,
   extraEnv = {},
   setupExitCode = 0,
+  input,
+  inputChunks,
+  stdinIsTTY = false,
   timeout = 5_000,
 } = {}) {
   const env = {
@@ -443,16 +655,38 @@ function runCli(fixture, args = [], {
   Object.assign(env, extraEnv);
   if (assumeInteractive) env.MEMORAX_CODE_SETUP_ASSUME_INTERACTIVE = "1";
   else delete env.MEMORAX_CODE_SETUP_ASSUME_INTERACTIVE;
-  return spawnSync(
-    process.execPath,
-    [join(fixture.root, "bin", "memorax-code.mjs"), ...args],
-    {
-      encoding: "utf8",
-      env,
-      stdio: ["ignore", "pipe", "pipe"],
-      timeout,
-    },
-  );
+  const cliArgs = [stdinIsTTY ? join(fixture.root, "entrypoint-tty.mjs") : join(fixture.root, "bin", "memorax-code.mjs"), ...args];
+  const options = {
+    env,
+    stdio: [input === undefined && !inputChunks ? "ignore" : "pipe", "pipe", "pipe"],
+    timeout,
+  };
+  if (inputChunks) {
+    return new Promise((resolve) => {
+      const child = spawn(process.execPath, cliArgs, options);
+      let stdout = "";
+      let stderr = "";
+      let error;
+      let timer;
+      child.stdout.on("data", (chunk) => { stdout += String(chunk); });
+      child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+      child.on("error", (value) => { error = value; });
+      child.stdin.on("error", () => {});
+      child.on("close", (status) => {
+        clearTimeout(timer);
+        resolve({ status, error, stdout, stderr });
+      });
+      const writeChunk = (index) => {
+        if (index === inputChunks.length) child.stdin.end();
+        else {
+          child.stdin.write(inputChunks[index]);
+          timer = setTimeout(() => writeChunk(index + 1), 40);
+        }
+      };
+      timer = setTimeout(() => writeChunk(0), 300);
+    });
+  }
+  return spawnSync(process.execPath, cliArgs, { ...options, encoding: "utf8", input });
 }
 
 function validSetupRecord() {

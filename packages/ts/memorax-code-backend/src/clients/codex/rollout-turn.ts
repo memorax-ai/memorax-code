@@ -1,6 +1,37 @@
 import { readFile } from "node:fs/promises";
+import { createReadStream } from "node:fs";
+import { parseNativeMessageTimestamp } from "../../shared/message-time.js";
 
 type JsonRecord = Record<string, unknown>;
+
+export async function readCodexRolloutSessionWorkspace(input: {
+  transcriptPath: string;
+  sessionId: string;
+}): Promise<string | undefined> {
+  // Only the first nonblank record owns the session's initial cwd. Stop there:
+  // later metadata may belong to imported history, and rollouts can be large.
+  try {
+    let pending = "";
+    for await (const chunk of createReadStream(input.transcriptPath, { encoding: "utf8" })) {
+      pending += chunk;
+      let newline: number;
+      while ((newline = pending.indexOf("\n")) !== -1) {
+        const line = pending.slice(0, newline);
+        pending = pending.slice(newline + 1);
+        if (line.trim()) return sessionWorkspaceFromHeader(line, input.sessionId);
+      }
+    }
+    return sessionWorkspaceFromHeader(pending, input.sessionId);
+  } catch {
+    return undefined;
+  }
+}
+
+function sessionWorkspaceFromHeader(line: string, sessionId: string): string | undefined {
+  const record: unknown = JSON.parse(line);
+  if (!isRecord(record) || record.type !== "session_meta" || !isRecord(record.payload)) return undefined;
+  return nonBlankString(record.payload.id) === sessionId ? nonBlankString(record.payload.cwd) : undefined;
+}
 
 export type CodexTurnTokenUsage = {
   input_tokens: number;
@@ -32,6 +63,8 @@ export type CodexRolloutTurn = {
   turnId: string;
   userPrompt: string;
   assistantReply: string;
+  userTimestamp?: number;
+  assistantTimestamp?: number;
   activities: CodexTurnActivity[];
   usage?: CodexTurnTokenUsage;
 };
@@ -112,7 +145,11 @@ export function codexRolloutTurnFromJsonLines(
   if (!scan.assistantReply) return { ok: false, reason: "assistant_message_missing" };
   return {
     ok: true,
-    turn: rolloutTurnFromScan(scan, input, scan.userPrompt, scan.assistantReply),
+    turn: {
+      ...rolloutTurnFromScan(scan, input, scan.userPrompt, scan.assistantReply),
+      ...(scan.userTimestamp === undefined ? {} : { userTimestamp: scan.userTimestamp }),
+      ...(scan.assistantTimestamp === undefined ? {} : { assistantTimestamp: scan.assistantTimestamp }),
+    },
   };
 }
 
@@ -149,6 +186,8 @@ type CodexRolloutTurnScan = {
   turnMetadataMismatch: boolean;
   userPrompt?: string;
   assistantReply?: string;
+  userTimestamp?: number;
+  assistantTimestamp?: number;
   visibleAssistantMessages: string[];
   interrupted: boolean;
   interruptedAt?: string;
@@ -172,9 +211,14 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
   let turnMetadataMismatch = false;
   let userPrompt: string | undefined;
   let assistantReply: string | undefined;
+  let userTimestamp: number | undefined;
+  let assistantTimestamp: number | undefined;
+  let completedTimestamp: number | undefined;
   const visibleAssistantMessages: string[] = [];
   let responseItemUserPrompt: string | undefined;
   let responseItemAssistantReply: string | undefined;
+  let responseItemUserTimestamp: number | undefined;
+  let responseItemAssistantTimestamp: number | undefined;
   let interrupted = false;
   let interruptedAt: string | undefined;
   let rolledBack = false;
@@ -211,6 +255,9 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
     }
 
     const payload = isRecord(record.payload) ? record.payload : {};
+    // Only session_meta on the first nonblank line owns this file's identity.
+    // Imported history may contain the exact Turn, but makes cumulative usage
+    // and session-relative Turn indexes unsafe to infer.
     if (record.type === "session_meta") {
       if (authorityHeaderCandidate) {
         authoritySessionId = nonBlankString(payload.id);
@@ -245,15 +292,19 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
             || (role === "assistant" && payload.phase === "final_answer");
           if (authoritativeMessage && message) {
             const responseTurnId = responseItemTurnId(payload);
-            if (responseTurnId && responseTurnId !== activeTurnId) {
+            // Assistant metadata may retain a provider turn ID. The local rollout
+            // boundary determines its Turn; user message IDs must still match.
+            if (role === "user" && responseTurnId && responseTurnId !== activeTurnId) {
               turnMetadataMismatch = true;
               continue;
             }
             if (role === "user") {
               userMessageTurnIds.add(activeTurnId);
               responseItemUserPrompt = message;
+              responseItemUserTimestamp = parseNativeMessageTimestamp(record.timestamp);
             } else {
               responseItemAssistantReply = message;
+              responseItemAssistantTimestamp = parseNativeMessageTimestamp(record.timestamp);
             }
           }
         }
@@ -280,6 +331,7 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
       if (completedTurnId === targetTurnId) {
         targetSeen = true;
         assistantReply ??= nonBlankString(payload.last_agent_message) ?? nonBlankString(payload.lastAgentMessage);
+        completedTimestamp = parseNativeMessageTimestamp(record.timestamp);
       }
       if (completedTurnId && completedTurnId === activeTurnId) activeTurnId = undefined;
       continue;
@@ -300,6 +352,8 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
       continue;
     }
     if (eventType === "token_count") {
+      // Cumulative counters make duplicate snapshots contribute nothing; a
+      // counter rollback establishes a new baseline instead of a negative delta.
       const snapshot = tokenUsageSnapshot(payload);
       if (!snapshot) continue;
       if (activeTurnId === targetTurnId) {
@@ -315,7 +369,11 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
     if (eventType === "user_message") {
       if (activeTurnId) userMessageTurnIds.add(activeTurnId);
       if (activeTurnId !== targetTurnId) continue;
-      userPrompt = nonBlankString(payload.message) ?? userPrompt;
+      const message = nonBlankString(payload.message);
+      if (message) {
+        userPrompt = message;
+        userTimestamp = parseNativeMessageTimestamp(record.timestamp);
+      }
       continue;
     }
     if (activeTurnId !== targetTurnId) continue;
@@ -325,7 +383,10 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
       if (payload.phase === "commentary" || payload.phase === "final_answer") {
         visibleAssistantMessages.push(message);
       }
-      if (payload.phase === "final_answer") assistantReply = message;
+      if (payload.phase === "final_answer") {
+        assistantReply = message;
+        assistantTimestamp = parseNativeMessageTimestamp(record.timestamp);
+      }
     }
   }
 
@@ -336,8 +397,16 @@ function scanCodexRolloutTurn(transcript: string, targetTurnId: string): CodexRo
     composite,
     targetSeen,
     turnMetadataMismatch,
+    // Current-format response items take precedence over legacy event mirrors;
+    // missing response-item text may use the matching Turn's legacy text.
     userPrompt: responseItemUserPrompt ?? userPrompt,
     assistantReply: responseItemAssistantReply ?? assistantReply,
+    // Text and time share the same record authority, even when that record has
+    // no usable time. An exact task_complete can date completion separately.
+    userTimestamp: responseItemUserPrompt === undefined ? userTimestamp : responseItemUserTimestamp,
+    assistantTimestamp: completedTimestamp ?? (responseItemAssistantReply === undefined
+      ? assistantTimestamp
+      : responseItemAssistantTimestamp),
     visibleAssistantMessages,
     interrupted,
     interruptedAt,
@@ -446,7 +515,7 @@ function activityCandidatesFromResponseItem(payload: JsonRecord): CodexTurnActiv
     });
   }
 
-  const memoryCliPattern = /(?:["']?cmd["']?\s*:\s*\\?["'`]|&&|\|\||;)\s*memorax-cli\s+(search|add)\b/giu;
+  const memoryCliPattern = /(?:["']?cmd["']?\s*:\s*\\?["'`]|&&|\|\||;)\s*memorax-cli(?:\.cmd)?\s+(search|add)\b/giu;
   for (const match of input.matchAll(memoryCliPattern)) {
     candidates.push({
       offset: match.index,

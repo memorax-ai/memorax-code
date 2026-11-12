@@ -6,9 +6,34 @@ Update existing repo memory from a delta, not a full rebuild. Treat the current 
 
 Do not rebuild the whole bundle by default. Return to `SKILL.md` and use `repo-build.md` only when `.repo_memory/PROFILE.md` is missing, the existing memory is structurally unusable, or the user explicitly asks for a full rebuild.
 
-This is the incremental updater, not the daily reader. Use `repo-read.md` for task-time search over existing memory. Use `repo-build.md` for first-time creation, full rebuild flows, or full refresh work that should rerun builder collection with `collect_all.py --reuse`.
+This is the incremental updater, not the daily reader. Use `repo-read.md` for task-time search over existing memory. Use `repo-build.md` for first-time creation, full rebuild flows, or full refresh work that should rerun builder collection with `repo-memory.mjs collect --reuse`.
 
 ## Prerequisite
+
+### Supervised Shared-Default-Branch Candidate
+
+An authorized background worker supplies an isolated source repository at a fixed
+mainline commit, the baseline SHA, and its candidate `.repo_memory` directory.
+Use that snapshot for both code inspection and collection. Run
+`detect-updates --repo-path <source-repo> --memory-path <candidate-memory>
+--snapshot-ref <snapshot-sha> --pretty`; validate the candidate's parent directory.
+Do not change the caller's worktree, shared cache, Git refs, or configuration.
+Do not run `git fetch`, `git pull`, or `git ls-remote` to refresh or select the snapshot.
+Continue using the packaged detector to retrieve GitHub/GitLab PR, MR, and issue evidence
+through `gh`/`glab`, including branch and commit metadata,
+when enabled by the history policy and provider access is available.
+The supervisor owns version publication.
+
+Review the diff from baseline SHA to snapshot SHA and affected source files;
+update affected Wiki pages and PROFILE navigation as well as enabled history
+resources. This code-map review is required even when history is disabled or the
+detector reports no history delta. Preserve disabled history channels and existing
+provider resources when collection is unavailable. Advance the candidate PROFILE
+SHA and timestamp only after reviewing all affected pages. Use repository-relative
+evidence links; the source snapshot is temporary. If incremental review cannot
+produce a usable map, stop and report the need for an explicit rebuild.
+These candidate rules override history-only report gates below for this supervised
+operation. Explicit local updates do not replace the shared baseline.
 
 The user selects a repository, not a memory directory. Derive the memory path as `<repo>/.repo_memory`.
 
@@ -54,7 +79,7 @@ Only change `<skill-dir>/defaults.json` when the user asks to change future defa
 Start every updater run by detecting deltas:
 
 ```bash
-python3 <skill-dir>/scripts/detect_updates.py \
+node <skill-dir>/scripts/repo-memory.mjs detect-updates \
   --repo-path <repo-path> \
   --pretty
 ```
@@ -85,7 +110,7 @@ Use `--history-mode local-only` or `--history-mode none` when the user requests 
 
 `gh/glab` provider delta detection needs external network access. If `current.provider_fetch.ok` is false, or notice/stderr shows `fetch failed`, timeout, DNS, connection, TLS, `ENOTFOUND`, `EAI_AGAIN`, or similar transport text, show `Provider Delta Fetch Failed`, keep existing PR/MR/issue resources unchanged, and continue only with safe local commit updates.
 
-Verify provider authentication in the same normal shell with the command reported by `detect_updates.py`; for GitHub Enterprise or self-hosted GitLab this may include `--hostname <host>`. Authenticate with `gh auth login` or `glab auth login` (also host-scoped when prompted), then rerun `detect_updates.py`; do not paste tokens into the skill or call provider APIs directly.
+Verify provider authentication in the same normal shell with the command reported by `repo-memory.mjs detect-updates`; for GitHub Enterprise or self-hosted GitLab this may include `--hostname <host>`. Authenticate with `gh auth login` or `glab auth login` (also host-scoped when prompted), then rerun `repo-memory.mjs detect-updates`; do not paste tokens into the skill or call provider APIs directly.
 
 Do not use a restricted shell sandbox to verify provider/API availability. Verify in a normal shell or approved network-enabled mode before editing provider resources. If only restricted shell access is available, keep existing PR/MR/issue resources unchanged and continue only with safe local commit updates. Do not treat provider fetch failure as no PR/issue delta, empty provider evidence, bad login, or bypass the detector with direct APIs, browser scraping, copied credentials, or hand-written raw facets.
 
@@ -107,10 +132,11 @@ Read the JSON report as gates before editing. Stop at the first blocking gate; o
 Never delete prior PR/MR/issue sections because they are absent from the bounded provider fetch; deletion needs explicit user instruction or verified invalidation. Finish with the builder validator:
 
 ```bash
-python3 <skill-dir>/scripts/validate_memory.py <repo-path> --pretty
+node <skill-dir>/scripts/repo-memory.mjs validate <repo-path> --pretty
 ```
 
 Whenever an update changes generated repo-memory artifacts, set `PROFILE.md.generated_at` to the successful update time and `PROFILE.md.local_head` to the processed snapshot. The read-time cooldown policy uses this timestamp; do not preserve an older build time after a successful incremental update.
+
 
 ## Authoring Rules
 

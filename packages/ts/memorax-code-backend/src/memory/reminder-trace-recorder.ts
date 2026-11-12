@@ -8,6 +8,10 @@ import {
   traceContextFromDshSkillReminder,
   traceContextFromHookBody,
   traceContextFromOpenCodeHookBody,
+  traceContextFromCodeBuddyHookBody,
+  traceContextFromTraeHookBody,
+  traceContextFromCursorHookBody,
+  traceContextFromQoderHookBody,
   type TraceContext,
 } from "../trace/context.js";
 import { recordTraceEvent } from "../trace/store.js";
@@ -27,6 +31,7 @@ export function createMemoryReminderTraceRecorder(
 ): MemoryReminderTraceRecorder {
   return {
     async recordSkillReminder(body) {
+      // Success acknowledges a best-effort recording attempt, not delivery to the client.
       const parsed = parseSkillReminderCommand(body);
       if (!parsed.ok) {
         options.diagnosticLogger?.("memory_hook.skill_reminder_invalid", {
@@ -68,6 +73,10 @@ function traceContextForReminder(command: SkillReminderCommand): TraceContext | 
   if (command.client === "codex") return traceContextFromHookBody(command);
   if (command.client === "claude-code") return traceContextFromClaudeHookBody(command);
   if (command.client === "dsh") return traceContextFromDshSkillReminder(command);
+  if (command.client === "codebuddy" || command.client === "workbuddy") return traceContextFromCodeBuddyHookBody(command);
+  if (command.client === "trae") return traceContextFromTraeHookBody(command);
+  if (command.client === "cursor") return traceContextFromCursorHookBody(command);
+  if (command.client === "qoder") return traceContextFromQoderHookBody(command);
   return traceContextFromOpenCodeHookBody(command);
 }
 
@@ -75,6 +84,10 @@ function reminderSource(command: SkillReminderCommand): string {
   if (command.client === "codex") return "codex-hook";
   if (command.client === "claude-code") return "claude-hook";
   if (command.client === "dsh") return "dsh-cordis";
+  if (command.client === "codebuddy" || command.client === "workbuddy") return `${command.client}-hook`;
+  if (command.client === "trae") return "trae-hook";
+  if (command.client === "cursor") return "cursor-hook";
+  if (command.client === "qoder") return "qoder-hook";
   return "opencode-plugin";
 }
 

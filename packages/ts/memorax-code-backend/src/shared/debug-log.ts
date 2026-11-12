@@ -7,6 +7,7 @@ export function backendDebugEnabled(): boolean {
 
 export function backendDebug(message: string, fields: Record<string, unknown> = {}): void {
   if (!backendDebugEnabled()) return;
+  // This formatter does not redact fields; callers choose safe diagnostic values.
   const suffix = Object.entries(fields)
     .filter(([, value]) => value !== undefined)
     .map(([key, value]) => `${key}=${formatValue(value)}`)

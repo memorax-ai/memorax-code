@@ -219,10 +219,8 @@ const config = readFileSync(process.argv[2], "utf8");
 const completion = JSON.parse(readFileSync(process.argv[3], "utf8"));
 if (!config.includes('user_id = "linux-e2e-user"')
   || !config.includes('api_key = "linux-e2e-key"')
-  || !config.includes("codex = false")
-  || !config.includes("claude = false")
   || !config.includes("dsh = false")
-  || !config.includes("opencode = false")) {
+  || /^(?:codex|claude|opencode) = /m.test(config)) {
   throw new Error("explicit setup did not write the expected isolated configuration");
 }
 if (completion?.version !== 1

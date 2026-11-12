@@ -4,19 +4,66 @@ Start with the user-facing diagnostics:
 
 ```sh
 memorax-code status
+memorax-code logs --diagnostics
 memorax-cli status
 memorax-code-codex doctor
 memorax-code-claude doctor
 memorax-code status --clients dsh
 memorax-code-opencode doctor
+memorax-code-codebuddy status --json
+memorax-code-trae status --json
+memorax-code-cursor status --json
+memorax-code-qoder status --json
 memorax-code logs
 ```
 
+In Windows PowerShell, use `memorax-cli.cmd` everywhere this guide shows
+`memorax-cli`. If an unqualified command fails with `UnauthorizedAccess` or
+`PSSecurityException` because PowerShell selected `memorax-cli.ps1`, rerun the
+same command once with `memorax-cli.cmd`, preserving its arguments and working
+directory. Do not run `Set-ExecutionPolicy` for MemoraX commands.
+
 `memorax-code status` checks the Backend and selected client integrations,
-including DSH and OpenCode. `memorax-cli status` checks credentials, scope, and
-memory switches without printing secrets. Codex, Claude Code, and OpenCode
-also provide client-specific `doctor` commands; DSH uses the shared lifecycle
-status.
+including DSH, OpenCode, CodeBuddy/WorkBuddy, Trae, Cursor, and Qoder. `memorax-cli status`
+checks credentials, scope, and memory switches without printing secrets.
+Codex, Claude Code, and OpenCode provide client-specific `doctor` commands;
+CodeBuddy/WorkBuddy, Trae, Cursor, and Qoder provide adapter status commands, and DSH uses the
+shared lifecycle status.
+
+Lifecycle summaries include every selected client. A configured integration
+does not prove that its Hook has run: `hook-runtime=unverified` and
+`hook-runtime=observed` distinguish those states. Trae may report a configured
+integration while still requiring its one-time Global Hooks activation; follow
+the activation guidance printed by `start`, `restart`, or `status`.
+
+## Read and share a diagnostic
+
+Start with `memorax-code status`. Its **Recent failures** section is retained
+history, separate from current Backend and client readiness. A past error can
+remain after recovery; a healthy current status is not changed by that record.
+
+`memorax-code logs --diagnostics` shows the latest five failures with their IDs,
+versions, clients, failure stages, error codes, impact, and next steps. To show
+more records or retrieve the ID from an installation error or status summary:
+
+```sh
+memorax-code logs --diagnostics --limit 10
+memorax-code logs --id <diagnostic-id>
+memorax-code logs --id <diagnostic-id> --json
+```
+
+Use the same `--home DIR` or `MEMORAX_CODE_HOME` as the failed operation.
+These queries work even when the Backend is stopped or its connection record
+cannot be read. Copy the relevant diagnostic output after reviewing it, along
+with the action that failed and reproduction steps. This projection excludes
+unknown fields and does not include raw Backend logs or client conversation
+content. Plain `memorax-code logs` still shows Backend logs; review those
+separately before sharing.
+
+A missing ID can mean the wrong state home or that retention removed it. If a
+query reports skipped records or a read error, retain that error code too: the
+history may be incomplete. Querying does not repair or delete files. No retained
+failure record does not establish successful Hook execution or remote acceptance.
 
 ## Package installed, but setup did not start
 
@@ -38,21 +85,147 @@ default setup reuses it automatically. Use `memorax-code setup --reconfigure`
 to replace it, or `memorax-code setup --existing-account` to enter an
 existing MemoraX connection.
 
-Setup requires terminal input and terminal-visible stderr. A pipe, background
-process, or redirected stdin/stderr cannot complete setup; rerun it in a normal
-interactive terminal.
+Interactive setup requires terminal input and terminal-visible stderr. If a
+coding agent reports `an interactive terminal is required`, use the explicit
+non-interactive existing-account mode instead of emulating a terminal with winpty or
+Python. For example, in Windows PowerShell, with a key already supplied in
+`MEMORAX_SETUP_API_KEY`:
+
+```powershell
+$env:MEMORAX_SETUP_API_KEY | memorax-code.cmd setup --existing-account --non-interactive
+```
+
+Close stdin after one raw key; do not pipe a sequence of interactive answers.
+This mode uses the detected username and language and replaces the saved key.
+If username detection fails, complete setup in a normal interactive terminal.
+See [non-interactive setup rules](configuration.md#existing-account-setup-without-a-terminal).
+Guest setup still requires an interactive terminal. Do not change PowerShell
+execution policy to run the `.ps1` shim; use `.cmd`.
+
+## Windows: `memorax-code` or `memorax-cli` is not found
+
+A global npm installation places command shims in npm's global prefix
+(commonly `%APPDATA%\npm`). If that directory is missing from `PATH`, or a
+coding agent was started before installation, commands may be unavailable even
+though the package is installed. The same package installs both `memorax-code`
+and `memorax-cli`; do not install a separate CLI package.
+
+Setup verifies npm's global command directory and adds it to the
+current setup process and the Windows user `PATH` when needed. If the current
+shell cannot find `memorax-code`, use npm's actual global prefix to bootstrap
+setup and verify the CLI in PowerShell:
+
+```powershell
+$NpmGlobalBin = (npm prefix -g).Trim()
+$env:Path = "$NpmGlobalBin;$env:Path"
+& (Join-Path $NpmGlobalBin "memorax-code.cmd") setup
+& (Join-Path $NpmGlobalBin "memorax-cli.cmd") status
+```
+
+Use `memorax-cli.cmd` for all memory commands, including `status`, `search`, and
+`add`. Do not invoke `memorax-cli.ps1` or change PowerShell execution policy.
+
+The first two lines repair `PATH` only for the current PowerShell process. If
+setup reports that it could not update the persistent Windows user `PATH`, add
+the global prefix once:
+
+```powershell
+$NpmGlobalBin = (npm prefix -g).Trim()
+$UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
+$UserEntries = @($UserPath -split ";" | Where-Object { $_ })
+$NormalizedNpmGlobalBin = $NpmGlobalBin.TrimEnd("\")
+
+if (-not ($UserEntries | Where-Object {
+    $_.Trim().TrimEnd("\") -ieq $NormalizedNpmGlobalBin
+})) {
+    [Environment]::SetEnvironmentVariable(
+        "Path",
+        (($UserEntries + $NpmGlobalBin) -join ";"),
+        "User"
+    )
+}
+```
+
+Open a new terminal after setup or the fallback changes the persistent `PATH`.
+Fully exit and restart a coding agent if it was already running during
+installation or still cannot find `memorax-cli`. Reinstalling the package is
+not required.
 
 ## Setup does not complete
 
 Setup writes
 `$MEMORAX_CODE_HOME/runtime/setup/setup-completion.json` only after
 configuration, client and Hook reconciliation, Backend start, and final
-readiness checks succeed. Until then, running `memorax-code` with no command
-points back to `memorax-code setup`.
+readiness checks succeed. Manual setup does not wait for Codex Hook trust; it
+reports untrusted Codex Hooks as [degraded](#codex-plugin-or-hook-is-inactive)
+instead. A default `config.toml` alone is not proof of
+completion. Existing-account stdin mode also requires the saved API key to
+match its input. If setup has not completed, rerun the appropriate setup mode
+and resolve the reported failure; do not print the configuration to check a
+key. `API Key match: true` is a local check, not remote authentication. For
+older installations with a complete configuration, the
+no-argument command can perform a one-time migration; see
+[setup-completion behavior](configuration.md#setup-automatic-update-and-package-transition-state).
 
-If secure credential setup fails, confirm that the operating-system credential
-backend is available to the same logged-in user and that the MemoraX service is
-reachable. On Linux, confirm that `/usr/bin/secret-tool` is installed and the
+Setup reports failed stages without requiring Debug, with an error code, impact,
+recovery guidance, and diagnostic ID on stderr. If a Backend or client deployment
+command already created a diagnostic, setup prints that same ID and file path.
+Setup-owned failures use the same [local diagnostic storage](configuration.md#default-searchadd-diagnostics).
+Keep the error block when reporting a problem; if saving the diagnostic fails,
+the original failure remains visible.
+
+Configuration errors distinguish reading or parsing existing content, transforming
+or validating the candidate, directory and permission checks, temporary writes,
+backup, publication, verification, and cleanup. For example, `config.publish`
+with `EPERM` identifies the failed replacement step without guessing which
+process blocked it. The diagnostic's `configState` describes the observed result:
+
+| `configState` | Meaning |
+| --- | --- |
+| `preserved` | This operation did not replace the existing configuration. |
+| `restored` | The previous configuration was restored. |
+| `removed` | An unverified newly created configuration was removed. |
+| `unknown` | Recovery could not be confirmed; preserve any recovery backup before retrying. |
+
+`SETUP_COMPLETION_WRITE_FAILED` means the final completion record was not saved;
+the Backend and clients may already be enabled. Check `memorax-code status`,
+address the reported storage failure, and rerun setup. Neither local connection
+readiness nor `API Key match: true` tests a remote Search/Add request.
+
+Client plugin registration and activation failures identify the client and failed
+step even without verbose output. Follow the
+[client deployment guidance](#client-deployment-fails) before retrying setup.
+
+If lock release is blocked by filesystem permissions or a client's deletion
+protection, the command reports `failed to release JSON state lock` with the
+lock path and underlying error. Any preceding operation error is also retained;
+successful configuration alone does not mean lock cleanup succeeded. Resolve
+the reported permission or client protection prompt before retrying. Do not
+delete a lock while its owning process may still be running.
+
+On Windows, shared Hook runtime publication and Trae/OpenCode directory
+installation briefly retry transient filesystem errors. If shared runtime
+publication still fails, setup stops before changing the active runtime or
+client integrations. If an adapter operation still fails, setup identifies the client,
+installation step, and error. When the Backend has already recovered, setup
+leaves it running instead of adding another stop/start cycle; client setup
+remains incomplete. Check access to the reported directory and the failed step;
+if another application reports that it holds the files, release them before
+retrying `memorax-code setup`. A running Backend alone
+does not confirm that every selected client integration is ready.
+
+Known configuration, authority, or process startup errors stop reconciliation
+without a blind stop/start retry. For other startup failures, setup allows one
+recovery attempt; if its stop fails, setup reports that failure and does not
+start another Backend. Resolve the reported cause before retrying.
+
+Secure credential diagnostics distinguish lock/load, device identity, initial
+storage, provisioning request, and credential completion failures. Known system
+codes, credential-validation reasons, HTTP status, and retry delay help identify
+the failed stage without exposing keys or identity values. Confirm that the
+operating-system credential backend is available to the same logged-in user for
+storage failures; check the network or proxy for request failures. On Linux,
+confirm that `/usr/bin/secret-tool` is installed and the
 session can reach an unlocked Secret Service. Minimal containers and detached
 SSH sessions often do not provide one.
 
@@ -62,24 +235,115 @@ closed; preserve a diagnostic copy and confirm no setup command is active
 before moving an invalid record aside. An unsupported record version requires
 a compatible MemoraX Code release.
 
+## Client deployment fails
+
+A failed lifecycle result can contain a successful `backend` result alongside
+`clientFailures`. Each client entry has `client`, `failure`, and `diagnostic`,
+including its own diagnostic ID. This means the shared Backend may be running
+while that client's integration remains incomplete. Setup presents the same
+client diagnosis and reuses its record; check the affected client before retrying.
+
+The failed step distinguishes preparing a temporary Skill or runtime copy
+(`skill-stage`, `runtime-stage`), removing a previous Skill (`skill-remove`),
+publishing the prepared directory (`skill-publish`, `runtime-publish`), and
+writing Hook, plugin, helper, or installation state. Configuration read and parse
+failures are separate from writes. Use `systemCode` to check permissions, free
+space, and filesystem availability. `EPERM` alone does not identify an application
+holding the directory or prove that a file lock caused the failure.
+
+Native client commands retain only safe command outcomes in their diagnostic:
+
+| Evidence | Next step |
+| --- | --- |
+| `not_found`, usually `ENOENT` | Check that the client runtime is installed and can be located. |
+| `not_runnable`, such as `ENOEXEC`, `EACCES`, or `EPERM` | Check the executable format, permissions, and runtime availability. |
+| `timeout` or `commandSignal` | Check whether the command stalled or was interrupted before retrying. |
+| `commandExitCode` | Inspect the client's reported failure; a nonzero exit alone does not identify its cause. |
+| `verification_failed` or `not_ready` | The command's result did not establish a usable integration; check the native plugin or Profile state. |
+
+`cleanupErrorCode` and an available `cleanupSystemCode` describe a separate
+cleanup failure without replacing the original error. Preserve existing client
+files and recovery artifacts until their ownership and state are understood.
+Claude Code native plugin commands allow up to 30 seconds. A native command
+timeout identifies the process deadline, not whether networking or local
+initialization caused the delay.
+
+Raw client output can contain local paths or configuration; review it separately
+before sharing the content-free diagnostic.
+
 ## npm package transition fails
 
 Replacing a running managed installation uses
 `$MEMORAX_CODE_HOME/runtime/install/package-transition.json`. If preinstall
-cannot retire the old Backend, installation stops before package replacement.
+cannot retire the old Backend, npm reports failure and owns package-file rollback.
 If postinstall cannot start or verify the new Backend, the retired transition
-is retained for a bounded retry.
+is retained for recovery.
 
-Do not delete the record while the old Backend or another lifecycle command may
-still own state. After confirming process ownership, retry:
+Update failures report their stage, error code, impact, next step, and diagnostic
+ID without requiring Debug. Update-owned records use
+`source: "memorax-code-update"`; child Backend, client, and setup diagnostics keep
+their original IDs. These records share the
+[default storage and retention](configuration.md#default-searchadd-diagnostics).
+
+| Update stage | Meaning |
+| --- | --- |
+| `version_check` | The registry version check failed; this check did not install a replacement. Check registry access and any reported authentication or HTTP error. |
+| `install` | npm installation failed; package or Backend changes may already have occurred. |
+| `retire` | The old Backend could not be confirmed as retired before replacement. |
+| `restore` | The installed Backend could not be started for restoration. |
+| `verify` | The restored Backend did not pass the required status check. |
+| `consume` | Verification completed, but the transition record could not be consumed. Check status before retrying. |
+| `recovery_authority` | Recovery permission could not be validated or saved. `revision_changed` means a later lifecycle operation revoked the old attempt. |
+
+Lock acquisition/release and update or transition state reads/writes have their
+own stages. A separate failed recovery retains `recoveryErrorCode`,
+`recoveryStage`, and an available `recoverySystemCode`; the original error remains
+the primary diagnosis. Postinstall retries a recoverable start or status failure
+once, without repeating a successful start for a failed status check. After npm
+exits unsuccessfully, the update command can restore only its own retired
+transition using an installed package that supports guarded recovery.
+
+The diagnostic `recoveryStatus` distinguishes `restored`, `failed`,
+`not-attempted` (no matching retired transition), and `unsupported-package`.
+A restored Backend does not make a failed npm installation successful. The update
+still exits with failure and must be retried to complete installation and setup.
+An intervening user stop, restart or uninstall revokes the old update's recovery
+permission. A pre-existing transition requires inspection and explicit recovery;
+its age alone does not prove the original installer has exited.
+
+Original child diagnostics remain immutable. A recovery summary links the first
+cause through `causeDiagnosticId`, `causeErrorCode` and `causeStage`; a
+failed recovery can also link `recoveryDiagnosticId`. All records use the same
+`status` and `logs --diagnostics` history. Inspect a linked record with
+`memorax-code logs --id <diagnostic-id>`. Do not infer successful recovery solely
+from package installation or a preceding command's success.
+
+After the original npm command has exited and the reported startup or status
+problem is corrected, resume restoration of the installed package:
 
 ```sh
-memorax-code stop --clients none
-npm install -g @memorax/memorax-code
+memorax-code update --recover
+memorax-code setup
 ```
 
-Fresh and already-stopped installations do not create a transition and remain
-stopped.
+Pass the same `--home DIR` to both commands when using a custom state root.
+Recovery starts and verifies the installed Backend under the transition lock,
+then removes the record only after both operations succeed. It does not run
+npm or replace package files. The subsequent setup reconciles clients and
+verifies Hook changes. Repeating npm installation while a transition is pending
+can be rejected again, including when DSH state remains after a stop.
+
+Automatic postinstall recovery accepts a retired record for 15 minutes.
+Explicit `--recover` also accepts an older valid retired record, so time spent
+diagnosing the failure does not prevent recovery. A still-retiring, malformed,
+unsupported, or future-dated record is preserved and rejected. Inspect process
+ownership and the reported state before repairing such a record; an unsupported
+version requires a compatible MemoraX Code release. Do not delete a record while
+an installation or lifecycle command may still own it.
+
+Fresh and already-stopped installations without retained DSH state do not
+create a transition and remain stopped. Retained DSH state also triggers
+retirement and restoration, even without a live Backend PID.
 
 On Windows, a Backend started by MemoraX Code 0.1.6 or earlier from an npm
 lifecycle may keep the old global package directory as its working directory.
@@ -99,6 +363,56 @@ migration. `memorax-code start` alone does not commit that migration. Once a
 fixed release has started the Backend from its private runtime directory,
 later updates do not require this workaround.
 
+## Automatic update does not run or repeatedly retries
+
+Background checks start only after setup has written a valid
+`$MEMORAX_CODE_HOME/runtime/setup/setup-completion.json` record and the managed
+Backend is running. Confirm that `MEMORAX_CODE_AUTO_UPDATE` was not set to
+`false` when that Backend started. Client SessionStart events are not update
+triggers. See
+[automatic update settings](configuration.md#setup-automatic-update-and-package-transition-state)
+for the check and retry intervals.
+
+The installed version and next check deadline are recorded at:
+
+```text
+$MEMORAX_CODE_HOME/runtime/install/automatic-update.json
+```
+
+Do not edit that record while an update may be running. For an immediate
+foreground retry, run `memorax-code update` from an interactive terminal, then
+check `memorax-code status`.
+
+During Codex reconciliation, verified new or changed MemoraX Code Hooks are
+trusted silently. A changed marketplace identity, malformed Hook response, or
+Hook that changes again during the config write is not trusted; automatic
+reconciliation remains incomplete and retries later. After confirming the
+installed plugin source, use `memorax-code codex-plugin trust-hooks` for an
+explicit diagnostic review, then rerun `memorax-code setup` if needed. Direct
+npm installation replaces package files but does not perform this product
+reconciliation.
+
+## A newly installed coding agent is not activated
+
+Automatic activation runs only while the managed Backend is running, and it can
+take about 15 minutes to notice a new agent. Check these in order:
+
+1. Run `memorax-code status` and confirm that the Backend is running. After a
+   reboot, opening only the new agent does not start it; open an agent that is
+   already enabled, or run `memorax-code start`.
+2. Check `[clients]` in `$MEMORAX_CODE_HOME/config.toml`. A `false` is an opt-out
+   that discovery never overrides; delete the line or set it to `true`.
+3. Confirm that `MEMORAX_CODE_AUTO_UPDATE` was not set to `false` when the
+   Backend started.
+4. Run `memorax-code logs --diagnostics` for a failed activation. A failed
+   attempt is retried after eight hours.
+
+To activate the agent immediately, or if it is only on a shell `PATH` the
+Backend did not inherit, run `memorax-code setup` from a terminal. Restart the
+agent afterwards, because a session that was already open does not load the
+integration. Detection and retry rules are in
+[Clients installed after setup](configuration.md#clients-installed-after-setup).
+
 ## Installed, but memory is unavailable
 
 The package and Backend can be healthy while MemoraX remains unconfigured. Run:
@@ -112,7 +426,7 @@ Default setup creates or restores an account-free connection. For an existing
 account, run `memorax-code setup --existing-account`. A manually managed
 connection may instead configure `endpoint`, `user_id`, and `api_key`
 under `[memorax]`, or set their environment equivalents. The current default
-endpoint is `https://platform.memorax.net`.
+endpoint is `https://platform.memoraxai.com`.
 
 After changing persistent configuration:
 
@@ -121,10 +435,94 @@ memorax-code start
 memorax-cli status
 ```
 
-Automatic retrieval is disabled by default and is independent from explicit
-search. Automatic writeback requires `[memory.writeback] enabled = true` and
-must not be disabled by
-`MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED=false`.
+Search runs through the Skill or explicit `memorax-cli search`; Hooks do not
+issue Search requests. Automatic writeback requires `[memory.writeback] enabled = true`
+and must not be disabled by `MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED=false`.
+
+## Hook ran, but automatic writeback is missing
+
+`hook-runtime=observed` confirms that a managed Hook loaded. It does not prove
+that a completed turn reached MemoraX. First run `memorax-code logs --diagnostics`
+and use `memorax-code logs --id <diagnostic-id>` for a relevant entry. Known Hook
+and automatic-writeback failures are saved even when Debug and trace are off. Match the timestamp,
+client, operation, and failure stage; the record supplies a fixed error code,
+known reason or system/HTTP code, impact, and recovery guidance.
+
+- Hook runtime or Backend delivery failures mean the memory Hook could not
+  complete its work; a delivery timeout can leave Backend acceptance unknown.
+- Native-content, correlation, or workspace-scope failures mean the completed
+  QA was not accepted into automatic writeback.
+- A final Add failure describes the failed upload after its existing retry
+  policy finishes. Earlier chunks may already have been accepted; a timeout
+  does not prove the request was rejected by MemoraX.
+
+A Hook that starts the Backend reuses diagnostics already saved by the start
+command. If that command cannot start, times out, is terminated, or cannot return
+a usable saved diagnostic, the Hook records the known recovery failure itself.
+
+These failures do not insert messages into the conversation or change Hook exit
+behavior. Normal buffering, duplicates, disabled writeback, and interrupted or
+empty turns are not errors. No record is created by a Hook that never runs, and
+records can be absent if local storage is unavailable or retention has removed
+them. Share the relevant reviewed diagnostic; do not attach native history.
+
+If no diagnostic explains the symptom, check each stage in order:
+
+1. Run `memorax-cli status` from the same project and check automatic writeback,
+   credentials, and workspace scope. Compare the Backend and client's actual
+   environment with [writeback settings](configuration.md#writeback-and-explicit-add).
+   A status command in a different shell cannot inspect their inherited
+   overrides. Automatic writeback does not require a preceding Search.
+2. Confirm that the session has a completed turn with matching native content.
+   Codex and Claude diagnostics such as `turn_id_missing`, `prompt_id_missing`,
+   `transcript_unavailable`, `transcript_session_mismatch`, or `turn_not_found`
+   identify correlation or native-history failures. Restore the client's
+   access to its own history and retry in a new session; do not substitute a
+   Hook's message text or another client's transcript. For Trae, completion
+   instead requires its validated `UserPromptSubmit`/`Stop` pair. Cursor requires
+   matching native database content and a completed Hook;
+   see [Cursor writeback checks](#cursor-hooks-skill-or-automatic-writeback-is-unavailable).
+   For Codex, a provider-supplied assistant internal turn ID can differ from
+   the local rollout turn ID without blocking writeback. A remaining
+   `turn_metadata_mismatch` can indicate conflicting user-message metadata or
+   a mismatch between locally registered and completed client/session/turn
+   identities; those checks still reject writeback.
+3. Check whether the turn was rejected before buffering. In
+   `memory.automatic_writeback`, `skipReason=disabled` means the effective
+   settings rejected it; `workspace_scope_*` reasons require the scope checks
+   below. `user_prompt_empty` and `assistant_text_empty` can also mean that
+   redaction left no meaningful content. `duplicate_pending` and
+   `buffer_duplicate_turn` indicate duplicate handling, not a new send failure.
+4. Distinguish buffering from sending. `buffered=true` with `scheduled=false`
+   is expected: defaults flush at eight turns, ten minutes idle since the most
+   recent buffered turn, or the 128,000-character buffer boundary. A flush logs
+   `scheduled=true` and `flushReason` such as `turn_limit`, `idle_limit`, or
+   `char_limit`. A Hook's `scheduled=true` can mean the shared runtime accepted
+   the turn into this buffer; it is not a remote receipt.
+5. Inspect the subsequent `memory.automatic_writeback` dispatch result.
+   `accepted=false`, `httpStatus`, `errorKind`, and `retrying` distinguish
+   rejected requests and transport retries. `accepted=true` means MemoraX
+   accepted the request; it does not establish when extracted memory becomes
+   available to Search. Use the [connection and scope checks](#memorax-search-add-or-scope-fails)
+   for credential, network, and repository failures.
+
+If status and the saved failure records are insufficient, detailed per-event
+Debug logs can help distinguish normal buffering and skips. Temporarily enable
+Backend diagnostic logs and reproduce one completed turn. In Bash or Zsh:
+
+```sh
+MEMORAX_CODE_BACKEND_DEBUG_REQUESTS=true memorax-code restart
+memorax-code logs
+```
+
+In PowerShell, set `$env:MEMORAX_CODE_BACKEND_DEBUG_REQUESTS = "true"` before
+running `memorax-code restart` and `memorax-code logs`. The default log is
+`$MEMORAX_CODE_HOME/runtime/backend/backend.log`; `MEMORAX_CODE_BACKEND_LOG`
+can override it. Diagnostic event names differ by client before the shared
+writeback stage. Review logs locally because they can contain session IDs,
+paths, and error details. After collecting the needed evidence, set the debug
+variable to `false` and restart the Backend again. Share only a redacted excerpt,
+not raw logs or native history.
 
 ## Quota reminder and Mark ID
 
@@ -132,8 +530,9 @@ Memory write and memory search reminders are tracked independently. A reminder
 is emitted when the corresponding remaining quota reaches 10% or less and
 again at 0%; raw quota counts are not shown.
 
-Automatic quota reminders are currently supported in Codex, Claude Code, and
-OpenCode. DeepSeek Harness does not currently surface these reminders.
+Automatic quota reminders are currently supported in Codex, Claude Code,
+CodeBuddy/WorkBuddy, OpenCode, and Trae. DeepSeek Harness does not currently
+surface these reminders.
 
 A guest reminder displays the complete Mark ID when the ready local trial
 identity matches the active API key. Registered-account reminders do not
@@ -151,6 +550,40 @@ use `memorax-code setup`; a connection copied from another computer does not
 include that computer's device-local Mark ID.
 
 ## Backend does not start
+
+When `memorax-code start`, `stop`, or `restart` returns a failed Backend report,
+the command exits with status `1` and adds a default diagnostic on stderr while
+preserving its existing stdout summary. This diagnostic remains visible with
+`MEMORAX_CODE_BACKEND_SUPPRESS_GUIDANCE=1`. With `--json`, stdout preserves
+`action` and `backend` and adds `failure` and `diagnostic`.
+
+`failure` contains `errorCode`, `stage`, a safe `error` summary, `processState`,
+`impact`, and `userAction`, plus known `systemCode`, `cleanupErrorCode`, and
+`cleanupSystemCode` values when available. Optional `failureReason` and
+`httpStatus` preserve the last observed failure category and HTTP status;
+unknown state or deadline expiry alone does not establish a more specific cause.
+Optional `recordReason` preserves a known runtime-record validation reason,
+such as `malformed_json` or `unreadable`, without including the record's contents.
+Open the reported diagnostic path for the content-free record. If
+`diagnostic.recorded` is `false`, retain the
+output and inspect `diagnostic.recordingError`; storage failure does not replace
+the original Backend failure. These records share the
+[Search/Add diagnostic storage](configuration.md#default-searchadd-diagnostics).
+
+Backend startup allows up to 5 seconds by default for local health readiness and returns
+as soon as it is ready. `BACKEND_HEALTH_NOT_READY` means that wait expired;
+`BACKEND_EXITED_BEFORE_READY` means the child process exited first. The latter
+returns promptly instead of waiting for the full deadline. Both preserve the
+last health observation when available. Check Backend logs for the underlying
+startup error; a loopback `ECONNREFUSED` alone does not identify its cause.
+
+`processState` reports `not-started`, `stopped`, `running`, or `unknown`; it
+does not prove current process ownership. For unknown state or a separate
+cleanup failure, check status before retrying and preserve the process record
+while the process may still be running. `BACKEND_LIFECYCLE_LOCK_TIMEOUT` calls
+for waiting for the other lifecycle command to finish. A lock-acquisition
+filesystem failure instead calls for checking the state directory and its
+permissions, using the reported system code when available.
 
 ```sh
 memorax-code status
@@ -199,11 +632,19 @@ memorax-code start --clients codex
 memorax-code-codex doctor
 ```
 
-Codex requires review for new or changed Hook command hashes. A declined,
-non-interactive, or direct npm update can leave changed Hooks untrusted even
-though package replacement succeeded. Run `memorax-code setup` for foreground
-review; do not write trust entries directly. If the skill is missing, rerun
-`memorax-code start --clients codex`, then restart or refresh Codex.
+If manual setup or update ends with
+`Backend and selected adapters: Enabled (degraded)` and
+`Codex Hooks: Not authorized`, Codex Hook activation or incremental trust did
+not complete, but the rest of setup finished. Run
+`memorax-code codex-plugin trust-hooks` to review and authorize the current
+Hooks.
+
+MemoraX Code update reconciliation silently trusts only the exact new or changed
+Hook hashes returned by Codex after the marketplace identity is verified.
+Direct npm installation does not run that reconciliation and can leave changed
+Hooks untrusted. Use the commands above instead of writing trust entries
+directly. If the skill is missing, rerun `memorax-code start --clients codex`,
+then restart or refresh Codex.
 
 ## Claude Code plugin or Hook is inactive
 
@@ -215,6 +656,222 @@ memorax-code-claude doctor
 This reconciles the Claude Code marketplace plugin and Hooks. If the plugin is
 still missing or stale, restart or refresh Claude Code. Do not manually copy
 Hooks into Claude settings.
+
+## CodeBuddy or WorkBuddy Hook is inactive
+
+For CodeBuddy CLI:
+
+```bash
+memorax-code start --clients codebuddy
+memorax-code-codebuddy status --json
+```
+
+For WorkBuddy:
+
+```bash
+memorax-code start --clients workbuddy
+memorax-code status --clients workbuddy --json
+```
+
+To manage both, use `memorax-code start --clients codebuddy,workbuddy`. Explicit
+`start --clients` selects the full managed set; include any other integrations
+you want to retain. Each client has its own
+[configuration root and runtime](configuration.md#codebuddy-and-workbuddy-integration-paths).
+A leftover `.workbuddy` directory alone does not identify an installed app.
+On Windows, setup resolves the npm-installed `codebuddy.cmd` to CodeBuddy's
+Node entrypoint without invoking a command shell. If a discovered CodeBuddy
+CLI or WorkBuddy runtime cannot run, setup reports the preflight error and
+stops before changing client selection or starting integrations. Correct the
+runtime installation or configured command, then rerun setup. An integration
+that `[clients]` does not enable does not block setup for other clients.
+After upgrading an older installation, rerun setup and refresh the affected
+client to load its new Hooks.
+
+`codebuddyHooks.status` is the shared adapter's status field inside the
+`codebuddyAdapter` or `workbuddyAdapter` report. `unverified` means its files
+are configured but that installation has not yet produced a real Hook event.
+Start a new CLI session or restart WorkBuddy, submit one prompt, and check
+status again. `observed` means its Hook entrypoint and shared runtime loaded;
+`invalid` means setup should be rerun.
+
+If WorkBuddy still reports a Hook command containing `/c/Users/...`, it is
+loading a stale plugin manifest. Rerun the start command above and fully
+restart WorkBuddy. Do not manually edit the installed Hook command.
+
+If a Hook reports `legacy CodeBuddy Hook directory lock remains`, an older
+Hook uses a directory at
+`$MEMORAX_CODE_HOME/adapters/codebuddy/pending.json.lock`. New Hooks wait for
+that directory to be released and do not delete it based on its age. Restart
+CodeBuddy or WorkBuddy after upgrading to retire older Hook implementations.
+If the directory remains after all older Hook processes have exited, remove
+only that leftover directory and retry. Keep `pending.json` and any regular
+file lock; a regular file is the current lock format.
+
+## Cursor Hooks, Skill, or automatic writeback is unavailable
+
+```sh
+memorax-code start --clients cursor
+memorax-code-cursor status --json
+```
+
+`start --clients` selects the full managed client set; include any other
+integrations you want to retain. Cursor uses `CURSOR_HOME`, otherwise `~/.cursor`;
+`--cursor-home` overrides the root for a command. Setup manages only its marked
+`sessionStart`, `beforeSubmitPrompt`, `preCompact`, `afterAgentResponse`, and `stop` entries in
+`hooks.json`, plus `skills/memorax-code/`. It does not change Cursor's third-party
+integration setting or require a Claude Code installation.
+
+Restart or refresh Cursor, open a new conversation with either a single-root
+workspace or no folder selected, and send a prompt. A no-folder conversation is
+the projectless `General` scope and does not require a physical workspace root.
+`cursorHooks.status` changes from `unverified` to `observed` when a managed Hook
+runs. Seeing an inherited Claude Skill alone does not prove that the native
+Cursor integration is configured. For `hooks_invalid`, repair
+the existing JSON before rerunning start. For `skill_conflict`, preserve or move
+the unmanaged Skill deliberately before installing the managed one.
+
+Two `memorax-code` Skill entries can appear when Cursor also imports the Claude
+Code plugin. The native Cursor Hooks supply the current session's Repo Memory
+maintenance entrypoint, which takes precedence over either Skill's relative
+helper path. Refresh the integration and start a new conversation after updating
+so that this guidance is present. Disabling third-party imports is not required.
+If the supplied helper is unavailable, maintenance is skipped rather than handed
+to Claude Code; inspect the managed Cursor installation and its
+`~/.cursor/agents/memorax-repo-memory.md` definition.
+
+The conversation database uses Cursor's application-data directory, not
+`CURSOR_HOME`. Check the [native database paths](configuration.md#cursor-integration-paths)
+for your platform. If Cursor uses a custom `--user-data-dir`, set
+`MEMORAX_CODE_CURSOR_DATABASE_PATH` to its absolute
+`User/globalStorage/state.vscdb` path and restart the integration. Enabling the
+adapter saves this explicit path for later GUI-launched Hooks. A relative,
+empty, or malformed override is rejected with `database_path_invalid`; it does
+not select a different profile. `database_unavailable` means the selected file
+could not be opened or read. Keep Cursor's native database and WAL together;
+do not substitute an exported JSONL or another client's history.
+
+For `database_runtime_unavailable`, run the Backend with Node.js 22.13 or later
+and restart it. Cursor automatic Add and compaction restoration require built-in `node:sqlite`; the
+remaining integrations and explicit CLI commands keep their existing runtime
+requirements. A configured or observed Hook alone does not prove that this
+database capability is available.
+
+Use the Skill for CLI Search and manual Add. This integration uses
+`beforeSubmitPrompt` context for personal memory and reminders. Follow the
+session-start instructions to provide the explicit Cursor client/session
+environment for CLI commands; shell tools are not assumed to inherit Hook
+environment variables.
+
+If personal memory is missing after compaction, first confirm that the managed
+`preCompact` Hook is configured and the Backend can read the correct native
+database. This Hook only captures a baseline. Restoration requires later database
+evidence that new summary archives replaced the observed root context; a completed
+UI status or a `preCompact` event alone is insufficient. The next nonempty prompt
+must be registered successfully and have an authorized Git worktree. Empty
+Continue prompts do not trigger restoration, and there is no immediate-delivery
+guarantee within the same continuing task. Profile preferences and the personal
+reminder can be restored outside the regular cadence; Procedure Memory keeps its
+normal cadence. Missing baselines, unreadable databases, or incompatible history
+skip recovery rather than guessing from Hook text.
+
+Automatic Add requires native database content matching the observed generation,
+original user, and final-response digest, plus a completed Stop. Missing content
+is retried for up to 30 seconds, including after a Backend restart within that
+deadline. A missing initial transcript path no longer blocks automatic Add.
+While this retry is active, pending database reads do not create failure records.
+If the deadline expires, `memorax-code logs --diagnostics` shows one
+`CURSOR_NATIVE_CONTENT_TIMEOUT` record and the private pending Turn state is
+retained. If the exact native Turn is saved later, a matching completion Hook
+or the final exact read before the next prompt replaces it can still enqueue
+it. Restarting the Backend does not extend the deadline; the timeout record
+describes the expired retry window.
+
+`native_generation_pending`, `native_turn_pending`, and
+`native_final_response_pending` indicate that matching content is not yet visible.
+`continuation_user_unbound` means Continue lacks an observed terminal predecessor;
+`native_continuation_replaced` and `native_continuation_prefix_changed` indicate
+that the captured native binding changed. Non-retryable native database,
+correlation, and format failures are saved as content-free Cursor diagnostics;
+saved session diagnostic keys suppress repeated reports across Hooks and Backend
+restarts. Simulated, steer, external, or empty user messages and interrupted
+Turns remain normal skips. No rejected content is reconstructed from Hook text,
+UI bubbles, or JSONL.
+Start an ordinary prompt to establish fresh authority, or explicitly save a
+selected lesson through the Skill. See
+[Cursor configuration](configuration.md#cursor-integration-paths).
+
+## Qoder Hooks or Skill is inactive
+
+```bash
+memorax-code start --clients qoder
+memorax-code-qoder status --json
+```
+
+Use the same `QODER_CONFIG_DIR` as Qoder (default `~/.qoder`). Setup writes
+managed entries to `settings.json` and the shared Skill to
+`skills/memorax-code/`, plus the managed `agents/memorax-repo-memory.md` subagent.
+It does not require a Qoder CLI installation or plugin
+registry edits. Restart Qoder and begin a new task. The verified native target
+is Desktop 0.4.3/runtime 1.1.64; CLI and IDE behavior needs separate validation.
+
+A configured Hook with `hook-runtime=unverified` has not yet been observed for
+the installed runtime. Run a small task, then check status again. Qoder's
+Settings → Hooks view proves only that configuration is present. Preserve
+unrelated settings when repairing invalid JSON, and rerun setup for damaged
+managed artifacts rather than editing runtime paths or markers by hand.
+
+Automatic Add requires a completed QueryEnd and an exact matching native
+transcript branch. Missing, partial, conflicting, or interrupted turns do not
+fall back to the Hook's text. Search and manual Add remain available through
+the shared Skill. Native task notifications are excluded. A user prompt that
+matches the strict task-notification shape is deferred until completed native
+human content is verified; that turn has no immediate Jev guidance or reminder.
+
+Repo Memory jobs run through Qoder's native background Agent. If a job stays
+pending, confirm that the parent launched `memorax-repo-memory` with
+`run_in_background: true` and that the child is not waiting for tool approval.
+A launch or completion notification is not success: the helper must validate
+and finalize the bundle. Do not start a replacement while the original child
+is still editing, including after lease expiry. If the managed Agent is missing
+or modified, rerun setup after resolving the conflict; do not substitute a CLI.
+
+If diagnostics report `session_turn_history_full`, start a new Qoder task; the
+live session has reached its 4,096-request replay-protection limit.
+See [Qoder paths](configuration.md#qoder-integration-paths).
+
+## Trae Global Hooks or Skill is inactive
+
+```sh
+memorax-code start --clients trae
+memorax-code-trae status --json
+```
+
+Trae uses `TRAE_CN_HOME`, then `TRAE_HOME`, and otherwise defaults to
+`~/.trae-cn`. Setup merges the managed `SessionStart`, `UserPromptSubmit`, and
+`Stop` entries into `hooks.json` and installs the shared Skill without
+replacing unrelated Hooks. If status reports `globalHooksActivationRequired`
+or a Hook status of `unverified`, open Trae Settings, enable **Global Hooks**
+once, fully restart or refresh Trae, start a new session, and submit one
+prompt. A subsequent status should report `observed`.
+
+If status reports `hooks_invalid`, repair the existing Trae `hooks.json`
+syntax before rerunning the start command. If it reports `skill_conflict`, an
+unmanaged `skills/memorax-code` directory already exists; preserve or move that
+directory deliberately before asking MemoraX Code to manage the Skill. Do not
+copy generated runtime files or edit entries containing
+`--memorax-code-trae-hook-v1` by hand.
+
+Trae currently provides no stable raw Session or headless CLI. Automatic
+writeback therefore requires a matching `UserPromptSubmit` and `Stop` Hook
+pair, and automatic background Repo Memory jobs are not available. Explicit
+Search/Add and Skill-driven Repo Memory remain available. Cursor uses its native
+background subagent for Repo Memory initial build and maintenance; it does not
+require a separate CLI. Refresh Cursor after updating to load the managed agent.
+If a job remains pending, check that the parent actually launched the background
+Task and that the child is not waiting for a normal Cursor tool approval. A Task
+launch or completion message is not enough: the helper must finish snapshot and
+bundle validation. Do not launch a replacement while the original child is still
+editing, including after a lease expires.
 
 ## DeepSeek Harness Profile integration is inactive
 
@@ -236,10 +893,19 @@ means neither the selected DSH command nor an existing Profile-linked DSH
 runtime supplied a valid semantic version. A `dsh_profile_runtime_stale` result
 means that Profile-linked package is invalid or its original package cache is
 no longer available. Repair or relaunch DSH itself, then rerun the MemoraX Code
-start command. MemoraX Code never invokes `npx` or installs or updates DSH. The
-tested baseline is `0.1.0-rc.6`; another valid version is allowed but marked
-untested. A `pnpm_not_found` result means DSH's native Profile plugin manager
+start command. MemoraX Code never invokes `npx` or installs or updates DSH. A
+`pnpm_not_found` result means DSH's native Profile plugin manager
 could not find `pnpm` on `PATH`; install `pnpm`, then rerun the start command.
+
+For Desktop, open the application once to initialize its reserved `desktop`
+Profile, then fully quit it before changing plugins. A
+`dsh_desktop_command_unavailable` result means its bundled launcher could not be
+validated. Restore the Desktop installation or set
+`MEMORAX_CODE_DSH_DESKTOP_COMMAND` to its native launcher; an npm CLI cannot
+manage this Profile. CLI and Desktop commands may point to different versions.
+`dsh_desktop_version_changed` means the pinned Desktop installation changed:
+run `memorax-code start --clients dsh` to reconcile its new version. Status
+reports the Desktop version separately.
 
 After repairing the command, Profile manifest, or home selection, rerun the
 start command and restart or refresh DSH. `profile_drift`,
@@ -288,6 +954,7 @@ memorax-code-codex doctor
 memorax-code-claude doctor
 memorax-code status --clients dsh
 memorax-code-opencode doctor
+memorax-code-trae status --json
 /usr/sbin/scutil --proxy
 /bin/launchctl getenv NO_PROXY
 /bin/launchctl getenv no_proxy
@@ -299,6 +966,36 @@ environments. Redact proxy details before sharing diagnostics.
 
 ## MemoraX search, add, or scope fails
 
+Failed explicit `memorax-cli search` and `memorax-cli add` commands exit with
+status `1`. Normal output goes to stderr and includes an error code, failure
+stage, impact, next step, diagnostic ID, and saved file path. With `--json`,
+stdout preserves the structured result, including `errorCode`, `stage`,
+`impact`, `userAction`, and `diagnostic`; known `systemCode`, `httpStatus`, and
+`retryAfterMs` fields are included when available.
+
+Open the path reported by the command to inspect its content-free diagnostic;
+no Debug or trace setting needs to be enabled first. If storage fails,
+`diagnostic.recorded` is `false` and `diagnostic.recordingError` gives the
+storage reason. The original operation failure and diagnostic ID are still
+returned; retain the error output and check directory permissions or available
+disk space. [Storage and retention](configuration.md#default-searchadd-diagnostics)
+describe where these records live.
+
+| Error code | Recovery |
+| --- | --- |
+| `MEMORY_INPUT_INVALID`, `MEMORY_INPUT_UNREADABLE` | Check required flags and values, or the input file's existence and readability. |
+| `MEMORY_CONFIG_MISSING`, `MEMORY_ADD_DISABLED` | Check `memorax-cli status`, connection setup, and the explicit Add settings. |
+| `MEMORY_SCOPE_UNAVAILABLE`, `MEMORY_SCOPE_MISMATCH` | Verify repository metadata and start a new session in the intended workspace; see the scope rules below. |
+| `MEMORAX_HTTP_ERROR` | Check `httpStatus`: for `401`/`403`, check the endpoint, credentials, and permissions; see [legacy endpoint recovery](#http-401-after-setup-with-the-legacy-official-endpoint). `429` calls for checking limits and any retry delay. Other statuses require checking service availability. |
+| `MEMORAX_TIMEOUT`, `MEMORAX_TRANSPORT_ERROR` | Use the known system code, if present, to check DNS, endpoint reachability, proxy, or TLS configuration. |
+| `MEMORAX_INVALID_JSON`, `MEMORAX_INVALID_RESPONSE`, `MEMORAX_RESPONSE_REJECTED` | Check endpoint and service compatibility; share a reviewed diagnostic if the failure persists. |
+| `MEMORY_CLI_INTERNAL` | Share the reviewed diagnostic and the operation that failed. |
+
+An Add timeout, transport failure, or unusable response can leave service
+acceptance unknown. Verify whether the content was accepted before repeating
+the Add. An input, configuration, or scope failure reports that the request
+was not sent.
+
 ```sh
 memorax-cli status
 memorax-cli search --query 'test'
@@ -306,6 +1003,7 @@ memorax-code-codex doctor
 memorax-code-claude doctor
 memorax-code status --clients dsh
 memorax-code-opencode doctor
+memorax-code-trae status --json
 ```
 
 Common causes are:
@@ -318,11 +1016,13 @@ Common causes are:
 - local DNS, proxy, or network failure.
 
 MemoraX Code reads filesystem Git metadata without executing Git. Linked
-worktrees share the remote repository identity; non-Git workspaces use the
-normalized folder name. Resolution never falls back to the bare base user ID.
+worktrees share the remote repository identity; ordinary non-Git workspaces use
+the normalized folder name. Recognized default chat directories share
+`General`. Resolution never falls back to the bare base user ID.
 
-A live Codex, Claude Code, DSH, or OpenCode session remains pinned to the
-repository or local workspace resolved at the start of the session. Starting
+A live Codex, Claude Code, DSH, OpenCode, or Cursor session remains pinned to
+the repository or local workspace resolved at the start of the session. A
+Cursor no-folder session remains in its projectless `General` scope. Starting
 the client from a parent workspace and then entering a nested Git repository
 does not rebind the session. The only in-session scope upgrade is from a direct
 `.git` directory whose internal metadata was malformed or incomplete to a
@@ -348,17 +1048,79 @@ session from the target repository or local workspace and verify that its
 `.git` metadata is readable and valid. These failures stop Search or Add before
 any request is sent to MemoraX.
 
-Codex projectless tasks under its canonical dated-task location intentionally
-use the shared `Codex-General` memory name. Open a task in a real workspace
-when repository isolation matters.
+Recognized default chat directories or contexts in Codex, WorkBuddy, OpenCode, and Cursor
+intentionally share `General` under the same Base User ID. Cursor's no-folder
+conversation is the projectless form of this scope. Check the
+[directory rules](configuration.md#memory-scope) if the scope is unexpected;
+ordinary selected directories and verified Git repositories keep their normal
+scope. Existing memories under `Codex-General` or the previous default-folder
+names are not migrated or searched together with `General`.
+
+### HTTP 401 after setup with the legacy official endpoint
+
+On older releases, setup can complete successfully while Search or Add returns
+`MEMORAX_HTTP_ERROR` with HTTP `401`. `API Key match: true` verifies local
+persistence only. The legacy `https://platform.memorax.net` endpoint redirects
+to `https://platform.memoraxai.com`; following that cross-origin `301` can turn
+the POST into a GET and remove its Authorization header, producing a `401`
+even with a valid key.
+
+Update MemoraX Code with `memorax-code update`. The updated runtime uses the
+current official endpoint and automatically maps the legacy official HTTPS
+root URL from saved configuration or an environment override. Existing keys,
+user IDs, and other settings are retained; you do not need to rerun setup or
+rewrite the configuration. See [endpoint compatibility](configuration.md#memorax-connection).
+
+If you must keep an older release, change only `[memorax].endpoint` in the
+private configuration to `https://platform.memoraxai.com`, then run
+`memorax-code restart`. If `MEMORAX_CODE_MEMORAX_ENDPOINT` is set, update that
+override as well and restart the processes that inherited it. Keep the
+existing key and user ID.
+
+Verify remote access from the intended workspace with
+`memorax-cli search --query 'connection check'` (`memorax-cli.cmd` in Windows
+PowerShell). A successful search with zero results still verifies the request;
+it does not require adding a test memory. If `401` persists at the current
+endpoint, check the key's validity and permissions without sharing it.
 
 ## Model-provider requests fail while MemoraX Code is healthy
 
-MemoraX Code does not proxy Codex, Claude Code, DSH, or OpenCode model
-requests. If `memorax-code status` and the available client-specific doctor
-are healthy, inspect the provider URL, credentials, model selection, and
-network settings owned by that client. Do not copy model-provider credentials into
-`$MEMORAX_CODE_HOME`.
+MemoraX Code does not proxy client model requests. If `memorax-code status` and
+the available client-specific diagnostics are healthy, inspect the provider
+URL, credentials, model selection, and network settings owned by that client.
+Do not copy model-provider credentials into `$MEMORAX_CODE_HOME`.
+
+## A new worktree does not build Repo Memory
+
+Linked worktrees intentionally share one mainline Repo Memory baseline within
+one MemoraX home. They do not each build or receive a local copy. The read-only
+`repo-memory resolve --repo-path PATH` helper returns the shared bundle path.
+An existing local bundle is a fallback only when shared memory is absent.
+
+Automatic build and update require a locally resolvable `origin/HEAD` target.
+The helper does not discover or retrieve it from a server. Normal fetch/pull
+workflows supply updated mainline commits. The caller may remain on a feature
+branch with uncommitted changes; authoring uses a separate fixed snapshot.
+Feature-only commits do not advance the shared baseline. The configured policy
+requires new mainline commits, and failed attempts wait for the cooldown.
+
+Source links in memory refer to the reader's worktree. Verify relevant current
+files when branches differ; file counts, deletions, and manifest edits do not
+invalidate the whole map. A large refactor can make individual mapped areas
+unreliable. Mainline history replacement defers automatic maintenance for explicit
+recovery while supported parts of the old map remain useful historical guidance.
+
+Shared state is under `$MEMORAX_CODE_HOME/repo-memory-bases/<repository-key>/`.
+`baseline.json` identifies the current published commit and immutable version.
+Failed candidates do not advance that record. Existing local bundles and personal
+memory are not removed. If the shared artifact is corrupt, stop that repository's
+jobs, back up and remove only its matching shared directory, then let an eligible
+maintenance call build again from the locally identified mainline. Do not remove
+other repository state or publish private files in an issue. There is no automatic
+version pruning; readers may still hold an older immutable version.
+
+See [repository maintenance configuration](configuration.md#skill-reminder-and-repository-maintenance)
+for trigger timing, storage, and policy settings.
 
 ## Safe issue reports
 
@@ -367,12 +1129,15 @@ Collect structured, redacted output:
 ```sh
 memorax-code status --json
 memorax-cli status --json
-memorax-code-codex doctor --json
-memorax-code-claude doctor --json
-memorax-code status --clients dsh --json
-memorax-code-opencode doctor --json
 ```
 
+For a client-specific failure, also collect the affected client's diagnostic
+from the start of this guide with `--json`.
+For a Search/Add, Backend lifecycle, client deployment, setup, update, Hook, or
+automatic-writeback failure, include its diagnostic ID and the reviewed
+output from `memorax-code logs --id <diagnostic-id>`, if saved. Structured command
+output may contain query, workspace, process, or raw Backend error fields that
+are excluded from the diagnostic record; review it separately before sharing.
 Include the MemoraX Code version, operating system, affected client,
 reproduction steps, failing command, and the smallest relevant log excerpt.
 

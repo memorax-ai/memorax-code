@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { atomicWriteJson, readJsonFile, stringOption } from "../config-utils.mjs";
 import {
@@ -11,6 +11,8 @@ import {
   readRepoMemoryJobWorkerContext,
   repoMemoryJobWorkerEnv,
 } from "./repo-memory-job-context.mjs";
+import { gitHead, profileLocalHead, resolveCommit } from "./repo-memory-job-artifacts.mjs";
+import { publishSharedRepoMemorySnapshot, sharedSnapshotRoot } from "./repo-memory-shared-bundle.mjs";
 import { resolveWindowsCliInvocation } from "../windows-cli-invocation.mjs";
 
 let activeChild;
@@ -21,7 +23,7 @@ let requestedSignal;
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {
     requestedSignal = signal;
-    activeChild?.kill(signal);
+    if (activeChild) terminateClient(activeChild, signal);
   });
 }
 
@@ -56,23 +58,28 @@ async function main(args) {
     runId: workerContext.runId,
   });
   if (initial.status !== "started") throw new Error(`repo memory job cannot start from status ${initial.status}`);
+  const clientTimeoutMs = repoMemoryClientTimeoutMs();
+  const clientKillGraceMs = repoMemoryClientKillGraceMs();
   let state = writeJobState(request.jobPath, {
     ...initial,
     status: "running",
     pid: process.pid,
     workerPid: process.pid,
     workerStartedAt: new Date().toISOString(),
+    clientTimeoutMs,
+    clientKillGraceMs,
   });
 
   if (requestedSignal) {
     return finishFailed(request, state, workerContext, "worker_interrupted", { signal: requestedSignal });
   }
 
+  const sourceRepo = state.sharedSnapshot ? sharedSnapshotRoot(request.jobPath) : repo;
   const runner = runnerName(state.runner);
   const command = normalizedCommand(state.command);
   const childResult = await runClient(command, {
     captureStdout: finalMessageSource(state.finalMessageSource) === "stdout",
-    cwd: repo,
+    cwd: sourceRepo,
     env: {
       ...repoMemoryJobWorkerEnv(workerContext),
       MEMORAX_CODE_REPO_MEMORY_SNAPSHOT_HEAD: state.snapshotHead,
@@ -85,9 +92,18 @@ async function main(args) {
       });
     },
     finalMessagePath: state.finalMessagePath,
+    timeoutMs: clientTimeoutMs,
+    killGraceMs: clientKillGraceMs,
   });
   state = readJobState(request.jobPath);
 
+  if (childResult.timedOut) {
+    return finishFailed(request, state, workerContext, `${runner}_timeout`, {
+      timeoutMs: childResult.timeoutMs,
+      elapsedMs: childResult.elapsedMs,
+      signal: childResult.signal,
+    });
+  }
   if (childResult.error) {
     return finishFailed(request, state, workerContext, `${runner}_spawn_failed`, {
       error: childResult.error.message,
@@ -106,7 +122,7 @@ async function main(args) {
     });
   }
 
-  const currentHead = gitHead(repo);
+  const currentHead = gitHead(sourceRepo);
   if (currentHead !== state.snapshotHead) {
     return finishFailed(request, state, workerContext, "snapshot_changed", {
       exitCode: childResult.code,
@@ -115,7 +131,8 @@ async function main(args) {
     });
   }
 
-  const validation = validateBundle(repo, request.validatorPath);
+  const memoryRoot = sourceRepo;
+  const validation = validateBundle(memoryRoot, request.validatorPath);
   if (!validation.ok) {
     return finishFailed(request, state, workerContext, "artifact_validation_failed", {
       exitCode: childResult.code,
@@ -124,7 +141,7 @@ async function main(args) {
     });
   }
 
-  const profileHead = profileLocalHead(join(repo, ".repo_memory", "PROFILE.md"));
+  const profileHead = profileLocalHead(join(memoryRoot, ".repo_memory", "PROFILE.md"));
   const resolvedProfileHead = profileHead ? resolveCommit(repo, profileHead) : undefined;
   if (!resolvedProfileHead || resolvedProfileHead !== state.snapshotHead) {
     return finishFailed(request, state, workerContext, "profile_head_mismatch", {
@@ -213,6 +230,11 @@ async function waitForOwnedMarker(input) {
 function runClient(command, options) {
   return new Promise((resolveResult) => {
     let settled = false;
+    let timeoutHandle;
+    let killHandle;
+    let timedOut = false;
+    let timeoutMs;
+    const startedAt = Date.now();
     let invocation;
     try {
       invocation = process.platform === "win32" && /\.[cm]?js$/i.test(command[0])
@@ -228,6 +250,7 @@ function runClient(command, options) {
     const child = spawn(invocation.command, invocation.args, {
       cwd: options.cwd,
       env: options.env,
+      detached: process.platform !== "win32",
       stdio: options.captureStdout ? ["ignore", "pipe", "inherit"] : "inherit",
     });
     activeChild = child;
@@ -243,8 +266,10 @@ function runClient(command, options) {
     const finish = (result) => {
       if (settled) return;
       settled = true;
+      if (timeoutHandle) clearTimeout(timeoutHandle);
+      if (killHandle) clearTimeout(killHandle);
       activeChild = undefined;
-      resolveResult(result);
+      resolveResult({ ...result, timedOut, timeoutMs, elapsedMs: Date.now() - startedAt });
     };
     child.once("error", (error) => finish({ code: undefined, signal: undefined, error }));
     child.once("close", (code, signal) => {
@@ -258,14 +283,77 @@ function runClient(command, options) {
       }
       finish({ code, signal, error: undefined });
     });
-    if (requestedSignal) child.kill(requestedSignal);
+    if (Number.isFinite(options.timeoutMs) && options.timeoutMs > 0) {
+      timeoutHandle = setTimeout(() => {
+        timeoutMs = options.timeoutMs;
+        timedOut = true;
+        const terminated = terminateClient(child, "SIGTERM");
+        // A broken or ignored CLI must not leave a detached job behind forever.
+        // The grace period is deliberately short and targets this job's process tree.
+        killHandle = setTimeout(() => {
+          if (!settled) terminateClient(child, "SIGKILL");
+        }, options.killGraceMs);
+        if (!terminated && !settled) {
+          finish({
+            code: undefined,
+            signal: "SIGTERM",
+            error: undefined,
+            timedOut: true,
+            timeoutMs,
+          });
+        }
+      }, options.timeoutMs);
+    }
+    if (requestedSignal) terminateClient(child, requestedSignal);
   });
 }
 
+function terminateClient(child, signal) {
+  if (!child || !Number.isInteger(child.pid) || child.pid <= 0) return false;
+  if (process.platform !== "win32") {
+    try {
+      process.kill(-child.pid, signal);
+      return true;
+    } catch {
+      // The process group may have exited between the timeout and this call.
+    }
+  }
+  if (process.platform === "win32") {
+    try {
+      const result = spawnSync("taskkill", ["/PID", String(child.pid), "/T", "/F"], {
+        encoding: "utf8",
+        windowsHide: true,
+        stdio: ["ignore", "ignore", "ignore"],
+      });
+      if (result.status === 0) return true;
+    } catch {
+      // Fall through to the direct child termination below.
+    }
+  }
+  try {
+    return child.kill(signal);
+  } catch {
+    return false;
+  }
+}
+
+function repoMemoryClientTimeoutMs(env = process.env) {
+  return positiveEnvInteger(env.MEMORAX_CODE_REPO_MEMORY_JOB_TIMEOUT_MS, 10 * 60 * 1000);
+}
+
+function repoMemoryClientKillGraceMs(env = process.env) {
+  return positiveEnvInteger(env.MEMORAX_CODE_REPO_MEMORY_JOB_KILL_GRACE_MS, 5000);
+}
+
+function positiveEnvInteger(value, fallback) {
+  if (typeof value !== "string" || !/^\d+$/.test(value.trim())) return fallback;
+  const parsed = Number(value.trim());
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
 function validateBundle(repo, validator) {
-  const python = process.env.MEMORAX_CODE_REPO_MEMORY_PYTHON_COMMAND || "python3";
   process.stdout.write("\n[repo-memory-worker] validating generated repo memory\n");
-  const result = spawnSync(python, [validator, repo, "--pretty"], {
+  const result = spawnSync(process.execPath, [validator, "validate", repo, "--pretty"], {
     cwd: repo,
     encoding: "utf8",
     env: process.env,
@@ -281,11 +369,21 @@ function validateBundle(repo, validator) {
 
 function finishSucceeded(request, state, workerContext, details) {
   try {
+    const ownership = readActiveRepoMemoryJobMarker({ memoraxCodeHome: request.memoraxCodeHome, repoRealpath: state.repo });
+    if (!ownership.active || ownership.marker.jobId !== state.jobId || ownership.marker.runId !== state.runId) {
+      return finishFailed(request, state, workerContext, "job_ownership_lost");
+    }
+    const sharedBaselinePublished = state.sharedSnapshot ? publishSharedRepoMemorySnapshot({
+      home: request.memoraxCodeHome, repo: state.repo, snapshot: state.sharedSnapshot,
+      root: sharedSnapshotRoot(request.jobPath), validate: (path) => validateBundle(path, request.validatorPath).ok,
+    }) : false;
+    if (state.sharedSnapshot && !sharedBaselinePublished) return finishFailed(request, state, workerContext, "shared_publication_rejected");
     writeJobState(request.jobPath, {
       ...state,
       status: "succeeded",
       finishedAt: new Date().toISOString(),
       exitCode: details.exitCode,
+      sharedBaselinePublished,
       validation: {
         ok: true,
         exitCode: details.validationExitCode,
@@ -316,6 +414,7 @@ function finishFailed(request, state, workerContext, failureReason, details = {}
 }
 
 function removeOwnedMarker(request, state, workerContext) {
+  if (state.sharedSnapshot) rmSync(sharedSnapshotRoot(request.jobPath), { recursive: true, force: true });
   removeRepoMemoryJobMarkerIfOwned({
     memoraxCodeHome: request.memoraxCodeHome,
     repoRealpath: state.repo,
@@ -370,32 +469,6 @@ function nonEmptyFile(path) {
   } catch {
     return false;
   }
-}
-
-function profileLocalHead(path) {
-  try {
-    const text = readFileSync(path, "utf8").replace(/^\uFEFF/, "");
-    const match = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n/);
-    if (!match) return undefined;
-    const line = match[1].split(/\r?\n/).find((entry) => /^local_head\s*:/.test(entry.trim()));
-    return stringOption(line?.replace(/^\s*local_head\s*:\s*/, "").trim().replace(/^['"]|['"]$/g, ""));
-  } catch {
-    return undefined;
-  }
-}
-
-function resolveCommit(repo, ref) {
-  const result = spawnSync("git", ["rev-parse", "--verify", `${ref}^{commit}`], {
-    cwd: repo,
-    encoding: "utf8",
-  });
-  return result.status === 0 ? result.stdout.trim() : undefined;
-}
-
-function gitHead(repo) {
-  const head = resolveCommit(repo, "HEAD");
-  if (!head) throw new Error(`git could not resolve HEAD in ${repo}`);
-  return head;
 }
 
 function definedEntries(value) {

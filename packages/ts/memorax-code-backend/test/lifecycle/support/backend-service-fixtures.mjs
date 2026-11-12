@@ -2,9 +2,10 @@ import { spawn } from "node:child_process";
 import { access, chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isProcessAlive } from "../../../dist/lifecycle/backend/service.js";
+import { managedServiceCommandLine, probeProcessCommandLine } from "../../../dist/lifecycle/backend/process.js";
 import { buildClaudeMarketplace } from "../../../../memorax-code-claude-adapter/scripts/build-marketplace.mjs";
 import { listen } from "../../support/helpers.mjs";
 export async function prepareActiveCodexPlugin(codexHome, skillNames = ["memorax-code"]) {
@@ -32,7 +33,16 @@ export async function prepareClaudePluginCli(home) {
     outputDir: join(home, "fake-installed-claude-marketplace"),
   });
   const pluginInstallPath = installedMarketplace.pluginRoot;
-  const claudeCommand = join(home, "fake-claude.mjs");
+  const cliScript = process.platform === "win32"
+    ? join(home, "node_modules", "@anthropic-ai", "claude-code", "cli.js")
+    : join(home, "fake-claude.mjs");
+  const claudeCommand = process.platform === "win32" ? join(home, "claude.cmd") : cliScript;
+  await mkdir(dirname(cliScript), { recursive: true });
+  if (process.platform === "win32") {
+    // Exercise the launcher's trusted npm layout instead of bypassing it with an arbitrary script.
+    await writeFile(join(dirname(cliScript), "package.json"), '{"type":"module"}\n');
+    await writeFile(claudeCommand, '@echo off\r\nnode "%~dp0node_modules\\@anthropic-ai\\claude-code\\cli.js" %*\r\n');
+  }
   const callsPath = join(home, "claude-plugin-calls.jsonl");
   await mkdir(join(marketplacePath, ".claude-plugin"), { recursive: true });
   await writeFile(join(marketplacePath, ".claude-plugin", "marketplace.json"), "{}\n");
@@ -41,7 +51,7 @@ export async function prepareClaudePluginCli(home) {
     join(home, "lib", "memorax-code-claude-adapter", "skills", "memorax-code", "SKILL.md"),
     "---\nname: memorax-code\n---\n",
   );
-  await writeFile(claudeCommand, [
+  await writeFile(cliScript, [
     "#!/usr/bin/env node",
     "import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';",
     "import { join } from 'node:path';",
@@ -55,7 +65,7 @@ export async function prepareClaudePluginCli(home) {
     `if (args.join(' ') === 'plugin list --json') console.log(JSON.stringify([{ id: 'memorax-code-claude-adapter@memorax-code-local', enabled: true, version: ${JSON.stringify(pluginVersion)}, installPath: ${JSON.stringify(pluginInstallPath)} }]));`,
     "",
   ].join("\n"));
-  await chmod(claudeCommand, 0o755);
+  await chmod(cliScript, 0o755);
   return { callsPath, claudeCommand, marketplacePath, pluginInstallPath };
 }
 
@@ -164,6 +174,7 @@ export function restoreEnv(name, value) {
 export function runCli(cliPath, args, options = {}) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [cliPath, ...args], {
+      cwd: options.cwd,
       env: { ...process.env, ...(options.env ?? {}) },
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -179,7 +190,37 @@ export function runCli(cliPath, args, options = {}) {
 
 export async function waitForProcessExit(pid, timeoutMs = 3000) {
   const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline && isProcessAlive(pid)) {
-    await new Promise((resolve) => setTimeout(resolve, 25));
+  while (isProcessAlive(pid)) {
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) throw new Error(`fixture process ${pid} did not exit within ${timeoutMs}ms`);
+    await new Promise((resolve) => setTimeout(resolve, Math.min(25, remainingMs)));
   }
+}
+
+export async function terminateFixtureBackends(states, timeoutMs = 1000) {
+  const results = await Promise.allSettled(Array.from(states, async ({ pid, instanceId }) => {
+    if (!isProcessAlive(pid)) return;
+    const signalFixture = (signal) => {
+      const probe = probeProcessCommandLine(pid);
+      if (!isProcessAlive(pid)) return;
+      if (probe.status !== "ok" || !managedServiceCommandLine(probe.commandLine, instanceId)) {
+        throw new Error(`refusing to signal fixture PID ${pid}: Backend instance ${instanceId} no longer matches`);
+      }
+      try {
+        process.kill(pid, signal);
+      } catch (error) {
+        if (error?.code !== "ESRCH") throw error;
+      }
+    };
+    signalFixture("SIGTERM");
+    try {
+      await waitForProcessExit(pid, timeoutMs);
+    } catch (error) {
+      signalFixture("SIGKILL");
+      await waitForProcessExit(pid, timeoutMs);
+      throw error;
+    }
+  }));
+  const failures = results.filter((result) => result.status === "rejected").map((result) => result.reason);
+  if (failures.length > 0) throw new AggregateError(failures, "failed to stop fixture Backend processes");
 }

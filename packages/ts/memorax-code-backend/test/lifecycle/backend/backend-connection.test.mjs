@@ -18,7 +18,6 @@ import {
   ensurePrivateDirectory,
   writePrivateJsonRecord,
 } from "../../../../memorax-code-adapter-common/src/runtime-record.mjs";
-import { isAdapterReady } from "../../../dist/lifecycle/orchestrator.js";
 import { runBackendTokenCommand } from "../../../dist/entrypoints/backend-cli.js";
 import {
   backendServiceEndpoint,
@@ -370,6 +369,14 @@ test("token record distinguishes valid invalid and unsupported state", async () 
         && error?.recordStatus === "invalid",
     );
 
+    const refused = await startBackendService({ home, timeoutMs: 50 }, {
+      spawnProcess: () => assert.fail("invalid token authority must fail before spawning"),
+    });
+    assert.equal(refused.ok, false);
+    assert.equal(refused.errorCode, "BACKEND_TOKEN_RECORD_INVALID");
+    assert.equal(refused.stage, "resolve_token");
+    assert.equal(refused.recordReason, "malformed_json");
+
     await rm(tokenPath, { force: true });
     assert.throws(
       () => resolveBackendConnection({ memoraxCodeHome: home, env: {} }),
@@ -651,15 +658,4 @@ test("failed service start preserves the last successful connection and token", 
     await new Promise((resolve) => occupied.close(resolve));
     await rm(home, { recursive: true, force: true });
   }
-});
-
-test("adapter readiness fails closed when its endpoint differs from the Backend authority", () => {
-  assert.equal(isAdapterReady({
-    ok: true,
-    installed: true,
-    enabled: true,
-    integration: "hooks",
-    backendUrlMatches: false,
-    codexSkills: { ok: true, status: "plugin-managed" },
-  }), false);
 });

@@ -52,6 +52,8 @@ export function startBackendInstallWatchdog(
   const check = (): void => {
     if (triggered) return;
     const missingPaths = missingInstallPaths(config);
+    // Package replacement may briefly hide files; only continuous absence
+    // through the grace period should trigger removal cleanup.
     if (missingPaths.length === 0) {
       missingSince = undefined;
       return;
@@ -59,6 +61,7 @@ export function startBackendInstallWatchdog(
     const now = Date.now();
     missingSince ??= now;
     if (now - missingSince < config.graceMs) return;
+    // Latch before invoking asynchronous cleanup so it runs at most once.
     triggered = true;
     clearInterval(timer);
     void onShutdown({ reason: "install_missing", missingPaths });

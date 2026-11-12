@@ -2,6 +2,7 @@
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readClientHookPluginRoot } from "../../memorax-code-adapter-common/src/config-utils.mjs";
 import {
   runEnsureBackendHook,
   stringValue,
@@ -11,6 +12,7 @@ const DEBUG = process.env.MEMORAX_CODE_CODEX_HOOK_DEBUG === "1";
 
 try {
   await runEnsureBackendHook({
+    client: "codex",
     ensureBackendValue: process.env.MEMORAX_CODE_CODEX_ENSURE_BACKEND
       ?? process.env.MEMORAX_CODE_CODEX_HOOK_ENSURE_BACKEND,
     healthTimeoutValue: process.env.MEMORAX_CODE_CODEX_ENSURE_TIMEOUT_MS,
@@ -56,7 +58,9 @@ async function reconcileAdapter(homes, backendUrl) {
 }
 
 function pluginRoot() {
-  return stringValue(process.env.PLUGIN_ROOT) ?? dirname(dirname(fileURLToPath(import.meta.url)));
+  return stringValue(process.env.PLUGIN_ROOT)
+    ?? readClientHookPluginRoot()
+    ?? dirname(dirname(fileURLToPath(import.meta.url)));
 }
 
 function hookHomes(input = {}) {

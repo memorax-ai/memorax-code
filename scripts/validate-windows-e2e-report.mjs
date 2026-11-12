@@ -93,7 +93,7 @@ const schemas = {
     "restartHealthy",
     "adapterReady",
     "sessionStartHookExecuted",
-    "userPromptRetrievalHookExecuted",
+    "userPromptTurnStartHookExecuted",
     "userPromptReminderHookExecuted",
     "writebackHookExecuted",
     "hookAuthForwarded",

@@ -1,19 +1,20 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { EventEmitter } from "node:events";
+import { mkdtemp, readFile, realpath, rm, stat } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { runBackendStatus } from "../../../dist/lifecycle/backend/status.js";
-import { backendServiceLogs, isProcessAlive, readBackendToken, startBackendService, stopBackendService, terminateProcessTree, writeBackendToken } from "../../../dist/lifecycle/backend/service.js";
+import { backendServiceLogs, isProcessAlive, readBackendToken, startBackendService, stopBackendService, writeBackendToken } from "../../../dist/lifecycle/backend/service.js";
 import { freePort, listen } from "../../support/helpers.mjs";
 
 import {
   pathExists,
   restoreEnv,
   runCli,
-  waitForProcessExit,
+  terminateFixtureBackends,
 } from "../support/backend-service-fixtures.mjs";
 
 test("Backend service manager can start, report logs, and stop a local Backend", async () => {
@@ -45,7 +46,7 @@ test("memorax-code lifecycle serializes concurrent starts without losing PID aut
   const runtimeDir = join(home, "runtime", "backend");
   const pidPath = join(runtimeDir, "backend.pid.json");
   const cliPath = fileURLToPath(new URL("../../../dist/memorax-code.js", import.meta.url));
-  const observedPids = new Set();
+  const observedBackends = new Map();
   try {
     const args = [
       "start",
@@ -62,11 +63,11 @@ test("memorax-code lifecycle serializes concurrent starts without losing PID aut
       assert.equal(started.code, 0, `${started.stdout}\n${started.stderr}`);
       const report = JSON.parse(started.stdout);
       if (Number.isSafeInteger(report.backend?.state?.pid)) {
-        observedPids.add(report.backend.state.pid);
+        observedBackends.set(report.backend.state.pid, report.backend.state);
       }
     }
     const state = JSON.parse(await readFile(pidPath, "utf8"));
-    observedPids.add(state.pid);
+    observedBackends.set(state.pid, state);
     assert.equal(state.version, 1);
     assert.equal(typeof state.instanceId, "string");
     const health = await fetch(`http://127.0.0.1:${port}/health`).then((response) => response.json());
@@ -84,12 +85,43 @@ test("memorax-code lifecycle serializes concurrent starts without losing PID aut
     assert.equal(isProcessAlive(state.pid), false);
   } finally {
     await runCli(cliPath, ["stop", "--json", "--home", home, "--clients", "none"]);
-    for (const pid of observedPids) {
-      if (!isProcessAlive(pid)) continue;
-      terminateProcessTree(pid);
-      await waitForProcessExit(pid);
+    try {
+      await terminateFixtureBackends(observedBackends.values());
+    } finally {
+      await rm(home, { recursive: true, force: true });
     }
-    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("lifecycle resolves relative homes before spawning the Backend", async (t) => {
+  const cliPath = fileURLToPath(new URL("../../../dist/memorax-code.js", import.meta.url));
+  for (const source of ["argument", "environment"]) {
+    await t.test(source, async () => {
+      const root = await realpath(await mkdtemp(join(tmpdir(), "memorax-code-relative-home-")));
+      const home = join(root, "state");
+      const port = await freePort();
+      const options = {
+        cwd: root,
+        ...(source === "environment" ? { env: { MEMORAX_CODE_HOME: "./state" } } : {}),
+      };
+      const homeArgs = source === "argument" ? ["--home", "./state"] : [];
+      try {
+        const started = await runCli(cliPath, [
+          "start", "--json", "--clients", "none", "--port", String(port), ...homeArgs,
+        ], options);
+        assert.equal(started.code, 0, `${started.stdout}\n${started.stderr}`);
+        const status = await runBackendStatus(`http://127.0.0.1:${port}`);
+        assert.equal(status.ok, true);
+        assert.equal(status.state.sessionHome, home);
+        assert.equal(await pathExists(join(home, "config.toml")), true);
+      } finally {
+        const stopped = await runCli(cliPath, [
+          "stop", "--json", "--clients", "none", ...homeArgs,
+        ], options);
+        assert.equal(stopped.code, 0, `${stopped.stdout}\n${stopped.stderr}`);
+        await rm(root, { recursive: true, force: true });
+      }
+    });
   }
 });
 
@@ -143,7 +175,7 @@ test("Backend service rejects a healthy MemoraX Code Backend for another session
   }
 });
 
-test("Backend health probes bound response consumption to the total timeout budget", async () => {
+test("Backend status bounds response consumption to its timeout budget", async () => {
   const home = await mkdtemp(join(tmpdir(), "memorax-code-service-health-timeout-home-"));
   const timers = new Set();
   const slowBackend = createServer((_, response) => {
@@ -171,23 +203,51 @@ test("Backend health probes bound response consumption to the total timeout budg
     const status = await runBackendStatus(url, undefined, 100);
     const statusElapsedMs = Date.now() - statusStartedAt;
 
-    const startStartedAt = Date.now();
-    const started = await startBackendService({
-      home,
-      port: Number(new URL(url).port),
-      timeoutMs: 100,
-    });
-    const startElapsedMs = Date.now() - startStartedAt;
-
     assert.equal(status.ok, false);
     assert.ok(statusElapsedMs < 500, `status probe exceeded budget: ${statusElapsedMs}ms`);
-    assert.equal(started.ok, false);
-    assert.ok(startElapsedMs < 500, `service health check exceeded budget: ${startElapsedMs}ms`);
-    assert.equal(await pathExists(join(home, "runtime", "backend", "backend.pid.json")), false);
   } finally {
     for (const timer of timers) clearTimeout(timer);
     slowBackend.closeAllConnections?.();
     await new Promise((resolve) => slowBackend.close(resolve));
+    await rm(home, { recursive: true, force: true });
+  }
+});
+
+test("Backend startup aborts a pending health body and clears its process state", { timeout: 5000 }, async () => {
+  const home = await mkdtemp(join(tmpdir(), "memorax-code-service-health-body-home-"));
+  let alive = true;
+  let bodyAborted = false;
+  let terminated = false;
+  try {
+    const started = await startBackendService({ home, timeoutMs: 100 }, {
+      spawnProcess: () => {
+        const child = new EventEmitter();
+        child.pid = 4242;
+        child.unref = () => undefined;
+        process.nextTick(() => child.emit("spawn"));
+        return child;
+      },
+      isProcessAlive: () => alive,
+      terminateProcessTree: () => { terminated = true; alive = false; return true; },
+      fetch: async (_url, { signal }) => ({
+        ok: true,
+        status: 200,
+        json: () => new Promise((_, reject) => {
+          signal.addEventListener("abort", () => {
+            bodyAborted = true;
+            reject(signal.reason);
+          }, { once: true });
+        }),
+      }),
+    });
+    assert.equal(bodyAborted, true);
+    assert.equal(started.ok, false);
+    assert.equal(started.failureReason, "timeout");
+    assert.equal(started.httpStatus, 200);
+    assert.equal(terminated, true);
+    assert.equal(started.processState, "stopped");
+    assert.equal(await pathExists(join(home, "runtime", "backend", "backend.pid.json")), false);
+  } finally {
     await rm(home, { recursive: true, force: true });
   }
 });

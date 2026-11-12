@@ -40,8 +40,8 @@ Coding agents are good at the task in front of them, but a new session often
 starts without the architecture, failed attempts, repository rules, or working
 preferences established before it.
 
-MemoraX Code gives Codex, Claude Code, DeepSeek Harness, and OpenCode a shared
-memory layer for that context.
+MemoraX Code gives Codex, Claude Code, CodeBuddy CLI, WorkBuddy, DeepSeek Harness,
+OpenCode, Trae, Cursor, and Qoder a shared memory layer for that context.
 It can recall prior engineering knowledge, capture reusable lessons from
 completed work, maintain repository knowledge, and carry your procedures and
 preferences into future sessions.
@@ -53,11 +53,20 @@ and validation sooner.
 ## Quick Start
 
 Prepare Node.js 20+ (Node.js 24 LTS recommended) and at least one of Codex,
-Claude Code, DeepSeek Harness, or OpenCode. Python 3 is required for Repo
-Memory operations. Each coding-agent harness retains its own runtime
-requirements; current DeepSeek Harness releases require Node.js
-`^22.19.0 || >=24.0.0`. DSH may be installed globally or initialized
-beforehand through its official `npx` workflow.
+Claude Code, CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, Trae, Cursor, or Qoder.
+
+For DeepSeek Harness (DSH), current releases require Node.js
+`^22.19.0 || >=24.0.0`. Install or initialize DSH first, create at least one
+Profile, and ensure `pnpm` is on `PATH` for npm CLI installations before running
+setup. For DSH Desktop, open it once to initialize its Profile, then fully quit
+it for plugin installation; MemoraX Code uses its bundled launcher and package
+manager. CLI and Desktop can be enabled together. MemoraX Code does not install
+or update DSH.
+
+On Linux, guest credentials require `/usr/bin/secret-tool` from
+libsecret and an available Secret Service in the current user session. For
+Remote SSH, WSL, or Dev Containers, install MemoraX Code in the same environment
+as the coding agent. MemoraX search and writeback require network access.
 
 ### Install and Connect
 
@@ -67,21 +76,47 @@ beforehand through its official `npx` workflow.
 npm install -g @memorax/memorax-code
 ```
 
+This installs the package; it does not start interactive setup. Do not use
+`--ignore-scripts`: npm lifecycle scripts safely stop and restore an existing
+running managed Backend during package replacement.
+
 #### 2. Connect a MemoraX Account (Recommended)
 
-[Create a MemoraX account](https://platform.memorax.net/) or use an existing
-one, then run:
+[Create a MemoraX account](https://platform.memoraxai.com/) or use an existing
+one, then run from a normal interactive terminal:
 
 ```bash
 memorax-code setup --existing-account
 ```
 
+Follow the setup prompts to enter your MemoraX username and API key locally.
+
+For a coding agent without an interactive terminal, pass the API key through
+stdin. The examples assume `MEMORAX_SETUP_API_KEY` is already provided by the
+caller. Do not put the key in command arguments or project files.
+
+```bash
+printf '%s\n' "$MEMORAX_SETUP_API_KEY" | memorax-code setup --existing-account --non-interactive
+```
+
+In Windows PowerShell:
+
+```powershell
+$env:MEMORAX_SETUP_API_KEY | memorax-code.cmd setup --existing-account --non-interactive
+```
+
+This explicit command replaces the saved key and uses the detected local
+username and system language. It reports `API Key match: true` after local
+configuration and readiness checks; this does not verify cloud credentials.
+See [non-interactive setup](docs/configuration.md#existing-account-setup-without-a-terminal)
+for input and reuse behavior.
+
 > [!TIP]
-> Using MemoraX Code across devices? Find the MemoraX username and API key
-> needed by setup in the MemoraX Code configuration file on a configured device
-> (normally `~/.memorax-code/config.toml`), then enter them locally during setup
-> on another device. This file contains your API key—keep it private and never
-> paste it into chats or public issues.
+> Using MemoraX Code across devices? Find the username and API key in the
+> configuration file on a configured device (normally
+> `~/.memorax-code/config.toml`), then enter them in the local setup terminal
+> on the new device. This file contains your API key; keep it private and
+> never paste it into chats or public issues.
 
 #### Or Try Without an Account (90-Day Guest Mode)
 
@@ -91,38 +126,109 @@ To start immediately and connect an account later, run:
 memorax-code setup
 ```
 
-To activate your guest account, first run this command directly in your local
-terminal:
+Default setup reuses a complete existing connection. Otherwise, it detects
+your local username and language, asks when needed, and creates or restores
+guest credentials. To replace the saved connection, use
+`memorax-code setup --reconfigure` for guest mode or
+`memorax-code setup --existing-account` for a registered account.
+
+To keep your guest memory when registering later, first run this command
+directly in your local terminal:
 
 ```bash
 memorax-code account --show-mark-id
 ```
 
-After obtaining the Mark ID, create your MemoraX account. The platform does
-not currently support attaching a Mark ID to an account that has already been
-registered.
+> [!IMPORTANT]
+> Obtain the Mark ID before registering, then use it to activate your guest
+> account on [MemoraX](https://platform.memoraxai.com/). The platform does not
+> currently support attaching a Mark ID to an account that has already been
+> registered.
+
+#### 3. Activate and Verify
 
 Both setup paths automatically detect supported coding agents. Restart or
-refresh every detected coding agent after setup.
+refresh every detected coding agent after setup. While the managed Backend is
+running, an agent you install later is enabled within about 15 minutes; see
+[Clients installed after setup](docs/configuration.md#clients-installed-after-setup)
+to exclude one.
+
+| Client | Complete activation |
+| --- | --- |
+| Codex | Enable **MemoraX Code Codex Adapter** from Plugins or `/plugins` if it is not already enabled. |
+| Claude Code | Restart or refresh the client to load the managed plugin and Hooks. |
+| CodeBuddy CLI | Start a new CLI session to load the managed plugin, Hooks, and Skill. |
+| WorkBuddy | Restart WorkBuddy to load its independently managed plugin, Hooks, and Skill. |
+| DeepSeek Harness | Restart or refresh DSH to load the plugin registered in existing Profiles. |
+| OpenCode | Restart or refresh the client to discover the managed plugin and Skill. |
+| Trae | In **Settings → Hooks → Global → Configured Hooks**, enable the registered Global Hooks once. Setup installs the Hooks and Skill; this switch requires manual activation. |
+| Cursor | Restart or refresh Cursor, then open a new conversation to load its native user Hooks, shared Skill, and managed background subagent. |
+| Qoder | Restart Qoder and start a new task to load the managed user Hooks, shared Skill, and background subagent. |
+
+Qoder uses `~/.qoder/settings.json` and `~/.qoder/skills/memorax-code/`;
+`QODER_CONFIG_DIR` overrides the root. The tested target is Qoder Desktop 0.4.3
+with runtime 1.1.64. Skill Search and manual Add use the shared CLI; automatic
+Add reads the exact completed turn from the native transcript. Repo Memory builds
+and maintenance use Qoder's native background subagent, with normal tool
+permissions and no separate Qoder CLI installation or login. See
+[Qoder configuration](docs/configuration.md#qoder-integration-paths).
+
+Cursor installs independently of Claude Code under `~/.cursor/hooks.json` and
+`~/.cursor/skills/memorax-code/`; setup preserves its third-party integration
+setting. Use the Skill for CLI Search and manual Add. Automatic Add reads verified
+native database turns and requires Node.js 22.13+
+with built-in SQLite (Node.js 24 recommended). It supports ordinary prompts,
+edited resends, and continuations bound to an observed preceding turn; interrupted
+or ambiguously correlated content is skipped. Prompt Hooks inject trusted User
+Profile preferences on the first eligible turn and Procedure Memory on the
+configured reminder cadence. The default Procedure cadence is turns 1, 6, and
+11 (then every five turns). After a recorded compaction is verified against the
+native database, the next nonempty, registered prompt restores Profile and
+personal reminders; Procedure keeps its normal cadence. Missing evidence skips
+recovery, and restoration during the same continuing task is not guaranteed.
+Repo Memory initial builds and policy-based maintenance use Cursor's native
+background subagent; no separate Cursor CLI or
+CLI login is required. Cursor may request normal tool approvals. See
+[Cursor configuration](docs/configuration.md#cursor-integration-paths).
+
+Open a project, start a new client session, and send one prompt. Then run
+these commands from the project directory:
+
+```bash
+memorax-code --version
+memorax-code status
+memorax-cli status
+```
+
+In Windows PowerShell, use `memorax-cli.cmd status`. A configured integration
+may still report `hook-runtime=unverified` until the client executes its Hook.
+After a Hook executes successfully, that client's Hook runtime should change
+to `observed`.
+
+`memorax-code status` checks the local Backend and client integrations;
+`memorax-cli status` checks the local memory configuration and workspace scope.
+Neither command sends a test request to MemoraX. A real search or write verifies
+remote connectivity and credentials; follow the cross-session example below.
+For client-specific diagnostic commands, see
+[Troubleshooting](docs/troubleshooting.md).
 
 ### Installation Troubleshooting
 
-If the initial setup does not work as expected, check these common cases:
+Package installation does not launch setup automatically; run one of the setup
+commands above, using stdin mode when an agent has no interactive terminal.
+For incomplete setup or unavailable memory, start with the status commands and follow
+[Troubleshooting](docs/troubleshooting.md).
 
-| Symptom | Recommended fix |
-| --- | --- |
-| Installation fails with an unsupported Node.js version | Run `node --version` and upgrade to Node.js 20 or later before reinstalling MemoraX Code. |
-| The package installed but setup did not start | This is expected. Run the appropriate setup command above from a normal interactive terminal. |
-| Search, retrieval, or writeback is unavailable after setup | Run `memorax-code status` and `memorax-cli status`, then follow the detailed troubleshooting guide. |
+#### Windows: `memorax-code` or `memorax-cli` Is Not Found
 
-See [Configuration](docs/configuration.md) for supported settings and
-[Troubleshooting](docs/troubleshooting.md) for detailed diagnostics.
-
+Both commands are included in the same package. Follow the
+[Windows PATH repair steps](docs/troubleshooting.md#windows-memorax-code-or-memorax-cli-is-not-found)
+to bootstrap setup or repair a stale terminal environment.
 
 ### Try Cross-Session Memory
 
 Clone the example repository from the product website, then open Codex, Claude
-Code, DeepSeek Harness, or OpenCode in the project directory:
+Code, CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, Trae, Cursor, or Qoder in the project directory:
 
 ```bash
 git clone https://github.com/SWE-agent/test-repo.git
@@ -130,8 +236,9 @@ cd test-repo
 ```
 
 Invoke the Skill as `$memorax-code` in Codex or `/memorax-code` in Claude Code
-or DeepSeek Harness. In OpenCode, ask the agent to use the `memorax-code` skill
-by name. The prompts below use its product name and work in all four clients.
+or DeepSeek Harness. In OpenCode, CodeBuddy CLI, WorkBuddy, Trae, Cursor, or Qoder, ask the agent
+to use the `memorax-code` skill by name. The prompts below use its product name
+and work in all supported clients.
 
 Send these prompts in order in the same session:
 
@@ -155,6 +262,7 @@ the current repository.
 > The prompts above are only for quick verification. In normal use, you do not
 > need to invoke the MemoraX Code skill to add memory manually. It writes
 > relevant memory in the background and guides agents to search when useful.
+> Local activity and status are retained as content-controlled trace and reconciliation records under `MEMORAX_CODE_HOME`.
 
 ## Four Clear Memory Boundaries
 
@@ -165,15 +273,25 @@ the current repository.
 | **Personal&nbsp;Memory** | How should the agent communicate and collaborate with you? | User Profile preferences such as language, tone, explanation depth, and result format |
 | **Procedure&nbsp;Memory** | How should this kind of task be carried out? | Reusable steps, checklists, prerequisites, exceptions, and validation gates |
 
-Personal Memory and Procedure Memory stay in the current repository under
-`.repo_memory/`. When saved content already exists, MemoraX Code compares its
-meaning before writing: an equivalent request makes no change; a durable
-refinement or conflict updates the matching entry and removes the superseded
-wording; an invalid scope is corrected, or the entry is deleted only when it is
-wholly obsolete. An explicit forget request deletes only the named preference,
-procedure topic, section, or step and leaves unrelated memory unchanged.
-One-time task instructions do not change saved memory, and the Agent asks before
-writing when the durable intent or target is unclear.
+Personal Memory and Procedure Memory are global to the user under
+`$MEMORAX_CODE_HOME/personal-memory/` (default `~/.memorax-code/personal-memory/`): User Profile
+uses `user-profile/preferences.md`, and each Procedure topic uses its own file
+under `procedure-memory/`. Applicability may mention a repository, tool, or
+workflow, but no personal-memory layer exists inside a repository. Existing
+`.repo_memory` personal-memory files are ignored and are not migrated. The
+Agent saves by intent rather than wording: when you state a working rule or
+preference meant to keep applying beyond the current task, it saves it without
+waiting for "remember" and tells you what it stored; rules about how to work go
+to Procedure Memory, and communication or presentation preferences go to the
+User Profile. When saved content already exists,
+MemoraX Code compares its meaning before writing: an equivalent request makes
+no change; a durable refinement or conflict updates the matching entry and
+removes the superseded wording; an invalid scope is corrected, or the entry is
+deleted only when it is wholly obsolete. An explicit forget request deletes
+only the named preference, procedure topic, section, or step and leaves
+unrelated memory unchanged. One-time task instructions do not change saved
+memory, and the Agent asks before writing when the durable intent or target is
+unclear.
 
 ## Product Capabilities
 
@@ -182,33 +300,65 @@ writing when the durable intent or target is unclear.
 | **Background memory writeback** | Extracts reusable knowledge from completed turns and writes it to Coding Memory in the background. |
 | **Preference continuity** | Records User Profile preferences and injects them into future tasks on a configured cadence. |
 | **Procedure reuse** | Records reusable task procedures and reminds future agents to apply them. |
-| **Background Repo Memory maintenance** | Automatically organizes repository structure, entry points, and history evidence in the background, then updates them according to policy to reduce repeated searching and summarization. |
+| **Visible memory impact** | In Codex, Claude Code, CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, Trae, Cursor, and Qoder, opens the final answer with a brief natural-language note when an explicit Coding Memory Search or a Repo, Procedure, or Profile Memory available to the current turn materially guided the task. |
+| **Background Repo Memory maintenance** | Maintains one shared baseline from the locally known default branch. Any worktree can trigger a build or policy-driven update; all branches reuse the map and verify current source without per-worktree builds. Existing local bundles are preserved. Trae remains Skill-only; Cursor and Qoder use their native background subagents. |
 | **Active memory control** | Lets you search and add memory through the bundled MemoraX Code skill or the CLI. |
-| **Client integration** | Integrates with Codex, Claude Code, DeepSeek Harness, and OpenCode to trigger memory retrieval, reminders, and writeback. Automatic quota reminders are currently available in Codex, Claude Code, and OpenCode. |
+| **Client integration** | Integrates with Codex, Claude Code, CodeBuddy CLI, WorkBuddy, DeepSeek Harness, OpenCode, Trae, Cursor, and Qoder for Skill-driven Search, local reminders, and automatic writeback. Automatic quota reminders are currently available in Codex, Claude Code, CodeBuddy CLI, WorkBuddy, OpenCode, and Trae. |
+| **Local observability** | Uses content-controlled local trace and reconciliation records to inspect activity counts, retrieval, and writeback status. |
 
 ## Your Memory, Your Control
 
 MemoraX is required for cloud-backed memory. Completing setup activates
 MemoraX search/add and the generated configuration's automatic writeback;
-there is no second writeback confirmation. Automatic retrieval remains off
-until explicitly enabled.
+there is no second writeback confirmation. Search runs when the agent uses the
+Skill or you invoke the CLI. Hooks provide local memory context and reminders
+without issuing Search requests.
+
+Optional [Jev configuration](docs/configuration.md#jev-provider-configuration)
+lets a separate TypeSafe model judge each eligible distinct user request. When
+Search is useful, the agent reads the `memorax-code` Skill's Search reference
+and follows its query and execution guidance. It sends bounded current-request
+and previous-turn text to TypeSafe, uses your Jev key, and is disabled by default.
+Failures fall back to the normal Skill reminder cadence; the agent still
+executes Search.
 
 Local trace capture is enabled by default for supported clients. Depending on
 client capabilities, retained traces under `MEMORAX_CODE_HOME` may contain
 prompts, responses, recalled memory, reminder text, and local paths. Use the
 [local trace settings](docs/configuration.md#local-traces) to switch to
 metadata-only capture or disable a client's trace.
+Minimal local session state remains when trace is disabled so memory operations
+keep the correct workspace scope.
+
+Failures in setup, explicit Search/Add, Backend start/stop/restart, client
+deployment, and package updates provide an error code, recovery guidance, and a
+local content-free diagnostic; see [failure recovery](docs/troubleshooting.md).
+Hook execution and automatic writeback also retain known failures locally with
+Debug off, without adding messages to the conversation or blocking the coding task.
+`memorax-code status` summarizes recent failures; use `memorax-code logs --diagnostics`
+or `memorax-code logs --id <diagnostic-id>` for details you can review and share.
+
+Coding Memory follows the repository or workspace. Recognized default chat
+directories or contexts in Codex, WorkBuddy, OpenCode, Cursor, and Qoder share
+`General` under the same configured MemoraX user ID. A Cursor conversation with
+no folder selected uses this shared `@General` scope; opening a repository uses
+that repository's normal scope. Existing memories are not migrated; see
+[memory scope](docs/configuration.md#memory-scope) for the directory rules.
 
 Guest quota reminders may display the complete Mark ID. Treat reminder text
 and retained traces containing it as sensitive.
 
 Active memory operations send their query or selected content to MemoraX.
 Automatic writeback sends selected user instructions and the matching final
-Agent response from trusted workspace turns for extraction and storage. It
+Agent response from trusted workspace turns after removing the final-answer
+memory-impact disclosure, then extracts and stores reusable memory. It
 does not upload the complete retained client trace artifact or local trace
 path.
 
-Sign in to [MemoraX Console](https://platform.memorax.net/) at any time to view,
+QA writeback preserves available native timestamps and labels observation-time
+fallbacks; see [message timestamps](docs/configuration.md#automatic-writeback-timestamps).
+
+Sign in to [MemoraX Console](https://platform.memoraxai.com/) at any time to view,
 edit, or delete saved memories. MemoraX Cloud does not receive model-provider
 credentials or local Backend tokens.
 
@@ -223,21 +373,29 @@ For a global npm installation:
 memorax-code update
 ```
 
-The command follows the installed release channel and preserves configuration.
-Restart or refresh Codex, Claude Code, DeepSeek Harness, and OpenCode when a
-release changes installed integration assets.
+Setup also enables background updates while the managed Backend is running.
+An update briefly stops a running managed Backend and restores it with the
+retained client selection.
+Setup after reinstall and updates preserve explicit client choices even when
+older configuration omits `codex` or `claude`. The first setup after upgrading
+removes `false` for agents that are still not installed, so they can be enabled
+when they appear.
+See [update settings](docs/configuration.md#setup-automatic-update-and-package-transition-state)
+for release channels, custom state roots, client selection, Backend restoration,
+and disabling background checks. Restart or refresh a client after an update
+changes integration assets it has already loaded.
+If package replacement fails, follow the [update recovery steps](docs/troubleshooting.md#npm-package-transition-fails)
+for `memorax-code update --recover`.
+
+The official endpoint is now `https://platform.memoraxai.com`. After updating,
+existing configurations using the legacy official endpoint work automatically;
+you do not need to rerun setup or replace your saved account settings. See
+[endpoint compatibility](docs/configuration.md#memorax-connection).
 
 ### Windows Upgrade Note
 
-If you are upgrading MemoraX Code v0.1.3-v0.1.6 to v0.1.7 on Windows, run:
-
-```powershell
-memorax-code stop
-memorax-code update --latest
-memorax-code
-```
-
-This one-time step is not required for later upgrades.
+For older Windows installations that fail with an `EBUSY` rename error, follow
+the [legacy upgrade recovery](docs/troubleshooting.md#npm-package-transition-fails).
 
 ## Uninstall
 
@@ -248,13 +406,18 @@ memorax-code uninstall
 ```
 
 This removes managed integrations and the global package while retaining
-`MEMORAX_CODE_HOME` (default `~/.memorax-code`), Claude plugin data, provider
-configuration, and memories stored in MemoraX. Remove retained local or cloud
-data separately only after reviewing what you still need.
+configuration and stored memories. Do not run `npm uninstall -g` first: it can
+remove the product command before client integration cleanup runs. See
+[Uninstall and Retention](SECURITY.md#uninstall-and-retention) for the complete
+retained-data list.
+
+After a complete uninstall and reinstall, run `memorax-code setup` again;
+default setup reuses a complete retained connection. A normal
+`memorax-code stop` or partial client uninstall preserves setup completion.
 
 ## Documentation
 
-- [Installation](INSTALL.md)
+- [Installation and first use](#quick-start)
 - [Configuration](docs/configuration.md)
 - [Troubleshooting](docs/troubleshooting.md)
 - [Contributing](CONTRIBUTING.md)

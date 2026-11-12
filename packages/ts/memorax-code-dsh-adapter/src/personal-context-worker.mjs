@@ -1,20 +1,19 @@
-import { buildRepoProcedureMemoryContext } from "../memorax-code-adapter-common/src/repo-memory/repo-procedure-memory-context.mjs";
-import { buildRepoUserProfilePreferencesContext } from "../memorax-code-adapter-common/src/repo-memory/repo-user-profile-context.mjs";
+import { buildProcedureMemoryContext } from "../memorax-code-adapter-common/src/personal-memory/procedure-memory-context.mjs";
+import { buildUserProfilePreferencesContext } from "../memorax-code-adapter-common/src/personal-memory/user-profile-context.mjs";
 
 const MAX_INPUT_BYTES = 16 * 1024;
 const contextOptions = {
   adapterDir: "dsh",
   debugEnv: "MEMORAX_CODE_DSH_DEBUG",
-  sessionKeyPrefix: "dsh",
 };
 
 try {
   const input = await readInput();
   const profileContext = input.includeProfile
-    ? buildRepoUserProfilePreferencesContext({ cwd: input.cwd }, contextOptions)
+    ? buildUserProfilePreferencesContext({ ...contextOptions, memoraxCodeHome: input.memoraxCodeHome })
     : undefined;
   const procedureContext = input.includeProcedure
-    ? buildRepoProcedureMemoryContext({ cwd: input.cwd }, contextOptions)
+    ? buildProcedureMemoryContext({ ...contextOptions, memoraxCodeHome: input.memoraxCodeHome })
     : undefined;
   process.stdout.write(`${JSON.stringify({
     ...(profileContext ? { profileContext } : {}),
@@ -34,13 +33,13 @@ async function readInput() {
     chunks.push(chunk);
   }
   const value = JSON.parse(Buffer.concat(chunks).toString("utf8"));
-  const cwd = nonEmptyString(value?.cwd);
+  const memoraxCodeHome = nonEmptyString(value?.memoraxCodeHome);
   const includeProfile = value?.includeProfile === true;
   const includeProcedure = value?.includeProcedure === true;
-  if (!cwd || (!includeProfile && !includeProcedure)) {
+  if (!memoraxCodeHome || (!includeProfile && !includeProcedure)) {
     throw new Error("DSH personal context worker received invalid input");
   }
-  return { cwd, includeProfile, includeProcedure };
+  return { memoraxCodeHome, includeProfile, includeProcedure };
 }
 
 function nonEmptyString(value) {

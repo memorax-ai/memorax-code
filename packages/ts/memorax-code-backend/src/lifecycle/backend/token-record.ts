@@ -30,12 +30,16 @@ export function readBackendTokenForHome(memoraxCodeHome: string): BackendTokenRe
   return serviceTokenRecord(state.record, backendTokenPath(memoraxCodeHome));
 }
 
+// Callers serialize token mutations with the lifecycle lock. Explicit rotation
+// also requires a stopped Backend so its in-memory token cannot become stale.
 export function writeBackendTokenForHome(
   memoraxCodeHome: string,
   rotate = false,
   runtime?: RuntimeRecordWriteRuntime,
 ): BackendTokenRecord {
   const state = readBackendTokenRecordState(memoraxCodeHome);
+  // Rotation can repair invalid state, but cannot overwrite a future schema
+  // whose meaning this version does not understand.
   if (state.status === "unsupported") {
     throw new BackendTokenRecordError(state, backendTokenPath(memoraxCodeHome));
   }

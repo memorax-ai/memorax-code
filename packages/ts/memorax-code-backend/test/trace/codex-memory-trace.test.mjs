@@ -99,8 +99,8 @@ test("trace context captures an opaque Git project identity", async () => {
       memoraxCodeHome: root,
       traceContext: context,
       type: "memory_retrieve",
-      source: "automatic_retrieval",
-      operation: "retrieve",
+      source: "memory_cli",
+      operation: "query",
       ok: true,
       now: () => new Date("2026-07-09T00:00:01.000Z"),
     });
@@ -115,7 +115,7 @@ test("trace context captures an opaque Git project identity", async () => {
   }
 });
 
-test("trace store writes sanitized session JSONL with snake_case context origin", async () => {
+test("trace store sanitizes session content and preserves metadata when capture is disabled", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-codex-trace-store-"));
   try {
     const context = traceContextFromHookBody({
@@ -128,8 +128,8 @@ test("trace store writes sanitized session JSONL with snake_case context origin"
       memoraxCodeHome: root,
       traceContext: context,
       type: "memory_retrieve",
-      source: "automatic_retrieval",
-      operation: "retrieve",
+      source: "memory_cli",
+      operation: "query",
       ok: true,
       usage: {
         input_tokens: 120,
@@ -154,7 +154,7 @@ test("trace store writes sanitized session JSONL with snake_case context origin"
     assert.equal(event.trace.session_id, "session/with/slash");
     assert.equal(event.trace.context_origin, "codex-hook-body");
     assert.equal(event.trace.contextOrigin, undefined);
-    assert.equal(event.source, "automatic_retrieval");
+    assert.equal(event.source, "memory_cli");
     assert.deepEqual(event.usage, {
       input_tokens: 120,
       cached_input_tokens: 80,
@@ -171,6 +171,66 @@ test("trace store writes sanitized session JSONL with snake_case context origin"
     assert.equal(trace.updated_at, "2026-07-09T00:00:01.000Z");
     assert.equal(trace.session_id, "session/with/slash");
     assert.equal(trace.codex.transcript_path, "/tmp/transcript.jsonl");
+
+    await recordCodexTraceEvent({
+      memoraxCodeHome: root,
+      config: {
+        enabled: true,
+        captureContent: false,
+        retentionDays: 7,
+        maxEventChars: 20_000,
+        maxFileBytes: 52_428_800,
+      },
+      traceContext: context,
+      type: "memory_writeback",
+      source: "codex_hook_writeback",
+      operation: "writeback",
+      ok: true,
+      relatedTurns: [
+        {
+          turnId: "turn-related-1",
+          requestId: "request-related-1",
+          nativeRequestId: "native-related-1",
+          contextOrigin: "codex-hook-body",
+          capturedAt: "2026-07-09T00:00:00.000Z",
+        },
+        {
+          turnId: "turn-related-2",
+          contextOrigin: "codex-hook-body",
+          capturedAt: "2026-07-09T00:01:00.000Z",
+        },
+      ],
+      request: { context: { messages: [{ role: "user", content: "raw private user message" }] } },
+      response: { raw: { data: { task_id: "task-1", status: "queued" } } },
+      now: () => new Date("2026-07-09T00:02:00.000Z"),
+    });
+
+    const appendedLines = (await readFile(tracePaths(root).eventsJsonl(context.sessionId), "utf8")).trim().split("\n");
+    assert.equal(appendedLines.length, 2);
+    assert.equal(appendedLines[0], eventText.trim());
+    const metadataEventText = appendedLines[1];
+    assert.doesNotMatch(metadataEventText, /raw private user message/);
+    assert.match(metadataEventText, /sha256:/);
+    assert.deepEqual(JSON.parse(metadataEventText).related_turns, [
+      {
+        turn_id: "turn-related-1",
+        request_id: "request-related-1",
+        native_request_id: "native-related-1",
+        context_origin: "codex-hook-body",
+        captured_at: "2026-07-09T00:00:00.000Z",
+      },
+      {
+        turn_id: "turn-related-2",
+        context_origin: "codex-hook-body",
+        captured_at: "2026-07-09T00:01:00.000Z",
+      },
+    ]);
+
+    const updatedTrace = JSON.parse(await readFile(tracePaths(root).traceJson(context.sessionId), "utf8"));
+    assert.equal(updatedTrace.created_at, "2026-07-09T00:00:01.000Z");
+    assert.equal(updatedTrace.updated_at, "2026-07-09T00:02:00.000Z");
+    assert.equal(updatedTrace.codex.transcript_path, "/tmp/transcript.jsonl");
+    assert.equal(updatedTrace.capture.capture_content, false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -366,144 +426,7 @@ test("trace path segments preserve existing macOS mappings", () => {
   }
 });
 
-test("trace store records metadata only when capture_content is false and merges trace metadata", async () => {
-  const root = await mkdtemp(join(tmpdir(), "memorax-code-codex-trace-metadata-"));
-  try {
-    const context = traceContextFromHookBody({
-      session_id: "session-metadata",
-      transcript_path: "/tmp/original.jsonl",
-    }, "2026-07-09T00:00:00.000Z");
-    const sessionDir = tracePaths(root).sessionDir(context.sessionId);
-    await mkdir(sessionDir, { recursive: true });
-    await writeFile(join(sessionDir, "trace.json"), JSON.stringify({
-      schema_version: "1",
-      client: "codex",
-      session_id: "session-metadata",
-      created_at: "2026-07-08T00:00:00.000Z",
-      updated_at: "2026-07-08T00:00:00.000Z",
-      capture: { capture_content: true },
-      codex: { transcript_path: "/tmp/original.jsonl" },
-    }, null, 2), "utf8");
-
-    await recordCodexTraceEvent({
-      memoraxCodeHome: root,
-      config: {
-        enabled: true,
-        captureContent: false,
-        retentionDays: 7,
-        maxEventChars: 20_000,
-        maxFileBytes: 52_428_800,
-      },
-      traceContext: context,
-      type: "memory_writeback",
-      source: "codex_hook_writeback",
-      operation: "writeback",
-      ok: true,
-      relatedTurns: [
-        {
-          turnId: "turn-related-1",
-          requestId: "request-related-1",
-          nativeRequestId: "native-related-1",
-          contextOrigin: "codex-hook-body",
-          capturedAt: "2026-07-09T00:00:00.000Z",
-        },
-        {
-          turnId: "turn-related-2",
-          contextOrigin: "codex-hook-body",
-          capturedAt: "2026-07-09T00:01:00.000Z",
-        },
-      ],
-      request: { context: { messages: [{ role: "user", content: "raw private user message" }] } },
-      response: { raw: { data: { task_id: "task-1", status: "queued" } } },
-      now: () => new Date("2026-07-09T00:02:00.000Z"),
-    });
-
-    const eventText = await readFile(join(sessionDir, "events.jsonl"), "utf8");
-    assert.doesNotMatch(eventText, /raw private user message/);
-    assert.match(eventText, /sha256:/);
-    assert.deepEqual(JSON.parse(eventText).related_turns, [
-      {
-        turn_id: "turn-related-1",
-        request_id: "request-related-1",
-        native_request_id: "native-related-1",
-        context_origin: "codex-hook-body",
-        captured_at: "2026-07-09T00:00:00.000Z",
-      },
-      {
-        turn_id: "turn-related-2",
-        context_origin: "codex-hook-body",
-        captured_at: "2026-07-09T00:01:00.000Z",
-      },
-    ]);
-
-    const trace = JSON.parse(await readFile(join(sessionDir, "trace.json"), "utf8"));
-    assert.equal(trace.created_at, "2026-07-08T00:00:00.000Z");
-    assert.equal(trace.updated_at, "2026-07-09T00:02:00.000Z");
-    assert.equal(trace.codex.transcript_path, "/tmp/original.jsonl");
-    assert.equal(trace.capture.capture_content, false);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("trace store writes one warning when session events exceed max_file_bytes", async () => {
-  const root = await mkdtemp(join(tmpdir(), "memorax-code-codex-trace-max-file-"));
-  try {
-    const context = traceContextFromHookBody({ session_id: "session-max-file" });
-    const sessionDir = tracePaths(root).sessionDir(context.sessionId);
-    await mkdir(sessionDir, { recursive: true });
-    await writeFile(join(sessionDir, "events.jsonl"), "already-too-large\n", "utf8");
-
-    const config = {
-      enabled: true,
-      captureContent: true,
-      retentionDays: 7,
-      maxEventChars: 20_000,
-      maxFileBytes: 1,
-    };
-    const first = await recordCodexTraceEvent({
-      memoraxCodeHome: root,
-      config,
-      traceContext: context,
-      type: "memory_retrieve",
-      source: "automatic_retrieval",
-      operation: "retrieve",
-      ok: true,
-      request: { query: "should not be written" },
-      now: () => new Date("2026-07-09T00:03:00.000Z"),
-    });
-    assert.deepEqual(first, { written: false, reason: "max_file_bytes" });
-
-    const second = await recordCodexTraceEvent({
-      memoraxCodeHome: root,
-      config,
-      traceContext: context,
-      type: "memory_retrieve",
-      source: "automatic_retrieval",
-      operation: "retrieve",
-      ok: true,
-      request: { query: "should not be written twice" },
-      now: () => new Date("2026-07-09T00:04:00.000Z"),
-    });
-    assert.deepEqual(second, { written: false, reason: "max_file_bytes" });
-
-    const lines = (await readFile(join(sessionDir, "events.jsonl"), "utf8")).trim().split(/\r?\n/);
-    const warnings = lines.map((line) => {
-      try {
-        return JSON.parse(line);
-      } catch {
-        return undefined;
-      }
-    }).filter((event) => event?.type === "trace_warning");
-    assert.equal(warnings.length, 1);
-    assert.equal(warnings[0].operation, "max_file_bytes");
-    assert.equal(warnings[0].ok, false);
-  } finally {
-    await rm(root, { recursive: true, force: true });
-  }
-});
-
-test("trace store writes only one max_file_bytes warning under concurrent writers", async () => {
+test("trace store writes one max_file_bytes warning across concurrent writers and later retries", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-codex-trace-max-file-race-"));
   try {
     const context = traceContextFromHookBody({ session_id: "session-max-file-race" });
@@ -518,19 +441,23 @@ test("trace store writes only one max_file_bytes warning under concurrent writer
       maxFileBytes: 1,
     };
 
-    await Promise.all(Array.from({ length: 8 }, (_, index) => recordCodexTraceEvent({
+    const results = await Promise.all(Array.from({ length: 8 }, (_, index) => recordCodexTraceEvent({
       memoraxCodeHome: root,
       config,
       traceContext: context,
       type: "memory_retrieve",
-      source: "automatic_retrieval",
-      operation: "retrieve",
+      source: "memory_cli",
+      operation: "query",
       ok: true,
       request: { query: `too large ${index}` },
       now: () => new Date("2026-07-09T00:05:00.000Z"),
     })));
 
-    const lines = (await readFile(join(sessionDir, "events.jsonl"), "utf8")).trim().split(/\r?\n/);
+    for (const result of results) {
+      assert.deepEqual(result, { written: false, reason: "max_file_bytes" });
+    }
+    const afterConcurrent = await readFile(join(sessionDir, "events.jsonl"), "utf8");
+    const lines = afterConcurrent.trim().split(/\r?\n/);
     const warnings = lines.map((line) => {
       try {
         return JSON.parse(line);
@@ -539,12 +466,29 @@ test("trace store writes only one max_file_bytes warning under concurrent writer
       }
     }).filter((event) => event?.type === "trace_warning");
     assert.equal(warnings.length, 1);
+    assert.equal(warnings[0].operation, "max_file_bytes");
+    assert.equal(warnings[0].ok, false);
+
+    const retry = await recordCodexTraceEvent({
+      memoraxCodeHome: root,
+      config,
+      traceContext: context,
+      type: "memory_retrieve",
+      source: "memory_cli",
+      operation: "query",
+      ok: true,
+      request: { query: "should not be written again" },
+      now: () => new Date("2026-07-09T00:06:00.000Z"),
+    });
+    assert.deepEqual(retry, { written: false, reason: "max_file_bytes" });
+
+    assert.equal(await readFile(join(sessionDir, "events.jsonl"), "utf8"), afterConcurrent);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("current turn bridge respects enabled and stale contracts", async () => {
+test("current turn bridge remains available with tracing disabled and respects stale contracts", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-codex-current-turn-"));
   try {
     const context = traceContextFromHookBody({
@@ -552,23 +496,20 @@ test("current turn bridge respects enabled and stale contracts", async () => {
       turn_id: "turn-current",
     }, "2026-07-09T00:00:00.000Z");
 
-    assert.deepEqual(await writeCurrentCodexTurn(context, {
-      memoraxCodeHome: root,
-      config: {
-        enabled: false,
-        captureContent: true,
-        retentionDays: 7,
-        maxEventChars: 20_000,
-        maxFileBytes: 52_428_800,
-      },
-    }), { written: false, reason: "disabled" });
-
-    await assert.rejects(readFile(tracePaths(root).currentTurnPath, "utf8"));
+    await writeFile(join(root, "config.toml"), "[trace.codex]\nenabled = false\n", "utf8");
 
     assert.deepEqual(await writeCurrentCodexTurn(context, {
       memoraxCodeHome: root,
       now: () => new Date("2026-07-09T00:00:00.000Z"),
     }), { written: true });
+    assert.deepEqual(await recordCodexTraceEvent({
+      memoraxCodeHome: root,
+      traceContext: context,
+      type: "turn_start",
+      request: { prompt: "disabled trace must not persist this content" },
+    }), { written: false, reason: "disabled" });
+    await assert.rejects(stat(tracePaths(root).eventsJsonl(context.sessionId)), { code: "ENOENT" });
+    await assert.rejects(stat(tracePaths(root).traceJson(context.sessionId)), { code: "ENOENT" });
 
     const fresh = await readCurrentCodexTurn({
       memoraxCodeHome: root,
@@ -632,6 +573,8 @@ test("current turn bridge reads session-scoped turns before global current turn"
       memoraxCodeHome: root,
       now: () => new Date("2026-07-09T00:01:00.000Z"),
     });
+
+    await writeFile(join(root, "config.toml"), "[trace.codex]\nenabled = false\n", "utf8");
 
     const sessionA = await readCurrentCodexTurn({
       memoraxCodeHome: root,
@@ -698,6 +641,7 @@ test("current turn bridge preserves recent context after closing rollout reconci
       now: () => new Date("2026-07-09T00:01:00.000Z"),
     })).ok, true);
 
+    await writeFile(join(root, "config.toml"), "[trace.codex]\nenabled = false\n", "utf8");
     assert.deepEqual(await markCurrentCodexTurnOutcome(context, "completed", {
       memoraxCodeHome: root,
     }), { updated: true });
@@ -738,6 +682,7 @@ test("Backend startup prunes expired client-qualified trace sessions", async () 
   try {
     await writeFile(join(root, "config.toml"), [
       "[trace.codex]",
+      "enabled = false",
       "retention_days = 1",
       "",
       "[trace.claude]",
@@ -762,12 +707,14 @@ test("Backend startup prunes expired client-qualified trace sessions", async () 
       freshDshDir,
     ]) {
       await mkdir(directory, { recursive: true });
-      await writeFile(join(directory, "events.jsonl"), "{}\n", "utf8");
+      const filename = directory === oldCodexDir || directory === freshCodexDir ? ".current-turn.json" : "events.jsonl";
+      await writeFile(join(directory, filename), "{}\n", "utf8");
     }
     const oldTime = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
     for (const directory of [oldCodexDir, oldClaudeDir, oldDshDir]) {
       await utimes(directory, oldTime, oldTime);
-      await utimes(join(directory, "events.jsonl"), oldTime, oldTime);
+      const filename = directory === oldCodexDir ? ".current-turn.json" : "events.jsonl";
+      await utimes(join(directory, filename), oldTime, oldTime);
     }
 
     server = createBackendServer(createBackendState("127.0.0.1", {
@@ -789,7 +736,7 @@ test("Backend startup prunes expired client-qualified trace sessions", async () 
   }
 });
 
-test("retention keeps sessions with fresh trace files even when directory mtime is old", async () => {
+test("retention keeps fresh trace or current-turn files even when directory mtime is old", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-codex-trace-retention-active-"));
   try {
     await writeFile(join(root, "config.toml"), [
@@ -809,46 +756,77 @@ test("retention keeps sessions with fresh trace files even when directory mtime 
     await writeFile(join(sessionDir, "events.jsonl"), "{}\n", "utf8");
     const oldTime = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
     await utimes(sessionDir, oldTime, oldTime);
+    const currentPaths = ["active-current", "expired-current"].map((sessionId) => tracePaths(root).sessionDir(sessionId));
+    for (const directory of currentPaths) {
+      await mkdir(directory, { recursive: true });
+      await writeFile(join(directory, ".current-turn.json"), "{}\n", "utf8");
+      await utimes(directory, oldTime, oldTime);
+    }
+    await utimes(join(currentPaths[1], ".current-turn.json"), oldTime, oldTime);
 
     await pruneExpiredCodexTraceSessions({ memoraxCodeHome: root });
 
     await stat(sessionDir);
+    await stat(currentPaths[0]);
+    await assert.rejects(stat(currentPaths[1]), { code: "ENOENT" });
   } finally {
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("append path honors cross-process retention debounce marker", async () => {
+test("event and current-turn writes honor cross-process retention debounce markers", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-codex-trace-retention-debounce-"));
+  const now = new Date("2026-07-09T00:00:00.000Z");
+  const oldTime = new Date(now.getTime() - 3 * 24 * 60 * 60 * 1000);
   try {
-    const oldDir = tracePaths(root).sessionDir("old-session");
-    await mkdir(oldDir, { recursive: true });
-    await writeFile(join(oldDir, "events.jsonl"), "{}\n", "utf8");
-    const oldTime = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000);
-    await utimes(oldDir, oldTime, oldTime);
-    await mkdir(tracePaths(root).root, { recursive: true });
-    await writeFile(join(tracePaths(root).root, ".retention-cleanup.json"), JSON.stringify({
-      cleaned_at: new Date().toISOString(),
-    }), "utf8");
+    for (const [hasMarker, enabled] of [[true, true], [false, true], [true, false], [false, false]]) {
+      const home = join(root, `${enabled ? "events" : "current"}-${hasMarker ? "fresh-marker" : "no-marker"}`);
+      const paths = tracePaths(home);
+      const oldDir = paths.sessionDir("old-session");
+      const oldState = enabled ? paths.eventsJsonl("old-session") : paths.sessionCurrentTurnPath("old-session");
+      await mkdir(oldDir, { recursive: true });
+      await writeFile(oldState, "{}\n", "utf8");
+      await utimes(oldState, oldTime, oldTime);
+      await utimes(oldDir, oldTime, oldTime);
+      if (hasMarker) {
+        const markerPath = join(paths.root, ".retention-cleanup.json");
+        await writeFile(markerPath, JSON.stringify({ cleaned_at: now.toISOString() }), "utf8");
+        await utimes(markerPath, now, now);
+      }
 
-    await recordCodexTraceEvent({
-      memoraxCodeHome: root,
-      config: {
-        enabled: true,
-        captureContent: true,
-        retentionDays: 1,
-        maxEventChars: 20_000,
-        maxFileBytes: 52_428_800,
-      },
-      traceContext: traceContextFromHookBody({ session_id: "new-session" }),
-      type: "memory_retrieve",
-      source: "automatic_retrieval",
-      operation: "retrieve",
-      ok: true,
-      request: { query: "do not scan every CLI append" },
-    });
+      const options = {
+        memoraxCodeHome: home,
+        config: {
+          enabled,
+          captureContent: true,
+          retentionDays: 1,
+          maxEventChars: 20_000,
+          maxFileBytes: 52_428_800,
+        },
+        now: () => now,
+      };
+      const context = traceContextFromHookBody({ session_id: "new-session", turn_id: "new-turn" });
+      const result = enabled ? await recordCodexTraceEvent({
+        ...options,
+        traceContext: context,
+        type: "memory_retrieve",
+        source: "memory_cli",
+        operation: "query",
+        ok: true,
+        request: { query: "do not scan every CLI append" },
+      }) : await writeCurrentCodexTurn(context, options);
 
-    await stat(oldDir);
+      assert.deepEqual(result, enabled ? { written: true, path: paths.eventsJsonl("new-session") } : { written: true });
+      if (!enabled) {
+        await assert.rejects(stat(paths.eventsJsonl("new-session")), { code: "ENOENT" });
+        await assert.rejects(stat(paths.traceJson("new-session")), { code: "ENOENT" });
+      }
+      if (hasMarker) {
+        assert.equal(await readFile(oldState, "utf8"), "{}\n");
+      } else {
+        await assert.rejects(stat(oldDir), { code: "ENOENT" });
+      }
+    }
   } finally {
     await rm(root, { recursive: true, force: true });
   }

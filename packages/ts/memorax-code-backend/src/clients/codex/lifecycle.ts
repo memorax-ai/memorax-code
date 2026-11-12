@@ -1,3 +1,4 @@
+import { attachDeploymentFailure, deploymentFailure } from "../../../../memorax-code-adapter-common/src/deployment-failure.mjs";
 import { createInterface } from "node:readline/promises";
 import {
   installCodexPlugin,
@@ -26,7 +27,7 @@ export async function enableCodexAdapterForStart(
     let options = codexAdapterOptions(argv, serviceOptions, backendUrl);
     const codexHome = typeof options.codexHome === "string" ? options.codexHome : undefined;
     if (!isCodexPluginActive({ codexHome }) && !isCodexPluginStaged({ codexHome })) {
-      const installed = await maybeInstallCodexPluginForStart(argv);
+      const installed = await maybeInstallCodexPluginForStart(argv, serviceOptions.home);
       if (installed) {
         backendLog(green("Codex plugin source registered. Activate the MemoraX Code Codex Adapter plugin, then restart or refresh Codex."));
       } else if (installed === false) {
@@ -41,7 +42,7 @@ export async function enableCodexAdapterForStart(
     }
     return (await loadCodexAdapterConfig()).enableCodexAdapter(options);
   } catch (error) {
-    return { ok: false, action: "enable", error: error instanceof Error ? error.message : String(error) };
+    return { ok: false, action: "enable", failure: deploymentFailure(error, "deploy"), error: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -53,7 +54,7 @@ export async function readCodexAdapterStatusForLifecycle(
   try {
     return (await loadCodexAdapterConfig()).readCodexAdapterStatus(codexAdapterOptions(argv, serviceOptions, backendUrl));
   } catch (error) {
-    return { ok: false, action: "status", error: error instanceof Error ? error.message : String(error) };
+    return { ok: false, action: "status", failure: deploymentFailure(error, "deploy"), error: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -64,7 +65,7 @@ export async function disableCodexAdapterForLifecycle(
   try {
     return (await loadCodexAdapterConfig()).disableCodexAdapter(codexAdapterOptions(argv, serviceOptions));
   } catch (error) {
-    return { ok: false, action: "disable", error: error instanceof Error ? error.message : String(error) };
+    return { ok: false, action: "disable", failure: deploymentFailure(error, "deploy"), error: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -114,10 +115,10 @@ function codexPluginActivationRequired(): AdapterReport {
   };
 }
 
-async function maybeInstallCodexPluginForStart(argv: string[]): Promise<boolean | undefined> {
+async function maybeInstallCodexPluginForStart(argv: string[], memoraxCodeHome?: string): Promise<boolean | undefined> {
   if (argv.includes("--json")) return undefined;
   if (argv.includes("--yes")) {
-    await installCodexPlugin(codexPluginInstallOptions(argv));
+    await installCodexPlugin({ ...codexPluginInstallOptions(argv), memoraxCodeHome });
     return true;
   }
   if (!canPromptOnStdin()) return undefined;
@@ -126,7 +127,7 @@ async function maybeInstallCodexPluginForStart(argv: string[]): Promise<boolean 
     const answer = await rl.question(`${BACKEND_PREFIX} Install MemoraX Code Codex Adapter plugin now? [y/N] `);
     if (!process.stdout.isTTY) process.stdout.write("\n");
     if (!/^y(?:es)?$/i.test(answer.trim())) return false;
-    await installCodexPlugin(codexPluginInstallOptions(argv));
+    await installCodexPlugin({ ...codexPluginInstallOptions(argv), memoraxCodeHome });
     return true;
   } finally {
     rl.close();
@@ -171,5 +172,6 @@ async function loadCodexAdapterConfig(): Promise<{
   disableCodexAdapter: (options: Record<string, unknown>) => AdapterReport;
   readCodexAdapterStatus: (options: Record<string, unknown>) => AdapterReport;
 }> {
-  return await import(new URL("../../../../memorax-code-codex-adapter/src/config.mjs", import.meta.url).href);
+  return await import(new URL("../../../../memorax-code-codex-adapter/src/config.mjs", import.meta.url).href)
+    .catch((error) => { throw attachDeploymentFailure(error, "adapter-load"); });
 }

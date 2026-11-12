@@ -119,6 +119,40 @@ test("OpenCode repo memory runner preserves prompt failures and still deletes th
   }
 });
 
+test("OpenCode repo memory runner rejects native errors despite partial text", async () => {
+  for (const [name, wrapped] of [["MessageAbortedError", false], ["UnknownError", true]]) {
+    const requests = [];
+    const message = {
+      info: {
+        role: "assistant",
+        error: { name, data: { message: "Private provider detail" } },
+      },
+      parts: [{ type: "text", text: "Partial maintenance progress." }],
+    };
+    await assert.rejects(runOpenCodeRepoMemory({
+      serverUrl: "http://127.0.0.1:4096",
+      repo: join(tmpdir(), "opencode-native-error"),
+      prompt: "Build Repo Memory.",
+    }, {
+      env: { MEMORAX_CODE_OPENCODE_COMMAND: "/opt/opencode" },
+      fetchImpl: async (url, init) => {
+        requests.push(`${init.method} ${url.pathname}`);
+        if (init.method === "DELETE") throw new Error("cleanup failed");
+        const body = url.pathname === "/session"
+          ? { id: "session-native-error" }
+          : wrapped ? { data: message } : message;
+        return new Response(JSON.stringify(body), { status: 200 });
+      },
+      spawnImpl: () => assert.fail("native prompt errors must not start a fallback server"),
+    }), { message: "OpenCode blocking prompt returned an assistant error" });
+    assert.deepEqual(requests, [
+      "POST /session",
+      "POST /session/session-native-error/message",
+      "DELETE /session/session-native-error",
+    ]);
+  }
+});
+
 test("OpenCode repo memory runner owns a temporary server when the inherited server is unreachable", async () => {
   const root = await mkdtemp(join(tmpdir(), "opencode-repo-memory-fallback-"));
   const requests = [];
@@ -149,7 +183,7 @@ test("OpenCode repo memory runner owns a temporary server when the inherited ser
     const result = await runOpenCodeRepoMemory({
       serverUrl: "http://127.0.0.1:9",
       repo: root,
-      prompt: "Build Repo Memory.",
+      prompt: "Update Repo Memory.",
     }, {
       env: {
         MEMORAX_CODE_MEMORY_CLI_SESSION_ID: "parent-fallback",
@@ -184,6 +218,10 @@ test("OpenCode repo memory runner owns a temporary server when the inherited ser
     assert.deepEqual(requests.map((request) => request.method), ["POST", "POST", "DELETE"]);
     assert.equal(requests.every((request) => request.authorization === authorization), true);
     assert.equal(JSON.parse(requests[0].body).parentID, "parent-fallback");
+    assert.deepEqual(JSON.parse(requests[1].body), {
+      agent: OPENCODE_REPO_MEMORY_AGENT,
+      parts: [{ type: "text", text: "Update Repo Memory." }],
+    });
     assert.deepEqual(killSignals, ["SIGTERM"]);
   } finally {
     await server.close();

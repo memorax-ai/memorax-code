@@ -24,6 +24,9 @@ export function resolveWindowsCliInvocation(command, args, options = {}) {
   }
   resolvedCommand ??= command;
   if (/\.(?:exe|com)$/i.test(resolvedCommand)) return { command: resolvedCommand, args };
+  if (isBareCodeBuddyEntrypoint(resolvedCommand, pathApi) && fileExists(resolvedCommand)) {
+    return { command: options.nodePath ?? process.execPath, args: [resolvedCommand, ...args] };
+  }
   if (!/\.(?:cmd|bat)$/i.test(resolvedCommand)) {
     throw new Error(`refusing to execute unsupported Windows command shim: ${resolvedCommand}`);
   }
@@ -34,17 +37,18 @@ export function resolveWindowsCliInvocation(command, args, options = {}) {
     .find((candidate) => fileExists(candidate));
   if (nativeCli) return { command: nativeCli, args };
   const cli = cliEntrypointCandidates(name, resolvedCommand, env, pathApi)
-    .filter(isNodeEntrypoint)
+    .filter((candidate) => isNodeEntrypoint(candidate, name))
     .find((candidate) => fileExists(candidate));
   if (!cli) {
-    const override = name === "claude"
-      ? "MEMORAX_CODE_CLAUDE_CLI_JS"
-      : name === "dsh"
-        ? "MEMORAX_CODE_DSH_CLI_JS"
-        : "MEMORAX_CODE_CODEX_CLI_JS";
+    const override = {
+      claude: "MEMORAX_CODE_CLAUDE_CLI_JS",
+      codex: "MEMORAX_CODE_CODEX_CLI_JS",
+      dsh: "MEMORAX_CODE_DSH_CLI_JS",
+      codebuddy: "MEMORAX_CODE_CODEBUDDY_COMMAND",
+    }[name];
     throw new Error(
       `refusing to execute ${pathApi.basename(resolvedCommand)} through a command shell; `
-      + `set ${override} to its Node entrypoint`,
+      + (override ? `set ${override} to its Node entrypoint` : "use a supported native executable directly"),
     );
   }
   return { command: options.nodePath ?? process.execPath, args: [cli, ...args] };
@@ -87,6 +91,12 @@ function cliEntrypointCandidates(name, command, env, pathApi) {
       pathApi.join(root, "..", "@deepseek-ai", "dsh", "lib", "bin.js"),
     ];
   }
+  if (name === "codebuddy") {
+    return [
+      pathApi.join(root, "node_modules", "@tencent-ai", "codebuddy-code", "bin", "codebuddy"),
+      pathApi.join(root, "..", "@tencent-ai", "codebuddy-code", "bin", "codebuddy"),
+    ];
+  }
   return [];
 }
 
@@ -94,8 +104,10 @@ function isNativeEntrypoint(value) {
   return typeof value === "string" && /\.(?:exe|com)$/i.test(value);
 }
 
-function isNodeEntrypoint(value) {
-  return typeof value === "string" && /\.(?:cjs|js|mjs)$/i.test(value);
+function isNodeEntrypoint(value, name) {
+  // The official CodeBuddy npm package ships an extensionless Node entrypoint.
+  return typeof value === "string" && (/\.(?:cjs|js|mjs)$/i.test(value)
+    || (name === "codebuddy" && isBareCodeBuddyEntrypoint(value, path.win32)));
 }
 
 export function selectWindowsCommandCandidate(command, output) {
@@ -104,9 +116,16 @@ export function selectWindowsCommandCandidate(command, output) {
     .map((value) => value.trim())
     .filter(Boolean);
   const selected = candidates.find((value) => /\.(?:cmd|bat)$/i.test(value))
-    ?? candidates.find((value) => /\.(?:exe|com)$/i.test(value));
+    ?? candidates.find((value) => /\.(?:exe|com)$/i.test(value))
+    ?? (path.win32.basename(command).toLowerCase() === "codebuddy"
+      ? candidates.find((value) => isBareCodeBuddyEntrypoint(value, path.win32))
+      : undefined);
   if (!selected) {
     throw new Error(`where.exe did not return a safe executable or command shim for ${command}`);
   }
   return selected;
+}
+
+function isBareCodeBuddyEntrypoint(value, pathApi) {
+  return pathApi.basename(value).toLowerCase() === "codebuddy" && pathApi.extname(value) === "";
 }

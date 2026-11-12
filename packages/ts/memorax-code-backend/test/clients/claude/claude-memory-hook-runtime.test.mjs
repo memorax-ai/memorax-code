@@ -47,8 +47,11 @@ test("Claude Hook returns the Backend-authorized Git worktree", async () => {
   }
 });
 
-test("Claude Hook writeback uses exact transcript content", async () => {
-  const fixture = await transcriptFixture("Materialized prompt.", "Materialized answer.");
+test("Claude Hook writeback uses exact transcript content and native times", async () => {
+  const fixture = await transcriptFixture("Materialized prompt.", "Materialized answer.", {
+    userTimestamp: "2026-09-01T08:00:00.000Z",
+    assistantRecords: [{ ...assistantRecord("Materialized answer."), timestamp: "2026-09-01T08:03:00.000Z" }],
+  });
   const writebacks = [];
   const diagnostics = [];
   const runtime = createClaudeMemoryHookRuntime({
@@ -74,6 +77,8 @@ test("Claude Hook writeback uses exact transcript content", async () => {
     assert.equal(writebacks.length, 1);
     assert.equal(writebacks[0].userText, "Materialized prompt.");
     assert.equal(writebacks[0].assistantText, "Materialized answer.");
+    assert.equal(writebacks[0].userTimestamp, Date.parse("2026-09-01T08:00:00.000Z"));
+    assert.equal(writebacks[0].assistantTimestamp, Date.parse("2026-09-01T08:03:00.000Z"));
     assert.equal(writebacks[0].client, "claude-code");
     assert.equal(writebacks[0].memoryObservabilitySource, "claude_hook_writeback");
     assert.equal(writebacks[0].repositoryScope, SCOPE);
@@ -367,6 +372,7 @@ test("Claude Hooks persist the same immediate trace lifecycle as Codex Hooks", a
       .split("\n")
       .map((line) => JSON.parse(line));
     assert.deepEqual(events.map((event) => event.type), ["turn_start", "turn_end"]);
+    assert.equal(events[0].source, "claude-hook");
     assert.equal(events[0].trace.client, "claude");
     assert.equal(events[0].trace.turn_id, PROMPT_ID);
     assert.equal(events[0].trace.context_origin, "claude-hook-body");
@@ -576,7 +582,7 @@ test("Claude Stop closes trace even when exact transcript validation blocks writ
   }
 });
 
-test("Claude trace write failures do not block retrieval or exact-transcript writeback", async () => {
+test("Claude trace write failures do not block Turn tracking or exact-transcript writeback", async () => {
   const fixture = await transcriptFixture("Fail-open prompt.", "Fail-open answer.");
   const blockerRoot = await mkdtemp(join(tmpdir(), "memorax-code-claude-hook-trace-blocker-"));
   await writeFile(join(blockerRoot, "debug"), "not a directory", "utf8");
@@ -683,7 +689,7 @@ test("Claude Hooks deduplicate lifecycle events and append late transcript mater
   }
 });
 
-test("Claude automatic retrieval counts each prompt id once per session", async () => {
+test("Claude Turn tracking keeps exact prompt identities without automatic Search", async () => {
   const requests = [];
   const env = {
     ...TRACE_DISABLED_ENV,
@@ -691,40 +697,8 @@ test("Claude automatic retrieval counts each prompt id once per session", async 
   };
   const runtime = createClaudeMemoryHookRuntime({
     automaticWriteback: () => ({ accepted: true }),
-    claimQuotaNotice: async (_config, quota) => `Quota notice: ${quota.remaining} remaining.`,
     env,
-    fetchImpl: async (url, init) => {
-      requests.push({
-        url: String(url),
-        body: JSON.parse(init.body),
-      });
-      return new Response(JSON.stringify({
-        success: true,
-        data: {
-          task_id: "claude-retrieval-dedupe",
-          status: "completed",
-          data: [{
-            id: "memory-1",
-            memory: "Deduplicated Claude retrieval context.",
-            score: 0.9,
-            metadata: { memory_type: "core" },
-          }],
-          balances: [{
-            product_code: "memory_api",
-            feature_code: "memory_search",
-            spec_key: "calls",
-            quota_unit: "times",
-            quota_limit: 10_000,
-            reserved: 1,
-            consumed: 0,
-            remaining: 4_800,
-          }],
-        },
-      }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    },
+    fetchImpl: async (url) => { requests.push(String(url)); throw new Error("unexpected Search"); },
     maxEntries: 2,
     repositoryMemorySession: repositoryRuntime({
       baseUrl: "http://memorax.test",
@@ -749,18 +723,12 @@ test("Claude automatic retrieval counts each prompt id once per session", async 
       sessionId: "session-claude-other",
     });
 
-    assert.match(first.additionalContext, /Deduplicated Claude retrieval context/);
-    assert.equal(first.userNotice, "Quota notice: 4800 remaining.");
-    assert.doesNotMatch(first.additionalContext, /Quota notice/);
+    assert.deepEqual(first, { ok: true });
     assert.deepEqual(duplicate, { ok: true });
-    assert.match(nextPrompt.additionalContext, /Deduplicated Claude retrieval context/);
-    assert.match(otherSession.additionalContext, /Deduplicated Claude retrieval context/);
-    assert.equal(requests.length, 3);
-    assert.deepEqual(requests.map(({ body }) => body.query), [
-      "Hook prompt.",
-      "Hook prompt.",
-      "Hook prompt.",
-    ]);
+    assert.deepEqual(nextPrompt, { ok: true });
+    assert.deepEqual(otherSession, { ok: true });
+    assert.deepEqual(requests, []);
+    assert.equal(runtime.size(), 2);
   } finally {
     runtime.close();
   }
@@ -797,12 +765,12 @@ function turnStart(transcriptPath, promptId = PROMPT_ID) {
 async function transcriptFixture(
   userPrompt,
   assistantReply,
-  { promptId = PROMPT_ID, assistantRecords } = {},
+  { promptId = PROMPT_ID, assistantRecords, userTimestamp } = {},
 ) {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-claude-hook-transcript-"));
   const path = join(root, "transcript.jsonl");
   await writeFile(path, [
-    JSON.stringify(userRecord(userPrompt, promptId)),
+    JSON.stringify({ ...userRecord(userPrompt, promptId), timestamp: userTimestamp }),
     ...(assistantRecords ?? [assistantRecord(assistantReply)])
       .map((record) => JSON.stringify(record)),
     "",

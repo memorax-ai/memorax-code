@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   completeTrialCredentialProvisioning,
   createInitialTrialCredentialRecord,
+  TrialCredentialRecordError,
 } from "../../../ts/memorax-code-adapter-common/src/credentials/trial-credential-record.mjs";
 import {
   TrialProvisionClientError,
@@ -11,6 +12,12 @@ import {
   ensureTrialCredentialReady,
   TrialProvisionFlowError,
 } from "../lib/trial-provision-flow.mjs";
+
+import { SecureCredentialBackendError } from "../../../ts/memorax-code-adapter-common/src/credentials/secure-command.mjs";
+import {
+  ensureTrialSetupCredential,
+  trialSetupFailureDetails,
+} from "../lib/trial-setup.mjs";
 
 const API_KEY = `sk_${"A".repeat(43)}`;
 const SECOND_API_KEY = `sk_${"B".repeat(43)}`;
@@ -82,7 +89,12 @@ test("a secure-store commit failure leaves provisioning state for a later reappl
   store.failNextTransition = true;
   await assert.rejects(
     runFlow(store, { provision: async () => RESPONSE }),
-    flowError("credential_failure"),
+    flowError("credential_failure", {
+      errorCode: "TRIAL_CREDENTIAL_BACKEND_ERROR",
+      stage: "credential_complete",
+      failureReason: "credential_failure",
+      credentialReason: "storage_failed",
+    }),
   );
   assert.equal(store.current.state, "provisioning");
   assert.equal(store.current.api_key, null);
@@ -97,10 +109,124 @@ test("a secure-store commit failure leaves provisioning state for a later reappl
 test("unknown client failures fail closed", async () => {
   await assert.rejects(
     runFlow(memoryCredentialPort(), {
-      provision: async () => { throw new Error(API_KEY); },
+      provision: async () => {
+        throw Object.assign(new Error(API_KEY), {
+          code: API_KEY, reason: API_KEY, systemCode: API_KEY, credentialReason: API_KEY,
+        });
+      },
     }),
-    flowError("client_failure"),
+    flowError("client_failure", {
+      errorCode: "TRIAL_PROVISION_FLOW_FAILED",
+      stage: "provision",
+      failureReason: "client_failure",
+    }),
   );
+});
+
+test("credential failures retain their stage and known reason inside the provision lock", async () => {
+  const locked = memoryCredentialPort();
+  locked.port.withProvisionLock = async () => {
+    throw Object.assign(new Error(API_KEY), { code: "JSON_FILE_LOCK_TIMEOUT" });
+  };
+  await assert.rejects(runFlow(locked, { provision: async () => RESPONSE }), flowError("credential_failure", {
+    errorCode: "JSON_FILE_LOCK_TIMEOUT",
+    stage: "credential_lock",
+    failureReason: "credential_failure",
+  }));
+
+  const unreadable = memoryCredentialPort();
+  unreadable.port.load = async () => { throw new TrialCredentialRecordError("malformed_json"); };
+  await assert.rejects(runFlow(unreadable, { provision: async () => RESPONSE }), flowError("credential_failure", {
+    errorCode: "TRIAL_CREDENTIAL_RECORD_INVALID",
+    stage: "credential_load",
+    failureReason: "credential_failure",
+    credentialReason: "malformed_json",
+  }));
+
+  const releaseError = Object.assign(new Error(API_KEY, {
+    cause: Object.assign(new Error(API_KEY), { code: "EACCES" }),
+  }), { code: "JSON_FILE_LOCK_RELEASE_FAILED" });
+  const failingRelease = async (operation) => {
+    try { return await operation(); }
+    catch (error) {
+      throw Object.assign(new AggregateError([error, releaseError], API_KEY, { cause: error }), {
+        code: "JSON_FILE_LOCK_RELEASE_FAILED",
+      });
+    }
+  };
+  unreadable.port.load = async () => {
+    throw Object.assign(new TrialCredentialRecordError("malformed_json"), {
+      cause: Object.assign(new Error(API_KEY), { code: "ENOSPC" }),
+    });
+  };
+  unreadable.port.withProvisionLock = failingRelease;
+  await assert.rejects(runFlow(unreadable, { provision: async () => RESPONSE }), flowError("credential_failure", {
+    errorCode: "TRIAL_CREDENTIAL_RECORD_INVALID",
+    stage: "credential_load",
+    failureReason: "credential_failure",
+    credentialReason: "malformed_json",
+    systemCode: "ENOSPC",
+    cleanupErrorCode: "JSON_FILE_LOCK_RELEASE_FAILED",
+    cleanupSystemCode: "EACCES",
+  }));
+  const rejected = memoryCredentialPort();
+  rejected.port.withProvisionLock = failingRelease;
+  await assert.rejects(runFlow(rejected, {
+    provision: async () => { throw new TrialProvisionClientError("server_rejected", { httpStatus: 403 }); },
+  }), (error) => {
+    assert.ok(error instanceof TrialProvisionClientError);
+    assert.deepEqual(trialSetupFailureDetails(error), {
+      errorCode: "TRIAL_PROVISION_CLIENT_FAILED", stage: "provision",
+      failureReason: "server_rejected", httpStatus: 403,
+      cleanupErrorCode: "JSON_FILE_LOCK_RELEASE_FAILED", cleanupSystemCode: "EACCES",
+    });
+    assert.equal(JSON.stringify(error).includes(API_KEY), false);
+    return true;
+  });
+  const releaseOnly = memoryCredentialPort();
+  releaseOnly.port.complete = async () => { throw releaseError; };
+  await assert.rejects(runFlow(releaseOnly, { provision: async () => RESPONSE }), flowError("credential_failure", {
+    errorCode: "JSON_FILE_LOCK_RELEASE_FAILED", stage: "credential_lock",
+    failureReason: "credential_failure", systemCode: "EACCES",
+  }));
+
+  await assert.rejects(runFlow(memoryCredentialPort(), { provision: async () => RESPONSE }, {
+    generatePluginIdentity: () => ({ ...IDENTITY, machineId: "" }),
+  }), flowError("identity_generation_failed", {
+    errorCode: "TRIAL_CREDENTIAL_RECORD_INVALID",
+    stage: "identity",
+    failureReason: "identity_generation_failed",
+    credentialReason: "invalid_machine_id",
+  }));
+});
+
+test("setup projects safe initialization and HTTP details while dropping unknown fields", async () => {
+  await assert.rejects(ensureTrialSetupCredential({
+    credentialApis: {
+      createTrialCredentialStorePort() {
+        throw new SecureCredentialBackendError({
+          backend: "credential-store", operation: "initialize", reason: "backend_unavailable",
+        });
+      },
+    },
+  }), flowError("credential_failure", {
+    errorCode: "TRIAL_CREDENTIAL_BACKEND_ERROR",
+    stage: "credential_load",
+    failureReason: "credential_failure",
+    credentialReason: "backend_unavailable",
+  }));
+  assert.deepEqual(trialSetupFailureDetails(new TrialProvisionClientError("rate_limit_exceeded", {
+    httpStatus: 429, retryAfterMs: 3_000, systemCode: API_KEY,
+  })), {
+    errorCode: "TRIAL_PROVISION_CLIENT_FAILED",
+    stage: "provision",
+    failureReason: "rate_limit_exceeded",
+    httpStatus: 429,
+    retryAfterMs: 3_000,
+  });
+  assert.deepEqual(trialSetupFailureDetails(Object.assign(new Error(API_KEY), {
+    code: API_KEY, reason: API_KEY, stage: API_KEY, systemCode: API_KEY, apiKey: API_KEY,
+  })), { errorCode: "TRIAL_SETUP_FAILED", stage: "unknown" });
 });
 
 async function runFlow(store, client, overrides = {}) {
@@ -133,7 +259,9 @@ function memoryCredentialPort(initial = null) {
     async complete(current, metadata) {
       if (state.failNextTransition) {
         state.failNextTransition = false;
-        throw new Error("secure store unavailable");
+        throw new SecureCredentialBackendError({
+          backend: "credential-store", operation: "save", reason: "storage_failed",
+        });
       }
       assert.deepEqual(current, state.current);
       state.current = completeTrialCredentialProvisioning(current, metadata);
@@ -146,10 +274,12 @@ function memoryCredentialPort(initial = null) {
   return state;
 }
 
-function flowError(reason) {
+function flowError(reason, details) {
   return (error) => {
     assert.ok(error instanceof TrialProvisionFlowError);
     assert.equal(error.reason, reason);
+    if (details) assert.deepEqual(trialSetupFailureDetails(error), details);
+    assert.equal(JSON.stringify(error).includes(API_KEY), false);
     assert.equal(`${error.message} ${error.stack}`.includes(API_KEY), false);
     return true;
   };

@@ -71,7 +71,7 @@ const claudeBooleans = [
   "restartHealthy",
   "adapterReady",
   "sessionStartHookExecuted",
-  "userPromptRetrievalHookExecuted",
+  "userPromptTurnStartHookExecuted",
   "userPromptReminderHookExecuted",
   "writebackHookExecuted",
   "hookAuthForwarded",
@@ -186,7 +186,7 @@ test("Windows Claude report accepts only the current plugin and Hook lifecycle s
     );
     assert.equal(accepted.status, 0, accepted.stderr);
 
-    delete valid.userPromptRetrievalHookExecuted;
+    delete valid.userPromptTurnStartHookExecuted;
     await writeFile(report, `${JSON.stringify(valid)}\n`);
     const missingHook = spawnSync(
       process.execPath,

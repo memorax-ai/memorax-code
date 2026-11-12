@@ -1,10 +1,54 @@
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter } from "node:path";
-import { test } from "node:test";
-import { ensureClaudeMarketplaceEnv, ensureInstallWatchdogEnv, installWatchPathsForPackageRoot } from "../lib/run-entrypoint.mjs";
+import { delimiter, join } from "node:path";
+import { after, test } from "node:test";
+import { pathToFileURL } from "node:url";
+
+const fixtureRoot = await mkdtemp(join(tmpdir(), "memorax-code-entrypoint-module-"));
+after(() => rm(fixtureRoot, { recursive: true, force: true }));
+const libRoot = join(fixtureRoot, "lib");
+const commonRoot = join(libRoot, "memorax-code-adapter-common", "src", "clients");
+await mkdir(commonRoot, { recursive: true });
+for (const name of [
+  "run-entrypoint", "node-version", "npm-invocation", "resolve-claude-command",
+  "resolve-codex-command", "resolve-codebuddy-command", "vscode-extension-command",
+  "windows-cli-invocation",
+]) {
+  await copyFile(new URL(`../lib/${name}.mjs`, import.meta.url), join(libRoot, `${name}.mjs`));
+}
+await copyFile(
+  new URL("../../../ts/memorax-code-adapter-common/src/clients/codebuddy-command.mjs", import.meta.url),
+  join(commonRoot, "codebuddy-command.mjs"),
+);
+const {
+  ensureClaudeMarketplaceEnv,
+  ensureInstallWatchdogEnv,
+  ensureNpmPackageRuntimeEnv,
+  installWatchPathsForPackageRoot,
+} = await import(pathToFileURL(join(libRoot, "run-entrypoint.mjs")).href);
+
+test("package entrypoint preserves a verified Windows npm CLI path", async () => {
+  const packageRoot = await mkdtemp(join(tmpdir(), "memorax-code-npm-runtime-"));
+  const npmExecPath = "C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js";
+  const env = {};
+  try {
+    await writeFile(join(packageRoot, "package.json"), `${JSON.stringify({ version: "0.1.9-test" })}\n`);
+    ensureNpmPackageRuntimeEnv(packageRoot, {
+      env,
+      platform: "win32",
+      nodePath: "C:\\Program Files\\nodejs\\node.exe",
+      existsSync: (candidate) => candidate === npmExecPath,
+    });
+
+    assert.equal(env.MEMORAX_CODE_NPM_PACKAGE_ROOT, packageRoot);
+    assert.equal(env.MEMORAX_CODE_NPM_PACKAGE_VERSION, "0.1.9-test");
+    assert.equal(env.MEMORAX_CODE_NPM_EXEC_PATH, npmExecPath);
+  } finally {
+    await rm(packageRoot, { recursive: true, force: true });
+  }
+});
 
 test("package entrypoint declares install watchdog paths without overriding user config", async () => {
   const packageRoot = await mkdtemp(`${tmpdir()}/memorax-code-run-entrypoint-`);
@@ -48,8 +92,8 @@ test("package entrypoint exposes bundled Claude marketplace and skills roots", a
     delete process.env.MEMORAX_CODE_CLAUDE_MARKETPLACE_ROOT;
     delete process.env.MEMORAX_CODE_CLAUDE_SKILLS_ROOT;
     ensureClaudeMarketplaceEnv();
-    assert.match(process.env.MEMORAX_CODE_CLAUDE_MARKETPLACE_ROOT ?? "", /lib\/memorax-code-claude-marketplace$/);
-    assert.match(process.env.MEMORAX_CODE_CLAUDE_SKILLS_ROOT ?? "", /lib\/memorax-code-claude-adapter\/skills$/);
+    assert.match(process.env.MEMORAX_CODE_CLAUDE_MARKETPLACE_ROOT ?? "", /lib[/\\]memorax-code-claude-marketplace$/);
+    assert.match(process.env.MEMORAX_CODE_CLAUDE_SKILLS_ROOT ?? "", /lib[/\\]memorax-code-claude-adapter[/\\]skills$/);
 
     process.env.MEMORAX_CODE_CLAUDE_MARKETPLACE_ROOT = "/custom/marketplace";
     process.env.MEMORAX_CODE_CLAUDE_SKILLS_ROOT = "/custom/skills";

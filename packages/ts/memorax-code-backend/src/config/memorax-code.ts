@@ -4,6 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { parse } from "smol-toml";
 import { ensurePrivateConfigDirectory } from "../../../memorax-code-adapter-common/src/memorax-code-config-file.mjs";
+import { DEFAULT_JEV_CONFIG_TEXT } from "../../../memorax-code-adapter-common/src/jev-config-defaults.mjs";
 import {
   MEMORAX_DEFAULT_BASE_URL,
   MEMORAX_DEFAULT_MEMORY_OUTPUT_LANGUAGE,
@@ -16,17 +17,24 @@ export type MemoraxCodeConfig = Readonly<{
     claude?: boolean;
     dsh?: boolean;
     opencode?: boolean;
+    codebuddy?: boolean;
+    workbuddy?: boolean;
+    trae?: boolean;
+    cursor?: boolean;
+    qoder?: boolean;
   }>;
   memorax?: Readonly<{
     endpoint?: string;
     api_key?: string;
     user_id?: string;
     timeout_ms?: number;
-    startup_timeout_ms?: number;
+  }>;
+  jev?: Readonly<{
+    enabled?: boolean;
+    api_key?: string;
   }>;
   memory?: Readonly<{
     retrieval?: Readonly<{
-      enabled?: boolean;
       top_k?: number;
       k_dense?: number;
       k_sparse?: number;
@@ -48,7 +56,7 @@ export type MemoraxCodeConfig = Readonly<{
       chunk_overlap_ratio?: number;
     }>;
     add?: Readonly<{
-      content_type?: "dialogue" | "code";
+      content_type?: "dialogue" | "code" | "auto" | "work";
       mode?: "default" | "raw" | "pre_summarized";
       output_language?: MemoraxMemoryOutputLanguage;
     }>;
@@ -100,6 +108,41 @@ export type MemoraxCodeConfig = Readonly<{
       max_event_chars?: number;
       max_file_bytes?: number;
     }>;
+    codebuddy?: Readonly<{
+      enabled?: boolean;
+      capture_content?: boolean;
+      retention_days?: number;
+      max_event_chars?: number;
+      max_file_bytes?: number;
+    }>;
+    workbuddy?: Readonly<{
+      enabled?: boolean;
+      capture_content?: boolean;
+      retention_days?: number;
+      max_event_chars?: number;
+      max_file_bytes?: number;
+    }>;
+    trae?: Readonly<{
+      enabled?: boolean;
+      capture_content?: boolean;
+      retention_days?: number;
+      max_event_chars?: number;
+      max_file_bytes?: number;
+    }>;
+    cursor?: Readonly<{
+      enabled?: boolean;
+      capture_content?: boolean;
+      retention_days?: number;
+      max_event_chars?: number;
+      max_file_bytes?: number;
+    }>;
+    qoder?: Readonly<{
+      enabled?: boolean;
+      capture_content?: boolean;
+      retention_days?: number;
+      max_event_chars?: number;
+      max_file_bytes?: number;
+    }>;
   }>;
 }>;
 
@@ -131,9 +174,7 @@ export function renderDefaultMemoraxCodeConfig(): string {
     '# api_key = "" # MemoraX API key used by the local Backend.',
     '# user_id = "" # MemoraX base user ID; requests derive a workspace-scoped namespace.',
     "",
-    "# Automatic Hook retrieval is opt-in.",
-    "[memory.retrieval]",
-    "enabled = false # Auto-inject retrieved memories into supported client prompts.",
+    DEFAULT_JEV_CONFIG_TEXT.trimEnd(),
     "",
     "# Automatic writeback sends selected prompts and final answers to MemoraX.",
     "[memory.writeback]",
@@ -149,9 +190,9 @@ export function renderDefaultMemoraxCodeConfig(): string {
     "",
     "# Relevant repo reads batch generated repo-memory updates by commit count or elapsed time.",
     "[memory.repo_update]",
-    'policy = "adaptive" # every-commit / commit-count / daily / pull-request / pull-request-or-daily / adaptive.',
+    'policy = "daily" # every-commit / commit-count / daily / pull-request / pull-request-or-daily / adaptive.',
     "commit_threshold = 5 # Pending local commits needed by commit-count and adaptive.",
-    "cooldown_hours = 24 # Pending-commit age used by daily, pull-request-or-daily, and adaptive.",
+    "cooldown_hours = 72 # Hours since the last successful update; used by daily, pull-request-or-daily, and adaptive.",
     "",
     "# Local traces may contain prompts, responses, recalled memories, and local paths.",
     "[trace.codex]",
@@ -169,6 +210,26 @@ export function renderDefaultMemoraxCodeConfig(): string {
     "[trace.opencode]",
     "enabled = true # Enable local OpenCode session memory trace collection.",
     "capture_content = true # Store content in local OpenCode trace events.",
+    "",
+    "[trace.codebuddy]",
+    "enabled = true # Enable local CodeBuddy session memory trace collection.",
+    "capture_content = true # Store content in local CodeBuddy trace events.",
+    "",
+    "[trace.workbuddy]",
+    "enabled = true # Enable local WorkBuddy session memory trace collection.",
+    "capture_content = true # Store content in local WorkBuddy trace events.",
+    "",
+    "[trace.trae]",
+    "enabled = true # Enable local Trae session memory trace collection.",
+    "capture_content = true # Store content in local Trae trace events.",
+    "",
+    "[trace.cursor]",
+    "enabled = true # Enable local Cursor session memory trace collection.",
+    "capture_content = true # Store content in local Cursor trace events.",
+    "",
+    "[trace.qoder]",
+    "enabled = true # Enable local Qoder session memory trace collection.",
+    "capture_content = true # Store content in local Qoder trace events.",
     "",
   ].join("\n");
 }
@@ -207,8 +268,9 @@ export function loadMemoraxCodeConfig(
 
   try {
     return normalizeMemoraxCodeConfig(parse(text));
-  } catch (error) {
-    (options.warn ?? console.warn)(`failed to parse MemoraX Code config ${path}: ${errorMessage(error)}`);
+  } catch {
+    // Parser errors may include source lines containing credentials.
+    (options.warn ?? console.warn)(`failed to parse MemoraX Code config ${path}`);
     return {};
   }
 }
@@ -239,6 +301,7 @@ function normalizeMemoraxCodeConfig(value: unknown): MemoraxCodeConfig {
   const root = recordValue(value);
   const clients = recordValue(root?.clients);
   const memorax = recordValue(root?.memorax);
+  const jev = recordValue(root?.jev);
   const memory = recordValue(root?.memory);
   const trace = recordValue(root?.trace);
   const retrieval = recordValue(memory?.retrieval);
@@ -251,6 +314,12 @@ function normalizeMemoraxCodeConfig(value: unknown): MemoraxCodeConfig {
   const traceClaude = recordValue(trace?.claude);
   const traceDsh = recordValue(trace?.dsh);
   const traceOpenCode = recordValue(trace?.opencode);
+  const traceCodeBuddy = recordValue(trace?.codebuddy);
+  // Older WorkBuddy installations stored their trace preferences under codebuddy.
+  const traceWorkBuddy = recordValue(trace?.workbuddy) ?? traceCodeBuddy;
+  const traceTrae = recordValue(trace?.trae);
+  const traceCursor = recordValue(trace?.cursor);
+  const traceQoder = recordValue(trace?.qoder);
 
   return (prune({
     clients: prune({
@@ -258,17 +327,24 @@ function normalizeMemoraxCodeConfig(value: unknown): MemoraxCodeConfig {
       claude: booleanField(clients, "claude"),
       dsh: booleanField(clients, "dsh"),
       opencode: booleanField(clients, "opencode"),
+      codebuddy: booleanField(clients, "codebuddy"),
+      workbuddy: booleanField(clients, "workbuddy"),
+      trae: booleanField(clients, "trae"),
+      cursor: booleanField(clients, "cursor"),
+      qoder: booleanField(clients, "qoder"),
     }),
     memorax: prune({
       endpoint: stringField(memorax, "endpoint"),
       api_key: stringField(memorax, "api_key"),
       user_id: stringField(memorax, "user_id"),
       timeout_ms: numberField(memorax, "timeout_ms"),
-      startup_timeout_ms: numberField(memorax, "startup_timeout_ms"),
+    }),
+    jev: prune({
+      enabled: booleanField(jev, "enabled"),
+      api_key: stringField(jev, "api_key"),
     }),
     memory: prune({
       retrieval: prune({
-        enabled: booleanField(retrieval, "enabled"),
         top_k: numberField(retrieval, "top_k"),
         k_dense: numberField(retrieval, "k_dense"),
         k_sparse: numberField(retrieval, "k_sparse"),
@@ -336,6 +412,41 @@ function normalizeMemoraxCodeConfig(value: unknown): MemoraxCodeConfig {
         max_event_chars: numberField(traceOpenCode, "max_event_chars"),
         max_file_bytes: numberField(traceOpenCode, "max_file_bytes"),
       }),
+      codebuddy: prune({
+        enabled: booleanField(traceCodeBuddy, "enabled"),
+        capture_content: booleanField(traceCodeBuddy, "capture_content"),
+        retention_days: numberField(traceCodeBuddy, "retention_days"),
+        max_event_chars: numberField(traceCodeBuddy, "max_event_chars"),
+        max_file_bytes: numberField(traceCodeBuddy, "max_file_bytes"),
+      }),
+      workbuddy: prune({
+        enabled: booleanField(traceWorkBuddy, "enabled"),
+        capture_content: booleanField(traceWorkBuddy, "capture_content"),
+        retention_days: numberField(traceWorkBuddy, "retention_days"),
+        max_event_chars: numberField(traceWorkBuddy, "max_event_chars"),
+        max_file_bytes: numberField(traceWorkBuddy, "max_file_bytes"),
+      }),
+      trae: prune({
+        enabled: booleanField(traceTrae, "enabled"),
+        capture_content: booleanField(traceTrae, "capture_content"),
+        retention_days: numberField(traceTrae, "retention_days"),
+        max_event_chars: numberField(traceTrae, "max_event_chars"),
+        max_file_bytes: numberField(traceTrae, "max_file_bytes"),
+      }),
+      cursor: prune({
+        enabled: booleanField(traceCursor, "enabled"),
+        capture_content: booleanField(traceCursor, "capture_content"),
+        retention_days: numberField(traceCursor, "retention_days"),
+        max_event_chars: numberField(traceCursor, "max_event_chars"),
+        max_file_bytes: numberField(traceCursor, "max_file_bytes"),
+      }),
+      qoder: prune({
+        enabled: booleanField(traceQoder, "enabled"),
+        capture_content: booleanField(traceQoder, "capture_content"),
+        retention_days: numberField(traceQoder, "retention_days"),
+        max_event_chars: numberField(traceQoder, "max_event_chars"),
+        max_file_bytes: numberField(traceQoder, "max_file_bytes"),
+      }),
     }),
   }) ?? {}) as MemoraxCodeConfig;
 }
@@ -348,7 +459,7 @@ function validateRawLifecycleConfig(value: unknown, path: string): void {
   if (rawClients !== undefined) {
     const clients = tableValue(rawClients);
     if (!clients) throw invalidLifecycleConfig(path, "clients must be a table");
-    for (const field of ["codex", "claude", "dsh", "opencode"] as const) {
+    for (const field of ["codex", "claude", "dsh", "opencode", "codebuddy", "workbuddy", "trae", "cursor", "qoder"] as const) {
       if (clients[field] !== undefined && typeof clients[field] !== "boolean") {
         throw invalidLifecycleConfig(path, `clients.${field} must be a boolean`);
       }

@@ -1,59 +1,22 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { access, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import {
-  DEFAULT_ENSURE_BACKEND_START_TIMEOUT_MS,
-  ensureBackendAvailable,
-} from "../../memorax-code-adapter-common/src/hooks/ensure-backend-runner.mjs";
+  activateClientHookRuntimeGeneration,
+  stageClientHookRuntimeGeneration,
+} from "../../memorax-code-adapter-common/src/hooks/hook-runtime-generation.mjs";
 import { enableCodexAdapter, readCodexAdapterStatus } from "../src/config.mjs";
 
 const pluginRoot = fileURLToPath(new URL("..", import.meta.url));
+const adapterCommonRoot = fileURLToPath(new URL("../../memorax-code-adapter-common/", import.meta.url));
+const claudeAdapterRoot = fileURLToPath(new URL("../../memorax-code-claude-adapter/", import.meta.url));
 const hookPath = join(pluginRoot, "hooks", "runtime-hook.mjs");
-
-test("ensure-backend process ceiling leaves room for lifecycle lock wait and recovery", () => {
-  assert.equal(DEFAULT_ENSURE_BACKEND_START_TIMEOUT_MS, 90000);
-});
-
-test("shared Backend recovery passes caller-supplied internal environment", async () => {
-  const f = await fixture();
-  const recordPath = join(f.root, "recovery.json");
-  const command = join(f.root, "recovery-memorax-code.mjs");
-  await writeFile(command, [
-    'import { writeFileSync } from "node:fs";',
-    'writeFileSync(process.env.MEMORAX_CODE_TEST_RECORD_PATH, JSON.stringify({',
-    '  marker: process.env.MEMORAX_CODE_DSH_ADAPTER_RECOVERY,',
-    '  revision: process.env.MEMORAX_CODE_DSH_ADAPTER_EXPECTED_REVISION,',
-    '}));',
-  ].join("\n"));
-
-  await ensureBackendAvailable({
-    backendConnection: {
-      memoraxCodeHome: f.memoraxCodeHome,
-      url: "http://127.0.0.1:9",
-      source: "environment",
-    },
-    healthTimeoutValue: "50",
-    memoraxCodeCommand: command,
-    nodePath: process.execPath,
-    resolveHomes: () => ({ memoraxCodeHome: f.memoraxCodeHome }),
-    buildStartArgs: () => ["start"],
-    recoveryEnv: {
-      MEMORAX_CODE_TEST_RECORD_PATH: recordPath,
-      MEMORAX_CODE_DSH_ADAPTER_RECOVERY: "1",
-      MEMORAX_CODE_DSH_ADAPTER_EXPECTED_REVISION: "revision-1",
-    },
-  });
-
-  assert.deepEqual(JSON.parse(await readFile(recordPath, "utf8")), {
-    marker: "1",
-    revision: "revision-1",
-  });
-});
 
 async function fixture(prefix = "memorax-code-ensure-hooks-") {
   const root = await mkdtemp(join(tmpdir(), prefix));
@@ -87,27 +50,34 @@ async function healthyBackend() {
 async function fakeMemoraxCode(root) {
   const command = join(root, "fake-memorax-code.mjs");
   await writeFile(command, [
-    'import { appendFileSync } from "node:fs";',
+    'import { appendFileSync, writeFileSync } from "node:fs";',
     'appendFileSync(process.env.MEMORAX_CODE_TEST_ARGS_PATH, `${JSON.stringify(process.argv.slice(2))}\\n`);',
+    'if (process.env.MEMORAX_CODE_TEST_NPM_PATH) writeFileSync(process.env.MEMORAX_CODE_TEST_NPM_PATH, process.env.MEMORAX_CODE_NPM_EXEC_PATH ?? "");',
   ].join("\n"));
   return command;
 }
 
 async function hangingMemoraxCode(root) {
   const command = join(root, "hanging-memorax-code.mjs");
-  await writeFile(command, "setInterval(() => {}, 1000);\n");
-  return command;
+  const startedPath = join(root, "recovery-started");
+  await writeFile(command, [
+    'import { writeFileSync } from "node:fs";',
+    `writeFileSync(${JSON.stringify(startedPath)}, "started");`,
+    "setTimeout(() => process.exit(99), 10_000);",
+  ].join("\n"));
+  return { command, startedPath };
 }
 
 function runHook({
   env = {},
+  path = hookPath,
   input = {
     hook_event_name: "SessionStart",
     session_id: "ensure-backend-session",
   },
 } = {}) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [hookPath, "ensure-backend"], {
+    const child = spawn(process.execPath, [path, "ensure-backend"], {
       env: { ...process.env, ...env },
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -206,6 +176,8 @@ test("unhealthy Backend starts memorax-code for Codex", async () => {
     "--codex-home", f.codexHome,
     "--host", "127.0.0.1",
     "--port", "9",
+    "--preserve-clients",
+    "--json",
   ]);
 });
 
@@ -258,6 +230,8 @@ test("unhealthy Backend recovery preserves the persisted host and port", async (
     "--codex-home", f.codexHome,
     "--host", "127.0.0.1",
     "--port", "9",
+    "--preserve-clients",
+    "--json",
   ]);
 });
 
@@ -287,9 +261,10 @@ test("invalid connection authority fails open without local lifecycle recovery",
   assert.deepEqual(await readArgs(argsPath), []);
 });
 
-test("Backend start recovery remains bounded and fails open on timeout", async () => {
+test("Backend start recovery remains bounded and fails open after its child starts", { timeout: 15_000 }, async (t) => {
   const f = await fixture();
-  const command = await hangingMemoraxCode(f.root);
+  t.after(() => rm(f.root, { recursive: true, force: true }));
+  const { command, startedPath } = await hangingMemoraxCode(f.root);
   const startedAt = Date.now();
   const result = await runHook({
     env: {
@@ -297,15 +272,16 @@ test("Backend start recovery remains bounded and fails open on timeout", async (
       MEMORAX_CODE_HOME: f.memoraxCodeHome,
       MEMORAX_CODE_BACKEND_URL: "http://127.0.0.1:9",
       MEMORAX_CODE_CODEX_ENSURE_TIMEOUT_MS: "50",
-      MEMORAX_CODE_CODEX_START_TIMEOUT_MS: "50",
+      MEMORAX_CODE_CODEX_START_TIMEOUT_MS: "2000",
       MEMORAX_CODE_CODEX_LIFECYCLE_COMMAND: command,
       MEMORAX_CODE_CODEX_HOOK_DEBUG: "1",
     },
   });
 
   assert.equal(result.code, 0, result.stderr);
+  assert.equal(await readFile(startedPath, "utf8"), "started");
   assert.match(result.stderr, /MemoraX Code backend start failed with code 124: timed out/);
-  assert.ok(Date.now() - startedAt < 2_000);
+  assert.ok(Date.now() - startedAt < 10_000);
 });
 
 test("ensure-backend resolves memorax-code command from plugin metadata", async () => {
@@ -329,6 +305,57 @@ test("ensure-backend resolves memorax-code command from plugin metadata", async 
   });
   assert.equal(result.code, 0, result.stderr);
   assert.equal((await readArgs(argsPath)).length, 1);
+});
+
+test("durable ensure-backend runtime keeps the plugin metadata command for Backend recovery", async () => {
+  const f = await fixture("memorax-code-durable-recovery-command-");
+  const argsPath = join(f.root, "recovery-args.jsonl");
+  const npmRecordPath = join(f.root, "recovery-npm-path.txt");
+  const npmExecPath = join(f.root, "npm-cli.js");
+  const command = await fakeMemoraxCode(f.root);
+  try {
+    await writeFile(npmExecPath, "// test npm entrypoint\n");
+    const stagedPlugin = await stageTestPlugin(f.root, command, { npmExecPath });
+    const runtimePackage = await stageTestRuntimePackage(f.root);
+    const generation = stageClientHookRuntimeGeneration({
+      packageRoot: runtimePackage,
+      memoraxCodeHome: f.memoraxCodeHome,
+    });
+    activateClientHookRuntimeGeneration({
+      memoraxCodeHome: f.memoraxCodeHome,
+      generation,
+    });
+    const result = await runHook({
+      path: join(stagedPlugin, "hooks", "runtime-hook.mjs"),
+      env: {
+        CODEX_HOME: f.codexHome,
+        MEMORAX_CODE_HOME: f.memoraxCodeHome,
+        MEMORAX_CODE_BACKEND_URL: "http://127.0.0.1:9",
+        MEMORAX_CODE_CODEX_ENSURE_TIMEOUT_MS: "50",
+        MEMORAX_CODE_CODEX_LIFECYCLE_COMMAND: "",
+        MEMORAX_CODE_COMMAND: "",
+        MEMORAX_CODE_NPM_EXEC_PATH: "",
+        MEMORAX_CODE_TEST_ARGS_PATH: argsPath,
+        MEMORAX_CODE_TEST_NPM_PATH: npmRecordPath,
+        PATH: "",
+        PLUGIN_ROOT: "",
+      },
+    });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(await readArgs(argsPath), [[
+      "start",
+      "--home", f.memoraxCodeHome,
+      "--codex-home", f.codexHome,
+      "--host", "127.0.0.1",
+      "--port", "9",
+      "--preserve-clients",
+      "--json",
+    ]]);
+    assert.equal(await readFile(npmRecordPath, "utf8"), npmExecPath);
+  } finally {
+    await rm(f.root, { recursive: true, force: true });
+  }
 });
 
 test("disabled ensure-backend hook exits without state or command changes", async () => {
@@ -363,3 +390,44 @@ test("missing metadata command leaves stale plugin Hook inert after backend remo
   });
   assert.equal(result.code, 0, result.stderr);
 });
+
+async function stageTestPlugin(root, command, metadata = {}) {
+  const container = join(root, "plugin-cache");
+  const stagedPlugin = join(container, "memorax-code-codex-adapter");
+  const stagedCommon = join(container, "memorax-code-adapter-common");
+  await mkdir(stagedPlugin, { recursive: true });
+  for (const entry of ["hooks", "runtime-hooks", "src", "skills", "package.json"]) {
+    await cp(join(pluginRoot, entry), join(stagedPlugin, entry), { recursive: true });
+  }
+  await cp(join(adapterCommonRoot, "src"), join(stagedCommon, "src"), { recursive: true });
+  await writeFile(join(stagedPlugin, ".memorax-code-package.json"), `${JSON.stringify({
+    version: 1,
+    memoraxCodeCommand: command,
+    ...metadata,
+  })}\n`);
+  return stagedPlugin;
+}
+
+async function stageTestRuntimePackage(root) {
+  const packageRoot = join(root, "runtime-package");
+  await mkdir(packageRoot, { recursive: true });
+  await writeFile(join(packageRoot, "package.json"), `${JSON.stringify({
+    name: "@memorax/memorax-code",
+    version: "0.1.9-test",
+  })}\n`);
+  for (const [sourceRoot, adapter] of [
+    [adapterCommonRoot, "memorax-code-adapter-common"],
+    [pluginRoot, "memorax-code-codex-adapter"],
+    [claudeAdapterRoot, "memorax-code-claude-adapter"],
+  ]) {
+    await cp(join(sourceRoot, "src"), join(packageRoot, "lib", adapter, "src"), { recursive: true });
+    if (adapter !== "memorax-code-adapter-common") {
+      await cp(
+        join(sourceRoot, "runtime-hooks"),
+        join(packageRoot, "lib", adapter, "runtime-hooks"),
+        { recursive: true },
+      );
+    }
+  }
+  return packageRoot;
+}

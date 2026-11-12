@@ -1,0 +1,262 @@
+{
+  "run": {
+    "id": "41037250868",
+    "attempt": 1,
+    "event": "schedule",
+    "head": "410224bfd440f21b654607f93071a68aee13838a",
+    "date": "2026-10-30"
+  },
+  "inputs": {
+    "schemaVersion": 1,
+    "source": {
+      "sha": "410224bfd440f21b654607f93071a68aee13838a",
+      "event": "schedule",
+      "runId": "41037250868",
+      "runAttempt": "1"
+    },
+    "clients": {
+      "codex": {
+        "npmPackage": "@openai/codex",
+        "registry": "https://registry.npmjs.org/",
+        "versions": [
+          {
+            "version": "0.147.0",
+            "channels": [
+              "baseline"
+            ],
+            "integrity": "sha512-EQLEXecAG2ptxI7UpBMo2TR/ga5596/c/OsYF/0LoUDh5JANZ7IoGqlzBEWbuEVQ76JePIbtTW/ihCkp1a7Z3w==",
+            "shasum": "1792030d147156695a2b86db0ec1a000ab9a83fc",
+            "lookup": "OK"
+          },
+          {
+            "version": "0.166.0",
+            "channels": [
+              "latest"
+            ],
+            "integrity": "sha512-2Szlp1l1cz5TX1ccpX4Zok3DZrot9xeZe0km+6/1v8JmqxADwyJxKBJah4dBymkwtS25j/u6dipJusTOI97Z8Q==",
+            "shasum": "c53889fd3903c4781cc83a22691e8502a7ef515f",
+            "lookup": "OK"
+          }
+        ]
+      },
+      "opencode": {
+        "npmPackage": "opencode-ai",
+        "registry": "https://registry.npmjs.org/",
+        "versions": [
+          {
+            "version": "1.18.18",
+            "channels": [
+              "baseline"
+            ],
+            "integrity": "sha512-J+5HFq8tf+wPBBpBpMPSNjSytF2/EkNWYfFZh4si1d9auFbQriqDyqZv+vFUsLWERfdMU32Eajwuiq3rKBvZLQ==",
+            "shasum": "a78971b6affe7ed27a207218465d1a80e36a018c",
+            "lookup": "OK"
+          },
+          {
+            "version": "1.19.5",
+            "channels": [
+              "latest"
+            ],
+            "integrity": "sha512-tEqMvQahfhdDj8vceYpXtoIrvjPXm5XRfetWnPN5YISueU7adNx9JcUA3zZ+2GKuDVgDpGdQe1ZLtCZDjqodvA==",
+            "shasum": "4fb49717dfc8ca5fa97ab9823dadf4be3e244e82",
+            "lookup": "OK"
+          }
+        ]
+      },
+      "claude": {
+        "npmPackage": "@anthropic-ai/claude-code",
+        "registry": "https://registry.npmjs.org/",
+        "versions": [
+          {
+            "version": "2.1.277",
+            "channels": [
+              "baseline"
+            ],
+            "integrity": "sha512-JedQvDxaHIWr303Ymlqlz43j3LqRaUe7rNtDKjEDQaHt8MkKPpCR+jKI6K0TKU5gquTqodgYLfTNM3qfGkTbpQ==",
+            "shasum": "e86092ab0190597f5f8be00c6ddf2ccaf46bff04",
+            "lookup": "OK"
+          },
+          {
+            "version": "2.1.314",
+            "channels": [
+              "latest"
+            ],
+            "integrity": "sha512-iD58PXZvNCykRm3ZRiV/zJOsejXH/FtLZFtsFqUHxFxBsthOyb+0MINeJ8EsNbSG8ECTsfhzPIZwl8x6NIRkSg==",
+            "shasum": "4ad35929e17b8e3948e9fb22c660359f09985c3c",
+            "lookup": "OK"
+          }
+        ]
+      },
+      "codebuddy": {
+        "npmPackage": "@tencent-ai/codebuddy-code",
+        "registry": "https://registry.npmjs.org/",
+        "versions": [
+          {
+            "version": "2.159.0",
+            "channels": [
+              "baseline"
+            ],
+            "integrity": "sha512-j8gpWUFuQICBpUfazvizZQ5sNBu+ooaft+Pc3rTg8ow/flZZNKquf//9iTDs67kbTs3cpITTz+EbSTyaA1KazA==",
+            "shasum": "7e1b3e92927a85e66a151aaa0c1bb19c1b15e3e4",
+            "lookup": "OK"
+          },
+          {
+            "version": "2.178.1",
+            "channels": [
+              "latest"
+            ],
+            "integrity": "sha512-YiBJz78yxUQBbXc6XZNUSBsfdKhZco6KVRYYnJckf4FTb2rTwRgwfHOkuWbKa0zn05wFwFCeysG/PSZxg111rg==",
+            "shasum": "7f357345c0d542294ddb3b9f2fd678dbb310dea9",
+            "lookup": "OK"
+          }
+        ]
+      }
+    }
+  },
+  "cursorReleases": {
+    "latest": {
+      "linux-x64": {
+        "platform": "linux-x64",
+        "version": "3.27.22",
+        "commitSha": "b1aa50cb6db84fd3e8c808259cb172ea73425c1f",
+        "url": "https://downloads.cursor.com/production/b1aa50cb6db84fd3e8c808259cb172ea73425c1f/linux/x64/deb/amd64/deb/cursor_3.27.22_amd64.deb",
+        "channel": "latest",
+        "sha256": "863a9dd15ca5fe84dd2f8e74fe2e926e8b438692f202277a89dd0ec3d928bf98",
+        "hashSource": "official-apt-sha256",
+        "debVersion": "3.27.22-1793067078",
+        "size": 223442636
+      },
+      "darwin-arm64": {
+        "platform": "darwin-arm64",
+        "version": "3.27.22",
+        "commitSha": "b1aa50cb6db84fd3e8c808259cb172ea73425c1f",
+        "url": "https://downloads.cursor.com/production/b1aa50cb6db84fd3e8c808259cb172ea73425c1f/darwin/arm64/Cursor-darwin-arm64.dmg",
+        "channel": "latest",
+        "sha256": null,
+        "hashSource": "not-provided"
+      },
+      "win32-x64-user": {
+        "platform": "win32-x64-user",
+        "version": "3.27.22",
+        "commitSha": "b1aa50cb6db84fd3e8c808259cb172ea73425c1f",
+        "url": "https://downloads.cursor.com/production/b1aa50cb6db84fd3e8c808259cb172ea73425c1f/win32/x64/user-setup/CursorUserSetup-x64-3.27.22.exe",
+        "channel": "latest",
+        "sha256": null,
+        "hashSource": "not-provided"
+      }
+    }
+  },
+  "cursorReports": {
+    "cursor-app-macos-15-latest-node-24-report-attempt1": {
+      "status": "PASS",
+      "version": "3.27.22",
+      "macos": {
+        "platform": "darwin-arm64",
+        "channel": "latest",
+        "version": "3.27.22",
+        "commitSha": "b1aa50cb6db84fd3e8c808259cb172ea73425c1f",
+        "bytes": 315918342,
+        "observedSha256": "fd9288d67f17d8510d19b9aa3daf8204c636377f3748273bc0fbdd38d6919580"
+      }
+    },
+    "cursor-app-windows-2025-latest-node-24-report-attempt1": {
+      "status": "PASS",
+      "version": "3.27.22",
+      "windows": {
+        "bytes": 229732008,
+        "observedSha256": "54e5562afb2d0a37f84cc77728294dedc2215022b33ae6901d6c360d1ee5eeea"
+      }
+    }
+  },
+  "workbuddyReports": {
+    "workbuddy-report-ubuntu-24.04-latest-node-24-attempt1": {
+      "schemaVersion": 2,
+      "runId": "41037250868",
+      "runAttempt": 1,
+      "os": "ubuntu-24.04",
+      "node": "24",
+      "channel": "latest",
+      "desktopVersion": "5.6.2.40046327",
+      "runtimeVersion": "2.147.0",
+      "sha256": {
+        "reference": "12149ad8c0cd748fd5062d8f62c7827d688d8095427ada99b1ae9e7019897523",
+        "actual": "12149ad8c0cd748fd5062d8f62c7827d688d8095427ada99b1ae9e7019897523",
+        "status": "match"
+      }
+    }
+  },
+  "workbuddyMatrix": {
+    "include": [
+      {
+        "os": "ubuntu-24.04",
+        "node": "24",
+        "release": {
+          "platform": "linux-x64-deb",
+          "desktopVersion": "5.5.6.38337834",
+          "url": "https://download.codebuddy.cn/workbuddy/saas/linux-x64-deb/WorkBuddy-linux-x64-deb-5.5.6.38337834-5f969292.deb",
+          "channel": "baseline"
+        }
+      },
+      {
+        "os": "ubuntu-24.04",
+        "node": "24",
+        "release": {
+          "platform": "linux-x64-deb",
+          "desktopVersion": "5.6.2.40046327",
+          "url": "https://download.codebuddy.cn/workbuddy/saas/linux-x64-deb/WorkBuddy-linux-x64-deb-5.6.2.40046327-c7b525f3.deb",
+          "channel": "latest"
+        }
+      },
+      {
+        "os": "macos-15",
+        "node": "24",
+        "release": {
+          "platform": "darwin-arm64",
+          "desktopVersion": "5.6.2.39298511",
+          "url": "https://download.codebuddy.cn/workbuddy/saas/darwin-arm64/WorkBuddy-darwin-arm64-5.6.2.39298511-37a65c0b.dmg",
+          "channel": "baseline"
+        }
+      },
+      {
+        "os": "macos-15",
+        "node": "24",
+        "release": {
+          "platform": "darwin-arm64",
+          "desktopVersion": "5.9.3.42398134",
+          "url": "https://download.codebuddy.cn/workbuddy/saas/darwin-arm64/WorkBuddy-darwin-arm64-5.9.3.42398134-d4692421.zip",
+          "channel": "latest"
+        }
+      },
+      {
+        "os": "windows-2025",
+        "node": "24",
+        "release": {
+          "platform": "win32-x64-user",
+          "desktopVersion": "5.6.2.39298511",
+          "url": "https://download.codebuddy.cn/workbuddy/saas/win32-x64-user/WorkBuddy-win32-x64-user-5.6.2.39298511-37a65c0b.exe",
+          "channel": "baseline"
+        }
+      },
+      {
+        "os": "windows-2025",
+        "node": "24",
+        "release": {
+          "platform": "win32-x64-user",
+          "desktopVersion": "5.9.3.42398134",
+          "url": "https://download.codebuddy.cn/workbuddy/saas/win32-x64-user/WorkBuddy-win32-x64-user-5.9.3.42398134-d4692421.exe",
+          "channel": "latest"
+        }
+      },
+      {
+        "os": "ubuntu-24.04",
+        "node": "20",
+        "release": {
+          "platform": "linux-x64-deb",
+          "desktopVersion": "5.5.6.38337834",
+          "url": "https://download.codebuddy.cn/workbuddy/saas/linux-x64-deb/WorkBuddy-linux-x64-deb-5.5.6.38337834-5f969292.deb",
+          "channel": "baseline"
+        }
+      }
+    ]
+  }
+}

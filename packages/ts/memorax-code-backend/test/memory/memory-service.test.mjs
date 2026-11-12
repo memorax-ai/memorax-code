@@ -1,10 +1,49 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { createBackendState } from "../../dist/app/state.js";
 import { createMemoryService } from "../../dist/memory/service.js";
+import { cursorTurnStatePath } from "../../dist/clients/cursor/turn-store.js";
+import { clientTracePaths } from "../../dist/trace/config.js";
+import { databaseFixture } from "../clients/cursor/support/database-fixtures.mjs";
+
+test("memory service delegates Cursor pre-compact without replacing the active user turn", async (t) => {
+  const fixture = await databaseFixture();
+  t.after(() => fixture.cleanup());
+  const home = join(fixture.directory, "memorax");
+  const workspace = await realpath(fixture.directory);
+  await repairGitMetadata(workspace, "cursor-pre-compact");
+  const start = { version: 1, client: "cursor", sessionId: fixture.sessionId, turnId: randomUUID(),
+    cwd: workspace, databasePath: fixture.databasePath, prompt: "Synthetic user turn before compaction." };
+  let requests = 0;
+  const service = createMemoryService({ memoraxCodeHome: home,
+    env: { MEMORAX_CODE_HOME: home, MEMORAX_CODE_DEBUG: "false",
+      MEMORAX_CODE_CURSOR_TRACE_ENABLED: "false",
+      MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test", MEMORAX_CODE_MEMORAX_API_KEY: "synthetic-secret",
+      MEMORAX_CODE_MEMORAX_USER_ID: "synthetic-user" },
+    fetchImpl: async () => { requests += 1; throw new Error("compaction observation must stay local"); },
+  });
+  t.after(() => service.close());
+  const turnStart = await service.recordTurnStart(start);
+  assert.equal(turnStart.recorded, true);
+  assert.equal(turnStart.repoMemoryWorktree, workspace);
+  fixture.writeCompaction({
+    latestGenerationId: start.turnId, rootMessageIds: ["a".repeat(64), "b".repeat(64)],
+  });
+  const statePath = cursorTurnStatePath(home, fixture.sessionId);
+  const before = JSON.parse(await readFile(statePath, "utf8"));
+  const { prompt, ...identity } = start;
+  const result = await service.recordPreCompact({ ...identity, turnId: randomUUID() });
+  assert.deepEqual(result, { ok: true, recorded: true });
+  const after = JSON.parse(await readFile(statePath, "utf8"));
+  assert.deepEqual(after.active, before.active);
+  assert.deepEqual(after.retiredTurnIds, before.retiredTurnIds);
+  await service.drain();
+  assert.equal(requests, 0);
+});
 
 test("Backend state does not own the memory service", () => {
   const state = createBackendState("127.0.0.1");
@@ -93,6 +132,67 @@ test("memory service exposes a sealed Hook facade and closes idempotently", asyn
   }
 });
 
+test("CodeBuddy and WorkBuddy isolate equal native IDs through service writeback and trace", async (t) => {
+  const home = await mkdtemp(join(tmpdir(), "memorax-codebuddy-trace-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const sessionId = "trace-completed";
+  const prompt = "remember this";
+  const turnId = codeBuddyTurnId(sessionId, prompt);
+  const requests = [];
+  const service = createMemoryService({
+    env: {
+      MEMORAX_CODE_HOME: home,
+      MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
+      MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "false",
+      MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
+      MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+      MEMORAX_CODE_MEMORAX_USER_ID: "user-1",
+    },
+    fetchImpl: async (_url, init) => {
+      requests.push(JSON.parse(init.body));
+      return new Response(JSON.stringify({ success: true, data: { task_id: "saved", status: "queued" } }), {
+        status: 200, headers: { "content-type": "application/json" },
+      });
+    },
+  });
+  try {
+    const commands = [];
+    for (const client of ["codebuddy", "workbuddy"]) {
+      const cwd = join(home, client);
+      const transcriptPath = join(home, `${client}.jsonl`);
+      await mkdir(cwd);
+      await writeFile(transcriptPath, [
+        { id: "u1", type: "message", role: "user", sessionId, content: [{ type: "input_text", text: `<user_query>${prompt}</user_query>` }] },
+        { id: "a1", type: "message", role: "assistant", parentId: "u1", status: "completed", content: [{ type: "output_text", text: `${client} done` }] },
+      ].map((record) => JSON.stringify(record)).join("\n") + "\n");
+      const start = { version: 1, sessionId, turnId, transcriptPath, prompt, client, cwd };
+      commands.push(start);
+      await service.recordTurnStart(start);
+    }
+    for (const start of commands) {
+      assert.deepEqual(await service.writebackTurn(start), { ok: true, scheduled: true });
+    }
+    await service.drain();
+    assert.equal(requests.length, 2);
+    for (const [index, { client }] of commands.entries()) {
+      assert.equal(requests[index].user_id, `user-1@${client}`);
+      assert.equal(requests[index].session_id, sessionId);
+      assert.equal(requests[index].messages[1].content, `${client} done`);
+      const paths = clientTracePaths(client, home);
+      const events = (await readFile(paths.eventsJsonl(sessionId), "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+      assert.deepEqual(events.map((event) => event.type), ["turn_start", "turn_end", "turn_materialized"]);
+      assert.ok(events.every((event) => event.trace.client === client && event.trace.session_id === sessionId));
+      assert.equal(events[0].source, `${client}-hook`);
+      assert.equal(events[1].outcome, "completed");
+      assert.equal(events[2].source, `${client}-transcript`);
+      const current = JSON.parse(await readFile(paths.sessionCurrentTurnPath(sessionId), "utf8"));
+      assert.equal(current.turn_state, "completed");
+    }
+  } finally {
+    service.close();
+  }
+});
+
 test("memory service surfaces automatic Add quota on the next supported client turn", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-service-quota-"));
   const memoraxCodeHome = join(root, "home");
@@ -104,8 +204,11 @@ test("memory service surfaces automatic Add quota on the next supported client t
   const turns = [
     { turnId: "turn-quota-1", prompt: "Store the first turn.", reply: "First turn stored." },
     { turnId: "turn-quota-2", prompt: "Store the second turn.", reply: "Second turn stored." },
+    { turnId: "turn-quota-3", prompt: "Store the third turn.", reply: "Third turn stored." },
   ];
   const transcriptPath = await writeRollout(root, "session-service-quota", turns);
+  const codeBuddyTranscriptPath = join(root, "session-codebuddy-service-quota.jsonl");
+  await writeFile(codeBuddyTranscriptPath, "", "utf8");
   const diagnosticEvents = [];
   const requests = [];
   const service = createMemoryService({
@@ -117,7 +220,7 @@ test("memory service surfaces automatic Add quota on the next supported client t
       MEMORAX_CODE_HOME: memoraxCodeHome,
       MEMORAX_CODE_CODEX_TRACE_ENABLED: "false",
       MEMORAX_CODE_CLAUDE_TRACE_ENABLED: "false",
-      MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
+      MEMORAX_CODE_CODEBUDDY_TRACE_ENABLED: "false",
       MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
       MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "false",
       MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test",
@@ -195,6 +298,27 @@ test("memory service surfaces automatic Add quota on the next supported client t
     });
     await waitForAcceptedWritebacks(diagnosticEvents, 2);
 
+    const codeBuddySessionId = "session-codebuddy-service-quota";
+    const codeBuddyPrompt = "Show the second pending warning.";
+    const codeBuddyNotice = await service.recordTurnStart({
+      version: 1,
+      client: "codebuddy",
+      sessionId: codeBuddySessionId,
+      turnId: codeBuddyTurnId(codeBuddySessionId, codeBuddyPrompt),
+      prompt: codeBuddyPrompt,
+      cwd: workspace,
+      transcriptPath: codeBuddyTranscriptPath,
+    });
+    assert.equal(codeBuddyNotice.userNotice, "Quota notice: 9998 remaining.");
+    assert.equal("additionalContext" in codeBuddyNotice, false);
+
+    await service.recordTurnStart(codexTurnStart(turns[2]));
+    assert.deepEqual(await service.writebackTurn(writeback(turns[2])), {
+      ok: true,
+      scheduled: true,
+    });
+    await waitForAcceptedWritebacks(diagnosticEvents, 3);
+
     const openCodeTurn = {
       version: 1,
       client: "opencode",
@@ -204,10 +328,10 @@ test("memory service surfaces automatic Add quota on the next supported client t
       cwd: workspace,
     };
     const openCodeNotice = await service.recordTurnStart(openCodeTurn);
-    assert.equal(openCodeNotice.userNotice, "Quota notice: 9998 remaining.");
+    assert.equal(openCodeNotice.userNotice, "Quota notice: 9997 remaining.");
     assert.equal("additionalContext" in openCodeNotice, false);
     assert.deepEqual(await service.recordTurnStart(openCodeTurn), { ok: true });
-    assert.equal(requests.length, 2);
+    assert.equal(requests.length, 3);
   } finally {
     await service.drain();
     service.close();
@@ -241,7 +365,6 @@ test("memory service discards fallback writeback when turn start upgrades the se
     env: {
       MEMORAX_CODE_HOME: memoraxCodeHome,
       MEMORAX_CODE_CODEX_TRACE_ENABLED: "false",
-      MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED: "false",
       MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
       MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "true",
       MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_MAX_TURNS: "8",
@@ -310,6 +433,10 @@ async function repairGitMetadata(workspace, repositoryName) {
   );
 }
 
+function codeBuddyTurnId(sessionId, prompt, boundary = 0) {
+  return `${sessionId}:${boundary}:${createHash("sha256").update(prompt.trim()).digest("hex")}`;
+}
+
 async function writeRollout(root, sessionId, turns) {
   const transcriptPath = join(root, `${sessionId}.jsonl`);
   const records = [{
@@ -373,3 +500,95 @@ async function waitForAcceptedWritebacks(events, expected) {
   }
   throw new Error(`automatic writeback ${expected} did not settle`);
 }
+
+
+test("memory service records confirmed completion failures without changing Hook results", async (t) => {
+  for (const scenario of [
+    { name: "unreadable transcript", missing: true, reason: "transcript_unavailable", stage: "content-read" },
+    { name: "wrong native session", wrongSession: true, reason: "transcript_session_mismatch", stage: "correlation" },
+    { name: "unreadable workspace", wrongWorkspace: true, reason: "workspace_scope_unavailable", stage: "scope" },
+    { name: "incomplete assistant output", incomplete: true, reason: "assistant_message_missing", quiet: true },
+    { name: "disabled writeback", missing: true, disabled: true, reason: "transcript_unavailable", quiet: true },
+    { name: "unavailable diagnostic directory", missing: true, blocked: true, reason: "transcript_unavailable" },
+  ]) {
+    await t.test(scenario.name, async (t) => {
+      const root = await mkdtemp(join(tmpdir(), "memorax-service-diagnostics-"));
+      t.after(() => rm(root, { recursive: true, force: true }));
+      const memoraxCodeHome = join(root, "state");
+      const workspace = join(root, "workspace");
+      await mkdir(workspace);
+      if (scenario.blocked) {
+        await mkdir(join(memoraxCodeHome, "runtime"), { recursive: true });
+        await writeFile(join(memoraxCodeHome, "runtime", "diagnostics"), "occupied");
+      }
+      const sessionId = "private-diagnostic-session";
+      const turnId = "private-diagnostic-turn";
+      const transcriptPath = scenario.missing ? join(root, "private-missing-rollout.jsonl")
+        : await writeRollout(root, scenario.wrongSession ? "different-native-session" : sessionId,
+          [{ turnId, prompt: "Private prompt marker.", reply: scenario.incomplete ? "" : "Private answer marker." }]);
+      const requests = [];
+      const service = createMemoryService({
+        memoraxCodeHome,
+        env: { MEMORAX_CODE_HOME: memoraxCodeHome, MEMORAX_CODE_DEBUG: "false",
+          MEMORAX_CODE_CODEX_TRACE_ENABLED: "false",
+          MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: String(!scenario.disabled),
+          MEMORAX_CODE_MEMORY_WRITEBACK_BUFFER_ENABLED: "false",
+          MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test", MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+          MEMORAX_CODE_MEMORAX_USER_ID: "user-1" },
+        fetchImpl: async (...args) => { requests.push(args); throw new Error("provider must not be called"); },
+      });
+      t.after(() => service.close());
+      const command = { version: 1, client: "codex", sessionId, turnId, transcriptPath,
+        cwd: scenario.wrongWorkspace ? join(root, "missing-workspace") : workspace };
+      const result = await service.writebackTurn({ ...command, lastAssistantMessage: "Private answer marker." });
+      assert.deepEqual(result, { ok: true, scheduled: false, reason: scenario.reason });
+      await service.drain();
+      assert.equal(requests.length, 0);
+      if (scenario.blocked) {
+        assert.equal(await readFile(join(memoraxCodeHome, "runtime", "diagnostics"), "utf8"), "occupied");
+        return;
+      }
+      const directory = join(memoraxCodeHome, "runtime", "diagnostics");
+      const files = await readdir(directory).catch((error) => { if (error.code === "ENOENT") return []; throw error; });
+      if (scenario.quiet) { assert.deepEqual(files, []); return; }
+      assert.equal(files.length, 1);
+      const record = JSON.parse(await readFile(join(directory, files[0]), "utf8"));
+      assert.equal(record.source, "automatic-writeback");
+      assert.equal(record.failureReason, scenario.reason);
+      assert.equal(record.stage, scenario.stage);
+      assert.equal(record.client, "codex");
+      assert.match(record.errorCode, /^WRITEBACK_/);
+      assert.equal(record.sessionHash, createHash("sha256").update(sessionId).digest("hex").slice(0, 24));
+      assert.equal(record.turnHash, createHash("sha256").update(turnId).digest("hex").slice(0, 24));
+      assert.equal(record.systemCode, undefined, "the native reader does not supply an errno; do not guess one");
+      assert.equal(/private|Private|secret|user-1|memorax.test/.test(JSON.stringify(record)), false);
+      assert.equal(JSON.stringify(record).includes(root), false);
+    });
+  }
+});
+
+
+test("memory service does not report an OpenCode interruption without cached Turn metadata", async (t) => {
+  const home = await mkdtemp(join(tmpdir(), "memorax-service-interrupted-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  let requests = 0;
+  const service = createMemoryService({ memoraxCodeHome: home,
+    env: { MEMORAX_CODE_HOME: home, MEMORAX_CODE_DEBUG: "false",
+      MEMORAX_CODE_OPENCODE_TRACE_ENABLED: "false", MEMORAX_CODE_MEMORY_WRITEBACK_ENABLED: "true",
+      MEMORAX_CODE_MEMORAX_ENDPOINT: "http://memorax.test", MEMORAX_CODE_MEMORAX_API_KEY: "secret",
+      MEMORAX_CODE_MEMORAX_USER_ID: "user-1" },
+    fetchImpl: async () => { requests += 1; throw new Error("interruption must not upload"); } });
+  t.after(() => service.close());
+  assert.deepEqual(await service.writebackTurn({ version: 1, client: "opencode", sessionId: "session-1",
+    userMessageId: "user-1", assistantMessageId: "assistant-1", cwd: home,
+    messages: [
+      { info: { id: "user-1", sessionID: "session-1", role: "user", time: { created: 1700000000000 } },
+        parts: [{ type: "text", sessionID: "session-1", messageID: "user-1", text: "Cancel this request." }] },
+      { info: { id: "assistant-1", sessionID: "session-1", role: "assistant", parentID: "user-1",
+        time: { created: 1700000001000, completed: 1700000002000 }, error: { name: "MessageAbortedError" } }, parts: [] },
+    ],
+  }), { ok: true, scheduled: false, reason: "turn_metadata_mismatch" });
+  await service.drain();
+  assert.equal(requests, 0);
+  await assert.rejects(readdir(join(home, "runtime", "diagnostics")), { code: "ENOENT" });
+});

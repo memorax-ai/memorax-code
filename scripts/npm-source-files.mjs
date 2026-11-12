@@ -14,6 +14,22 @@ export const npmMainSourceTrees = Object.freeze([
     source: `packages/ts/memorax-code-claude-adapter/${name}`,
     destination: `lib/memorax-code-claude-adapter/${name}`,
   })),
+  ...["src", "hooks", ".codebuddy-plugin"].map((name) => ({
+    source: `packages/ts/memorax-code-codebuddy-adapter/${name}`,
+    destination: `lib/memorax-code-codebuddy-adapter/${name}`,
+  })),
+  ...["src", "hooks"].map((name) => ({
+    source: `packages/ts/memorax-code-trae-adapter/${name}`,
+    destination: `lib/memorax-code-trae-adapter/${name}`,
+  })),
+  ...["src", "hooks", "agents"].map((name) => ({
+    source: `packages/ts/memorax-code-qoder-adapter/${name}`,
+    destination: `lib/memorax-code-qoder-adapter/${name}`,
+  })),
+  ...["src", "hooks", "agents"].map((name) => ({
+    source: `packages/ts/memorax-code-cursor-adapter/${name}`,
+    destination: `lib/memorax-code-cursor-adapter/${name}`,
+  })),
   {
     source: "packages/ts/memorax-code-dsh-adapter/src",
     destination: "lib/memorax-code-dsh-adapter/src",
@@ -30,6 +46,7 @@ export const npmMainSourceTrees = Object.freeze([
     source: "packages/ts/memorax-code-opencode-adapter/hooks",
     destination: "lib/memorax-code-opencode-adapter/hooks",
   },
+  // Materialize the canonical Skill for each client so npm artifacts never depend on source symlinks.
   {
     source: "packages/ts/memorax-code-codex-adapter/skills/memorax-code",
     destination: "lib/memorax-code-claude-adapter/skills/memorax-code",
@@ -41,6 +58,22 @@ export const npmMainSourceTrees = Object.freeze([
   {
     source: "packages/ts/memorax-code-codex-adapter/skills/memorax-code",
     destination: "lib/memorax-code-dsh-adapter/skills/memorax-code",
+  },
+  {
+    source: "packages/ts/memorax-code-codex-adapter/skills/memorax-code",
+    destination: "lib/memorax-code-codebuddy-adapter/skills/memorax-code",
+  },
+  {
+    source: "packages/ts/memorax-code-codex-adapter/skills/memorax-code",
+    destination: "lib/memorax-code-trae-adapter/skills/memorax-code",
+  },
+  {
+    source: "packages/ts/memorax-code-codex-adapter/skills/memorax-code",
+    destination: "lib/memorax-code-cursor-adapter/skills/memorax-code",
+  },
+  {
+    source: "packages/ts/memorax-code-codex-adapter/skills/memorax-code",
+    destination: "lib/memorax-code-qoder-adapter/skills/memorax-code",
   },
 ]);
 

@@ -35,17 +35,17 @@ test("npm staging output validation accepts only POSIX dist descendants", () => 
   }
 });
 
-test("npm staging removal rejects a POSIX symlink ancestor", async () => {
+test("npm staging removal rejects a native directory link ancestor", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-staging-symlink-"));
   const outside = await mkdtemp(join(tmpdir(), "memorax-code-staging-outside-"));
   try {
     await mkdir(join(root, "dist"));
-    await symlink(outside, join(root, "dist", "npm"));
+    await symlink(outside, join(root, "dist", "npm"), process.platform === "win32" ? "junction" : "dir");
     await assert.rejects(
       assertSafeNpmStagingRemoval({
         repoRoot: root,
         outDir: "dist/npm/output",
-        platform: "linux",
+        platform: process.platform,
       }),
       /symlink or junction/,
     );

@@ -29,47 +29,54 @@ test("memory turn coordinator isolates identical client turn keys", () => {
   }
 });
 
-test("memory turn coordinator preserves materialized Codex content and pinned scope", async () => {
-  const writebacks = [];
-  const coordinator = createMemoryTurnCoordinator({
-    automaticWriteback(options) {
-      writebacks.push(options);
-      return { accepted: true };
-    },
-    cleanupIntervalMs: 60_000,
-  });
-  const scope = repositoryScope("repo-a");
-  try {
-    coordinator.recordTurnStart(turnStart("codex", scope));
-    const metadata = coordinator.getTurn(turnKey("codex"));
-    const result = await coordinator.completeMaterializedTurn({
-      key: turnKey("codex"),
-      metadata,
-      resolveRepositoryMemory: async () => configuredMemory(scope),
-      userText: "Materialized rollout prompt.",
-      assistantText: "Materialized rollout answer.",
-      writeback: {
-        client: "codex",
-        sessionKey: "shared-session",
-        memoryObservabilitySource: "codex_hook_writeback",
+for (const [client, memoryObservabilitySource] of [
+  ["codex", "codex_hook_writeback"],
+  ["claude-code", "claude_hook_writeback"],
+]) {
+  test(`memory turn coordinator preserves materialized ${client} content and pinned scope`, async () => {
+    const writebacks = [];
+    const coordinator = createMemoryTurnCoordinator({
+      automaticWriteback(options) {
+        writebacks.push(options);
+        return { accepted: true };
       },
+      cleanupIntervalMs: 60_000,
     });
+    const scope = repositoryScope("repo-a");
+    const userText = `Materialized ${client} prompt.`;
+    const assistantText = `Materialized ${client} answer.`;
+    try {
+      coordinator.recordTurnStart(turnStart(client, scope));
+      const metadata = coordinator.getTurn(turnKey(client));
+      const result = await coordinator.completeMaterializedTurn({
+        key: turnKey(client),
+        metadata,
+        resolveRepositoryMemory: async () => configuredMemory(scope),
+        userText,
+        assistantText,
+        writeback: {
+          client,
+          sessionKey: "shared-session",
+          memoryObservabilitySource,
+        },
+      });
 
-    assert.deepEqual(result, {
-      scheduled: true,
-      metadataDisposition: "consumed",
-    });
-    assert.equal(coordinator.getTurn(turnKey("codex")), undefined);
-    assert.equal(writebacks.length, 1);
-    assert.equal(writebacks[0].userText, "Materialized rollout prompt.");
-    assert.equal(writebacks[0].assistantText, "Materialized rollout answer.");
-    assert.equal(writebacks[0].repositoryScope, scope);
-    assert.equal(writebacks[0].memoryObservabilitySource, "codex_hook_writeback");
-    assert.equal(writebacks[0].client, "codex");
-  } finally {
-    coordinator.close();
-  }
-});
+      assert.deepEqual(result, {
+        scheduled: true,
+        metadataDisposition: "consumed",
+      });
+      assert.equal(coordinator.getTurn(turnKey(client)), undefined);
+      assert.equal(writebacks.length, 1);
+      assert.equal(writebacks[0].userText, userText);
+      assert.equal(writebacks[0].assistantText, assistantText);
+      assert.equal(writebacks[0].repositoryScope, scope);
+      assert.equal(writebacks[0].memoryObservabilitySource, memoryObservabilitySource);
+      assert.equal(writebacks[0].client, client);
+    } finally {
+      coordinator.close();
+    }
+  });
+}
 
 test("memory turn coordinator uses repaired Git scope after a degraded turn start", async () => {
   const writebacks = [];
@@ -107,39 +114,6 @@ test("memory turn coordinator uses repaired Git scope after a degraded turn star
     });
     assert.equal(writebacks.length, 1);
     assert.strictEqual(writebacks[0].repositoryScope, gitScope);
-  } finally {
-    coordinator.close();
-  }
-});
-
-test("memory turn coordinator requires materialized client content", async () => {
-  const writebacks = [];
-  const coordinator = createMemoryTurnCoordinator({
-    automaticWriteback(options) {
-      writebacks.push(options);
-      return { accepted: true };
-    },
-    cleanupIntervalMs: 60_000,
-  });
-  const scope = repositoryScope("repo-a");
-  try {
-    coordinator.recordTurnStart(turnStart("claude-code", scope));
-    const result = await coordinator.completeMaterializedTurn({
-      key: turnKey("claude-code"),
-      metadata: coordinator.getTurn(turnKey("claude-code")),
-      resolveRepositoryMemory: async () => configuredMemory(scope),
-      userText: "Materialized Claude transcript prompt.",
-      assistantText: "Materialized Claude transcript answer.",
-      writeback: { client: "claude-code", sessionKey: "shared-session" },
-    });
-
-    assert.deepEqual(result, {
-      scheduled: true,
-      metadataDisposition: "consumed",
-    });
-    assert.equal(writebacks[0].userText, "Materialized Claude transcript prompt.");
-    assert.equal(writebacks[0].assistantText, "Materialized Claude transcript answer.");
-    assert.equal(writebacks[0].client, "claude-code");
   } finally {
     coordinator.close();
   }

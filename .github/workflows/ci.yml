@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:
+    inputs:
+      purpose:
+        description: Purpose of the calling run, such as release-acceptance
+        type: string
+        required: true
+      candidate-sha:
+        description: Exact commit both checks verify
+        type: string
+        required: true
+      docs-base-sha:
+        description: Commit the README synchronization check compares with the candidate
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  # A newer run cancels only an older run of the same purpose: one pull request, main pushes, or manual runs on one ref.
+  # A called run is identified by its explicit purpose, has its own group per calling run and is never cancelled.
+  group: ${{ inputs.purpose && format('ci-called-{0}-{1}', inputs.purpose, github.run_id) || format('ci-{0}-{1}', github.event_name == 'workflow_dispatch' && 'manual-basic' || github.event_name, github.ref) }}
+  cancel-in-progress: ${{ !inputs.purpose }}
+
+jobs:
+  tests:
+    name: Tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.candidate-sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Verify WorkBuddy workflow contract
+        run: node --test scripts/ci/codebuddy-workbuddy/workbuddy-workflow.test.mjs
+      - name: Verify workflow triggers, check names and concurrency
+        run: node --test scripts/ci/shared/workflow-scenarios.test.mjs
+      - name: Verify native client scope selection
+        run: node --test scripts/ci/shared/native-scope.test.mjs
+      - name: Verify the pinned client acceptance manifest
+        run: node --test scripts/ci/shared/client-acceptance.test.mjs
+      - name: Verify native result classification
+        run: node --test scripts/ci/shared/client-result.test.mjs
+      - name: Verify the client acceptance refresh
+        run: node --test scripts/ci/shared/client-acceptance-refresh.test.mjs
+      - name: Verify the native auto recheck decision
+        run: node --test scripts/ci/shared/native-auto-recheck.test.mjs
+      - name: Run the existing regression suite
+        shell: bash
+        run: |
+          test_root="$(mktemp -d)"
+          trap 'rm -rf "$test_root"' EXIT
+          mkdir -p "$test_root/user" "$test_root/tmp"
+          env -i PATH="$PATH" HOME="$test_root/user" \
+            MEMORAX_CODE_HOME="$test_root/state" \
+            npm_config_cache="$test_root/npm-cache" TMPDIR="$test_root/tmp" \
+            make test
+
+  documentation:
+    name: Documentation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.candidate-sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+          package-manager-cache: false
+      - name: Check documentation and README synchronization
+        env:
+          README_SYNC_BASE_REF: ${{ inputs.docs-base-sha || github.event.pull_request.base.sha || github.event.before || 'HEAD^' }}
+          README_SYNC_HEAD_REF: ${{ inputs.candidate-sha || github.sha }}
+        run: make docs-check

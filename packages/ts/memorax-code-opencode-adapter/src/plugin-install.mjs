@@ -18,6 +18,8 @@ import {
   readAdapterState,
   stringOption,
 } from "../../memorax-code-adapter-common/src/config-utils.mjs";
+import { withWindowsDirectoryRetry } from "../../memorax-code-adapter-common/src/windows-directory-retry.mjs";
+import { attachDeploymentFailure, deploymentFailure } from "../../memorax-code-adapter-common/src/deployment-failure.mjs";
 import { DEFAULT_BACKEND_URL as BACKEND_DEFAULT } from "../../memorax-code-adapter-common/src/backend-connection.mjs";
 import {
   adapterStatePath,
@@ -30,6 +32,7 @@ import {
 
 const STATE_VERSION = 1;
 const MANAGED_LOADER_HEADER = "// Managed by MemoraX Code. Do not edit.";
+const SKILL_PACKAGE_METADATA = ".memorax-code-package.json";
 const ADAPTER_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 export function ensureOpenCodePluginInstalled(options = {}) {
@@ -61,15 +64,19 @@ export function ensureOpenCodePluginInstalled(options = {}) {
   const backendUrl = normalizeBackendUrl(
     options.backendUrl ?? previousState?.backendUrl ?? BACKEND_DEFAULT,
   );
-  const pluginSourceSha256 = fileSha256(paths.pluginSourcePath);
-  const repoMemoryHelperSourceSha256 = fileSha256(paths.repoMemoryHelperSourcePath);
+  let pluginSourceSha256;
+  let repoMemoryHelperSourceSha256;
+  try {
+    pluginSourceSha256 = fileSha256(paths.pluginSourcePath);
+    repoMemoryHelperSourceSha256 = fileSha256(paths.repoMemoryHelperSourcePath);
+  } catch (error) { throw attachDeploymentFailure(error, "plugin-stage"); }
   const loader = createManagedLoader(paths, pluginSourceSha256);
   const repoMemoryHelperLoader = createManagedRepoMemoryHelperLoader(
     paths,
     repoMemoryHelperSourceSha256,
   );
   const pluginCurrent = pluginIsManaged && fileContentsEqual(paths.pluginPath, loader);
-  const skillCurrent = skillIsManaged && directoriesEqual(paths.skillSourcePath, paths.skillPath);
+  const skillCurrent = skillIsManaged && skillContentsCurrent(paths);
   const repoMemoryHelperCurrent = repoMemoryHelperIsManaged
     && fileContentsEqual(paths.repoMemoryHelperPath, repoMemoryHelperLoader);
   const artifactsCurrent = pluginCurrent && skillCurrent && repoMemoryHelperCurrent;
@@ -100,20 +107,29 @@ export function ensureOpenCodePluginInstalled(options = {}) {
   const pluginExisted = existsSync(paths.pluginPath);
   const skillExisted = existsSync(paths.skillPath);
   const repoMemoryHelperExisted = existsSync(paths.repoMemoryHelperPath);
+  let stage = "skill-stage";
   try {
-    if (!skillCurrent) materializeSkill(paths.skillSourcePath, paths.skillPath);
+    if (!skillCurrent) {
+      materializeSkill(paths.skillSourcePath, paths.skillPath, paths.memoraxCodeCommand, paths.memoraxCodeHome);
+    }
+    stage = "plugin-write";
     if (!pluginCurrent) atomicWriteText(paths.pluginPath, loader);
     if (!repoMemoryHelperCurrent) {
+      stage = "helper-write";
       atomicWriteText(paths.repoMemoryHelperPath, repoMemoryHelperLoader);
     }
+    stage = "state-write";
     atomicWriteJson(paths.statePath, state);
   } catch (error) {
-    removeNewArtifact(paths.pluginPath, pluginExisted);
-    removeNewArtifact(paths.skillPath, skillExisted, true);
-    removeNewArtifact(paths.repoMemoryHelperPath, repoMemoryHelperExisted);
-    throw error;
+    const cleanupErrors = [
+      removeNewArtifact(paths.pluginPath, pluginExisted),
+      removeNewArtifact(paths.skillPath, skillExisted, true),
+      removeNewArtifact(paths.repoMemoryHelperPath, repoMemoryHelperExisted),
+    ];
+    throw attachDeploymentFailure(error, stage, { cleanupError: cleanupErrors.find(Boolean) });
   }
-  removePreviousInstallation(previousState, paths);
+  try { removePreviousInstallation(previousState, paths); }
+  catch (error) { throw attachDeploymentFailure(error, "cleanup"); }
 
   return {
     ok: true,
@@ -200,8 +216,7 @@ export function readOpenCodePluginStatus(options = {}) {
     configuredPaths.pluginPath,
     createManagedLoader(configuredPaths, pluginSourceSha256),
   );
-  const skillCurrent = sourcesReady
-    && directoriesEqual(configuredPaths.skillSourcePath, configuredPaths.skillPath);
+  const skillCurrent = sourcesReady && skillContentsCurrent(configuredPaths);
   const repoMemoryHelperCurrent = repoMemoryHelperRecorded
     && sourcesReady
     && fileContentsEqual(
@@ -281,7 +296,8 @@ export function disableOpenCodePlugin(options = {}) {
     enabled: false,
     disabledAt: new Date().toISOString(),
   };
-  atomicWriteJson(paths.statePath, nextState);
+  try { atomicWriteJson(paths.statePath, nextState); }
+  catch (error) { throw attachDeploymentFailure(error, "state-write"); }
   const repoMemoryHelperPath = stringOption(state.repoMemoryHelperPath);
   return {
     ok: true,
@@ -350,10 +366,16 @@ export function removeOpenCodePluginInstallation(options = {}) {
     };
   }
 
-  rmSync(pluginPath, { force: true });
-  rmSync(skillPath, { recursive: true, force: true });
-  if (recordedRepoMemoryHelperPath) rmSync(repoMemoryHelperPath, { force: true });
-  rmSync(paths.statePath, { force: true });
+  let stage = "plugin-remove";
+  try {
+    rmSync(pluginPath, { force: true });
+    stage = "skill-remove";
+    rmSync(skillPath, { recursive: true, force: true });
+    stage = "plugin-remove";
+    if (recordedRepoMemoryHelperPath) rmSync(repoMemoryHelperPath, { force: true });
+    stage = "state-write";
+    rmSync(paths.statePath, { force: true });
+  } catch (error) { throw attachDeploymentFailure(error, stage); }
   return {
     ok: true,
     action: "opencode-plugin-remove",
@@ -431,7 +453,7 @@ function resolvePaths(options) {
 
 function validateState(state, statePath) {
   if (state?.unreadable) {
-    return { ok: false, reason: "state_unreadable", statePath };
+    return { ok: false, reason: "state_unreadable", statePath, failure: deploymentFailure(undefined, "state-read", { failureReason: "invalid_record" }) };
   }
   if (state && state.version !== STATE_VERSION) {
     return {
@@ -440,6 +462,7 @@ function validateState(state, statePath) {
       statePath,
       expectedVersion: STATE_VERSION,
       actualVersion: state.version,
+      failure: deploymentFailure(undefined, "state-read", { failureReason: "unsupported_version" }),
     };
   }
   if (state) {
@@ -464,7 +487,7 @@ function validateState(state, statePath) {
         || !repoMemoryHelperSourcePath
         || !/^[a-f0-9]{64}$/.test(repoMemoryHelperSourceSha256 ?? "")
       ))) {
-      return { ok: false, reason: "state_invalid", statePath };
+      return { ok: false, reason: "state_invalid", statePath, failure: deploymentFailure(undefined, "state-read", { failureReason: "invalid_record" }) };
     }
     const resolvedConfigDir = resolve(openCodeConfigDir);
     if (openCodeConfigDir !== resolvedConfigDir
@@ -472,7 +495,7 @@ function validateState(state, statePath) {
       || skillPath !== openCodeSkillPath(resolvedConfigDir)
       || (repoMemoryHelperPath
         && repoMemoryHelperPath !== openCodeRepoMemoryHelperPath(resolvedConfigDir))) {
-      return { ok: false, reason: "state_paths_invalid", statePath };
+      return { ok: false, reason: "state_paths_invalid", statePath, failure: deploymentFailure(undefined, "state-read", { failureReason: "invalid_record" }) };
     }
   }
   return undefined;
@@ -480,16 +503,17 @@ function validateState(state, statePath) {
 
 function validateSources(paths) {
   if (!existsSync(paths.pluginSourcePath)) {
-    return { ok: false, reason: "plugin_source_missing", sourcePath: paths.pluginSourcePath };
+    return { ok: false, reason: "plugin_source_missing", sourcePath: paths.pluginSourcePath, failure: deploymentFailure(undefined, "plugin-stage", { failureReason: "missing_source" }) };
   }
   if (!existsSync(join(paths.skillSourcePath, "SKILL.md"))) {
-    return { ok: false, reason: "skill_source_missing", sourcePath: paths.skillSourcePath };
+    return { ok: false, reason: "skill_source_missing", sourcePath: paths.skillSourcePath, failure: deploymentFailure(undefined, "skill-stage", { failureReason: "missing_source" }) };
   }
   if (!existsSync(paths.repoMemoryHelperSourcePath)) {
     return {
       ok: false,
       reason: "repo_memory_helper_source_missing",
       sourcePath: paths.repoMemoryHelperSourcePath,
+      failure: deploymentFailure(undefined, "helper-write", { failureReason: "missing_source" }),
     };
   }
   return undefined;
@@ -501,6 +525,7 @@ function conflict(reason, paths, conflictPath) {
     action: "opencode-plugin-install",
     reason,
     conflictPath,
+    failure: deploymentFailure(undefined, "plugin-stage", { failureReason: "conflict" }),
     statePath: paths.statePath,
     pluginPath: paths.pluginPath,
     skillPath: paths.skillPath,
@@ -538,15 +563,30 @@ function createManagedRepoMemoryHelperLoader(paths, sourceSha256) {
   ].join("\n");
 }
 
-function materializeSkill(sourcePath, targetPath) {
-  mkdirSync(dirname(targetPath), { recursive: true });
+function materializeSkill(sourcePath, targetPath, memoraxCodeCommand, memoraxCodeHome) {
   const stagePath = `${targetPath}.tmp-${process.pid}-${randomUUID()}`;
+  let stage = "skill-stage";
   try {
+    mkdirSync(dirname(targetPath), { recursive: true });
     cpSync(sourcePath, stagePath, { recursive: true });
-    rmSync(targetPath, { recursive: true, force: true });
-    renameSync(stagePath, targetPath);
-  } finally {
-    rmSync(stagePath, { recursive: true, force: true });
+    atomicWriteJson(
+      join(stagePath, SKILL_PACKAGE_METADATA),
+      skillPackageMetadata(memoraxCodeCommand, memoraxCodeHome),
+    );
+    stage = "skill-remove";
+    withWindowsDirectoryRetry(() => rmSync(targetPath, { recursive: true, force: true }));
+    stage = "skill-publish";
+    withWindowsDirectoryRetry(() => renameSync(stagePath, targetPath));
+  } catch (error) {
+    let cleanupError;
+    try {
+      withWindowsDirectoryRetry(() => rmSync(stagePath, { recursive: true, force: true }));
+    } catch (failure) {
+      cleanupError = failure;
+      // Preserve the installation failure if Windows also blocks stage cleanup.
+    }
+    error.stage = stage;
+    throw attachDeploymentFailure(error, stage, { cleanupError });
   }
 }
 
@@ -568,8 +608,9 @@ function removeNewArtifact(path, existed, recursive = false) {
   if (existed) return;
   try {
     rmSync(path, { recursive, force: true });
-  } catch {
+  } catch (error) {
     // Preserve the original installation failure.
+    return error;
   }
 }
 
@@ -592,6 +633,22 @@ function fileContentsEqual(path, expected) {
 
 function fileSha256(path) {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
+}
+
+function skillContentsCurrent(paths) {
+  return directoriesEqual(paths.skillSourcePath, paths.skillPath)
+    && fileContentsEqual(
+      join(paths.skillPath, SKILL_PACKAGE_METADATA),
+      `${JSON.stringify(skillPackageMetadata(paths.memoraxCodeCommand, paths.memoraxCodeHome), null, 2)}\n`,
+    );
+}
+
+function skillPackageMetadata(memoraxCodeCommand, memoraxCodeHome) {
+  return {
+    version: 1,
+    memoraxCodeHome,
+    ...(memoraxCodeCommand ? { memoraxCodeCommand } : {}),
+  };
 }
 
 function hasMemoraxCliCommand(directory) {
@@ -621,6 +678,7 @@ function collectDirectoryEntries(root) {
     for (const name of readdirSync(path)) {
       const absolutePath = join(path, name);
       const entryPath = relative(root, absolutePath);
+      if (entryPath === SKILL_PACKAGE_METADATA) continue;
       const stat = lstatSync(absolutePath);
       if (stat.isDirectory()) {
         entries.push({ path: entryPath, kind: "directory", content: "" });

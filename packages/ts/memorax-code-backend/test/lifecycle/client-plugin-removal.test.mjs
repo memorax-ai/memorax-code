@@ -1,15 +1,29 @@
+import { nativeCliCommand, writeNativeCliFixture } from "../../../../../test/support/native-cli-fixture.mjs";
 import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { prepareClientPluginRemovalCleanup } from "../../dist/lifecycle/client-plugin-removal.js";
+import { enableTraeAdapter } from "../../../memorax-code-trae-adapter/src/config.mjs";
+import { enableCursorAdapter } from "../../../memorax-code-cursor-adapter/src/config.mjs";
+import { enableQoderAdapter } from "../../../memorax-code-qoder-adapter/src/config.mjs";
 
 test("package-removal cleanup is prepared before shutdown and removes all client integrations", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-client-plugin-removal-"));
   const home = join(root, "home");
   const memoraxCodeHome = join(home, "memorax-code-home");
   const codexHome = join(home, "codex-home");
+  const codexConfigPath = join(codexHome, "config.toml");
+  const codexStatePath = join(memoraxCodeHome, "adapters", "codex", "state.json");
+  const codexConfig = "codex config sentinel\n";
+  const codexState = `${JSON.stringify({
+    version: 1,
+    runtime: "codex",
+    integration: "hooks",
+    enabled: true,
+    codexHome,
+  }, null, 2)}\n`;
   const claudeHome = join(home, "claude-home");
   const openCodeConfigDir = join(home, "opencode-config");
   const codexPluginManifest = join(
@@ -20,7 +34,7 @@ test("package-removal cleanup is prepared before shutdown and removes all client
     ".codex-plugin",
     "plugin.json",
   );
-  const claudeCommand = join(root, "fake-claude.mjs");
+  const claudeCommand = nativeCliCommand(root, "claude");
   const claudeCalls = join(root, "claude-calls.jsonl");
   const dshHome = join(home, "dsh-home");
   const dshAdapterRoot = join(root, "removed-dsh-adapter");
@@ -29,6 +43,15 @@ test("package-removal cleanup is prepared before shutdown and removes all client
   const openCodePlugin = join(openCodeConfigDir, "plugins", "memorax-code.js");
   const openCodeSkill = join(openCodeConfigDir, "skills", "memorax-code");
   const openCodeState = join(memoraxCodeHome, "adapters", "opencode", "state.json");
+  const traeHome = join(home, "trae-home");
+  const cursorHome = join(home, "cursor-home");
+  const qoderHome = join(home, "qoder-home");
+  const qoderSettings = join(qoderHome, "settings.json");
+  const qoderSkill = join(qoderHome, "skills", "memorax-code");
+  const cursorHooks = join(cursorHome, "hooks.json");
+  const cursorSkill = join(cursorHome, "skills", "memorax-code");
+  const traeHooks = join(traeHome, "hooks.json");
+  const traeSkill = join(traeHome, "skills", "memorax-code");
 
   try {
     await mkdir(dirname(codexPluginManifest), { recursive: true });
@@ -38,14 +61,13 @@ test("package-removal cleanup is prepared before shutdown and removes all client
     await mkdir(dirname(openCodeState), { recursive: true });
     await mkdir(dirname(openCodePlugin), { recursive: true });
     await mkdir(openCodeSkill, { recursive: true });
+    await mkdir(traeHome, { recursive: true });
     await mkdir(claudeHome, { recursive: true });
     await mkdir(dirname(dshProfilePath), { recursive: true });
     await mkdir(dshAdapterRoot, { recursive: true });
     await writeFile(codexPluginManifest, '{"name":"memorax-code-codex-adapter"}\n');
-    await writeFile(join(memoraxCodeHome, "adapters", "codex", "state.json"), `${JSON.stringify({
-      version: 1,
-      codexHome,
-    })}\n`);
+    await writeFile(codexConfigPath, codexConfig);
+    await writeFile(codexStatePath, codexState);
     await writeFile(join(memoraxCodeHome, "adapters", "claude-code", "state.json"), `${JSON.stringify({
       version: 1,
       claudeHome,
@@ -95,7 +117,18 @@ test("package-removal cleanup is prepared before shutdown and removes all client
       pluginPath: openCodePlugin,
       skillPath: openCodeSkill,
     })}\n`);
-    await writeFile(claudeCommand, `#!/usr/bin/env node
+    await writeFile(traeHooks, `${JSON.stringify({
+      hooks: {
+        UserPromptSubmit: [{ hooks: [{ type: "command", command: "user-owned-trae-hook" }] }],
+      },
+    }, null, 2)}\n`);
+    await mkdir(cursorHome, { recursive: true });
+    await writeFile(cursorHooks, JSON.stringify({ version: 1, hooks: { beforeSubmitPrompt: [{ command: "user-owned-cursor-hook" }] } }));
+    const cursorInstall = await enableCursorAdapter({ memoraxCodeHome, cursorHome });
+    assert.equal(cursorInstall.ok, true);
+    const traeInstall = await enableTraeAdapter({ memoraxCodeHome, traeHome });
+    assert.equal(traeInstall.ok, true);
+    await writeNativeCliFixture(claudeCommand, "claude", `#!/usr/bin/env node
 import { appendFileSync } from "node:fs";
 appendFileSync(${JSON.stringify(claudeCalls)}, JSON.stringify(process.argv.slice(2)) + "\\n");
 `);
@@ -113,10 +146,15 @@ writeFileSync(path, JSON.stringify(manifest, null, 2) + "\\n");
 `);
     await chmod(dshCommand, 0o755);
 
+    await mkdir(qoderHome, { recursive: true });
+    const userQoderSettings = { model: "user-owned-model", hooks: { UserPromptSubmit: [{ hooks: [{ type: "command", command: "user-owned-qoder-hook" }] }] } };
+    await writeFile(qoderSettings, JSON.stringify(userQoderSettings));
+    assert.equal((await enableQoderAdapter({ memoraxCodeHome, qoderHome })).enabled, true);
+
     const cleanup = await prepareClientPluginRemovalCleanup({
       memoraxCodeHome,
       homeDir: home,
-      codexCommand: join(root, "missing-codex"),
+      codexCommand: join(root, process.platform === "win32" ? "missing-codex.exe" : "missing-codex"),
       claudeCommand,
       dshHome,
       dshAdapterRoot,
@@ -126,15 +164,31 @@ writeFileSync(path, JSON.stringify(manifest, null, 2) + "\\n");
     await rm(dshAdapterRoot, { recursive: true, force: true });
     const report = await cleanup();
 
-    assert.equal(report.ok, true);
+    assert.equal(report.ok, true, JSON.stringify(report));
     assert.equal(report.codexPlugin?.ok, true);
+    assert.equal(report.codexPlugin.codexPlugin.ok, true);
+    assert.equal(await readFile(codexConfigPath, "utf8"), codexConfig);
+    assert.equal(await readFile(codexStatePath, "utf8"), codexState);
     assert.equal(report.claudePlugin?.ok, true);
     assert.equal(report.dshPlugin?.ok, true);
     assert.equal(report.opencodePlugin?.ok, true);
+    assert.equal(report.traePlugin?.ok, true);
+    assert.equal(report.cursorPlugin?.ok, true);
+    assert.equal(report.qoderPlugin?.ok, true);
+    await assert.rejects(stat(qoderSkill), /ENOENT/);
+    assert.deepEqual(JSON.parse(await readFile(qoderSettings, "utf8")), userQoderSettings);
     await assert.rejects(stat(codexPluginManifest), /ENOENT/);
     await assert.rejects(stat(openCodePlugin), /ENOENT/);
     await assert.rejects(stat(openCodeSkill), /ENOENT/);
     await assert.rejects(stat(openCodeState), /ENOENT/);
+    await assert.rejects(stat(traeSkill), /ENOENT/);
+    await assert.rejects(stat(cursorSkill), /ENOENT/);
+    await assert.rejects(stat(join(memoraxCodeHome, "adapters", "trae", "state.json")), /ENOENT/);
+    await assert.rejects(stat(join(memoraxCodeHome, "adapters", "cursor", "state.json")), /ENOENT/);
+    assert.deepEqual(JSON.parse(await readFile(cursorHooks, "utf8")), { version: 1, hooks: { beforeSubmitPrompt: [{ command: "user-owned-cursor-hook" }] } });
+    const remainingTraeHooks = JSON.parse(await readFile(traeHooks, "utf8"));
+    assert.equal(JSON.stringify(remainingTraeHooks).includes("user-owned-trae-hook"), true);
+    assert.equal(JSON.stringify(remainingTraeHooks).includes("--memorax-code-trae-hook-v1"), false);
     const calls = (await readFile(claudeCalls, "utf8")).trim().split("\n").map(JSON.parse);
     assert.deepEqual(calls, [
       [
@@ -155,4 +209,56 @@ writeFileSync(path, JSON.stringify(manifest, null, 2) + "\\n");
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+
+test("package removal cleans up Cursor without requiring another client installation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-cursor-package-removal-"));
+  const home = join(root, "user");
+  const memoraxCodeHome = join(root, "backend");
+  const cursorHome = join(root, "custom-cursor");
+  try {
+    await mkdir(cursorHome, { recursive: true });
+    await writeFile(join(cursorHome, "hooks.json"), JSON.stringify({ version: 1, hooks: { stop: [{ command: "keep-user-hook" }] } }));
+    assert.equal((await enableCursorAdapter({ memoraxCodeHome, cursorHome })).ok, true);
+    const cleanup = await prepareClientPluginRemovalCleanup({
+      memoraxCodeHome, homeDir: home,
+      codexHome: join(home, "codex"), claudeHome: join(home, "claude"),
+      dshHome: join(home, "dsh"), openCodeConfigDir: join(home, "opencode"),
+      codeBuddyHome: join(home, "codebuddy"), workBuddyHome: join(home, "workbuddy"), traeHome: join(home, "trae"),
+      codexCommand: join(home, process.platform === "win32" ? "missing-codex.exe" : "missing-codex"), claudeCommand: join(home, "missing-claude"), dshCommand: join(home, "missing-dsh"),
+    });
+    const report = await cleanup();
+    assert.equal(report.ok, true, JSON.stringify(report));
+    assert.equal(report.cursorPlugin.ok, true);
+    await assert.rejects(stat(join(cursorHome, "skills", "memorax-code")), /ENOENT/);
+    await assert.rejects(stat(join(memoraxCodeHome, "adapters", "cursor")), /ENOENT/);
+    assert.deepEqual(JSON.parse(await readFile(join(cursorHome, "hooks.json"), "utf8")), { version: 1, hooks: { stop: [{ command: "keep-user-hook" }] } });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+
+test("package removal cleans up Qoder without requiring another client installation", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-qoder-package-removal-"));
+  const home = join(root, "user");
+  const memoraxCodeHome = join(root, "backend");
+  const qoderHome = join(root, "custom-qoder");
+  try {
+    await mkdir(qoderHome, { recursive: true });
+    await writeFile(join(qoderHome, "settings.json"), JSON.stringify({ hooks: { UserPromptSubmit: [{ hooks: [{ type: "command", command: "keep-user-hook" }] }] } }));
+    assert.equal((await enableQoderAdapter({ memoraxCodeHome, qoderHome })).ok, true);
+    const cleanup = await prepareClientPluginRemovalCleanup({
+      memoraxCodeHome, homeDir: home,
+      codexHome: join(home, "codex"), claudeHome: join(home, "claude"),
+      dshHome: join(home, "dsh"), openCodeConfigDir: join(home, "opencode"),
+      codeBuddyHome: join(home, "codebuddy"), workBuddyHome: join(home, "workbuddy"), traeHome: join(home, "trae"), cursorHome: join(home, "cursor"),
+      codexCommand: join(home, process.platform === "win32" ? "missing-codex.exe" : "missing-codex"), claudeCommand: join(home, "missing-claude"), dshCommand: join(home, "missing-dsh"),
+    });
+    const report = await cleanup();
+    assert.equal(report.ok, true, JSON.stringify(report));
+    assert.equal(report.qoderPlugin.ok, true);
+    await assert.rejects(stat(join(qoderHome, "skills", "memorax-code")), /ENOENT/);
+    await assert.rejects(stat(join(memoraxCodeHome, "adapters", "qoder")), /ENOENT/);
+    assert.deepEqual(JSON.parse(await readFile(join(qoderHome, "settings.json"), "utf8")), { hooks: { UserPromptSubmit: [{ hooks: [{ type: "command", command: "keep-user-hook" }] }] } });
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

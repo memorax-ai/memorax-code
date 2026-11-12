@@ -56,7 +56,7 @@ export function createSkillReminderCommand(input) {
 }
 
 /**
- * Select and verify the exact persisted interval after readFrom(). Later Turns
+ * Select and verify the exact interval returned by persistence. Later Turns
  * may already be durable, so only the inclusive requested suffix is returned.
  */
 export function exactTurnWindow(events, expected) {
@@ -138,7 +138,7 @@ function record(value) {
 
 function skillReminderTriggers(value) {
   if (!Array.isArray(value) || value.length === 0
-    || value.some((trigger) => trigger !== "cadence" && trigger !== "post_compaction")) {
+    || value.some((trigger) => !["cadence", "post_compaction", "search_guidance"].includes(trigger))) {
     throw new TypeError("DSH triggers must be a non-empty array of supported reminder triggers");
   }
   return [...new Set(value)];

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { access, lstat, mkdtemp, rm, writeFile, mkdir, readFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -160,17 +161,24 @@ test("disable leaves unmanaged Claude settings unchanged", async () => {
   }
 });
 
-test("memorax-code-claude CLI prints doctor json without crashing", async () => {
+test("Claude doctor reports an unavailable Backend when the health body stalls", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-claude-doctor-cli-"));
   const claudeHome = join(root, "claude");
   const memoraxCodeHome = join(root, "memorax-code");
   const cliPath = fileURLToPath(new URL("../src/cli.mjs", import.meta.url));
+  const server = createServer((_request, response) => {
+    response.writeHead(200, { "content-type": "application/json" });
+    response.write('{"ok":true,');
+    const timer = setTimeout(() => response.end('"service":"memorax-code-backend"}'), 7_000);
+    response.once("close", () => clearTimeout(timer));
+  });
   try {
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
     const result = await runCli(cliPath, [
       "doctor",
       "--claude-home", claudeHome,
       "--memorax-code-home", memoraxCodeHome,
-      "--backend-url", "http://127.0.0.1:9",
+      "--backend-url", `http://127.0.0.1:${server.address().port}`,
       "--json",
     ]);
     assert.equal(result.code, 1);
@@ -178,9 +186,13 @@ test("memorax-code-claude CLI prints doctor json without crashing", async () => 
     const payload = JSON.parse(result.stdout);
     assert.equal(payload.action, "doctor");
     assert.equal(payload.ok, false);
+    assert.equal(payload.backend.ok, false);
+    assert.equal(payload.backend.status, 200);
     assert.equal(payload.status.claudeHome, claudeHome);
     assert.doesNotMatch(result.stdout + result.stderr, /print is not defined/);
   } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
     await rm(root, { recursive: true, force: true });
   }
 });

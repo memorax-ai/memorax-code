@@ -1,4 +1,5 @@
 import { isRecord } from "../../shared/record.js";
+import { parseNativeMessageTimestamp } from "../../shared/message-time.js";
 
 export type OpenCodeMessageTurn = Readonly<{
   sessionId: string;
@@ -6,6 +7,8 @@ export type OpenCodeMessageTurn = Readonly<{
   assistantMessageId: string;
   userPrompt: string;
   assistantReply: string;
+  userTimestamp?: number;
+  assistantTimestamp?: number;
   outcome: "completed" | "interrupted";
 }>;
 
@@ -66,6 +69,10 @@ export function openCodeMessageTurn(
   if (!userPrompt) return { ok: false, reason: "user_prompt_missing" };
   const assistantReply = messageText(assistant, input.sessionId, input.assistantMessageId);
   if (!assistantReply && !interrupted) return { ok: false, reason: "assistant_message_missing" };
+  // Compaction may change the final reply's parent, but the original user's
+  // creation time still belongs to the prompt selected above.
+  const userTimestamp = parseNativeMessageTimestamp(isRecord(user.info.time) ? user.info.time.created : undefined);
+  const assistantTimestamp = parseNativeMessageTimestamp(assistantTime?.completed);
   return {
     ok: true,
     turn: {
@@ -74,6 +81,8 @@ export function openCodeMessageTurn(
       assistantMessageId: input.assistantMessageId,
       userPrompt,
       assistantReply,
+      ...(userTimestamp !== undefined ? { userTimestamp } : {}),
+      ...(assistantTimestamp !== undefined ? { assistantTimestamp } : {}),
       outcome: interrupted ? "interrupted" : "completed",
     },
   };
@@ -100,6 +109,8 @@ function terminalUserMessageFor(
     message.info.role === "user" && messageId(message) === input.userMessageId
   ));
   if (startIndex < 0) return undefined;
+  // A matching tail assistant and marked continuation prove that compaction
+  // changed the final assistant's parent without starting a new user turn.
   const lineageAssistantIds = new Set<string>();
   let terminalUserMessageId = input.userMessageId;
   let awaitingContinuation = false;

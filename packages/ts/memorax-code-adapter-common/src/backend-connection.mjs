@@ -174,6 +174,8 @@ export function resolveBackendConnection(options = {}) {
   const selected = selectedBackendUrl(options.backendUrl, env, authorityState, authorityPath);
   const tokenFromEnvironment = stringValue(options.backendToken)
     ?? stringValue(env.MEMORAX_CODE_BACKEND_TOKEN);
+  // A persisted token belongs to its recorded URL. An address override must
+  // not silently carry that token to a different Backend.
   const authorityMatches = authority?.url === selected.url;
   const persistedToken = !tokenFromEnvironment && authorityMatches && authority?.tokenPath
     ? readToken(authority.tokenPath, memoraxCodeHome)

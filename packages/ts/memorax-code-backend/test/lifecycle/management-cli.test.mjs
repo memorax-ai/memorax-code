@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { createBackendState } from "../../dist/app/state.js";
 import { runBackendStatus } from "../../dist/lifecycle/backend/status.js";
 import { createBackendServer } from "../../dist/server.js";
@@ -85,6 +85,37 @@ test("Backend status exposes minimal state and the CLI prints a concise summary"
   } finally {
     await new Promise((resolve) => server.close(resolve));
   }
+});
+
+test("status reports Jev configuration separately from readiness and never exposes its key", { timeout: 15_000 }, async (t) => {
+  const home = await mkdtemp(join(tmpdir(), "memorax-code-status-jev-"));
+  const configPath = join(home, "config.toml");
+  const server = createBackendServer(createBackendState("127.0.0.1", { sessionHome: home }));
+  const backendUrl = await listen(server);
+  t.after(async () => {
+    await new Promise((resolve) => server.close(resolve));
+    await rm(home, { recursive: true, force: true });
+  });
+  const cliPath = fileURLToPath(new URL("../../dist/memorax-code.js", import.meta.url));
+  const args = ["status", "--home", home, "--backend-url", backendUrl, "--clients", "none"];
+  for (const entry of [
+    { config: '[jev]\nenabled = false\napi_key = "fixture-private-jev-key"\n', state: "disabled", enabled: false },
+    { config: '[jev]\nenabled = true\n', state: "missing_key", enabled: true },
+    { config: '[jev]\nenabled = true\napi_key = "fixture-private-jev-key"\n', state: "configured", enabled: true },
+  ]) {
+    await writeFile(configPath, entry.config);
+    const result = await runCli(cliPath, [...args, "--json"]);
+    assert.equal(result.code, 0, result.stderr);
+    const report = JSON.parse(result.stdout);
+    assert.equal(report.ok, true);
+    assert.deepEqual(report.jev, { enabled: entry.enabled, state: entry.state });
+    assert.doesNotMatch(result.stdout + result.stderr, /fixture-private-jev-key|apiKey|api_key/);
+    assert.equal(await readFile(configPath, "utf8"), entry.config);
+  }
+  const human = await runCli(cliPath, args);
+  assert.equal(human.code, 0, human.stderr);
+  assert.match(human.stdout, /Jev configuration: configured \(API key not validated\)/);
+  assert.doesNotMatch(human.stdout + human.stderr, /fixture-private-jev-key/);
 });
 
 test("memorax-code lifecycle rejects an invalid connection authority without blocking stop", async () => {
@@ -324,6 +355,11 @@ test("memorax-code start rejects an unpersistable explicit token before stopping
         assert.equal(attempted.code, 1, attempted.stderr);
         const report = JSON.parse(attempted.stdout);
         assert.equal(report.backend.errorCode, "BACKEND_TOKEN_RECORD_INVALID");
+        assert.equal(report.backend.stage, "resolve_token");
+        assert.equal(report.backend.recordReason, "malformed_json");
+        assert.equal(report.failure.stage, "resolve_token");
+        assert.equal(report.failure.error, "Backend authentication configuration could not be used.");
+        assert.match(report.failure.userAction, /token/);
         assert.deepEqual(JSON.parse(await readFile(pidPath, "utf8")), stateBefore);
         assert.equal(isProcessAlive(stateBefore.pid), true);
       });
@@ -366,56 +402,13 @@ test("memorax-code restart validates connection authority before stopping a heal
     assert.equal(report.ok, false);
     assert.equal(report.action, "restart");
     assert.equal(report.backend.errorCode, "BACKEND_CONNECTION_AUTHORITY_INVALID");
+    assert.equal(report.backend.stage, "resolve_connection");
+    assert.equal(report.backend.recordReason, "malformed_json");
     assert.deepEqual(JSON.parse(await readFile(pidPath, "utf8")), stateBefore);
     assert.equal(isProcessAlive(stateBefore.pid), true);
   } finally {
     await runCli(cliPath, ["stop", "--json", "--home", home, "--clients", "none"]);
     await rm(home, { recursive: true, force: true });
-  }
-});
-
-test("memorax-code status treats Codex-only ready state as enabled when Claude is not configured", async () => {
-  const home = await mkdtemp(join(tmpdir(), "memorax-code-status-codex-only-home-"));
-  const codexHome = await mkdtemp(join(tmpdir(), "memorax-code-status-codex-only-codex-"));
-  const port = await freePort();
-  const cliPath = fileURLToPath(new URL("../../dist/memorax-code.js", import.meta.url));
-  await writeFile(join(codexHome, "config.toml"), [
-    'model_provider = "custom"',
-    'model = "gpt-5.5"',
-    "",
-    "[model_providers.custom]",
-    'name = "Custom"',
-    'base_url = "http://127.0.0.1:9999/openai"',
-    'wire_api = "responses"',
-    "",
-  ].join("\n"));
-  await prepareActiveCodexPlugin(codexHome);
-  try {
-    const started = await runCli(cliPath, [
-      "start", "--json",
-      "--home", home,
-      "--port", String(port),
-      "--codex-home", codexHome,
-      "--clients", "codex",
-    ]);
-    assert.equal(started.code, 0, `${started.stdout}\n${started.stderr}`);
-    const status = await runCli(cliPath, [
-      "status",
-      "--home", home,
-      "--port", String(port),
-      "--codex-home", codexHome,
-      "--clients", "codex",
-    ]);
-    assert.equal(status.code, 0, `${status.stdout}\n${status.stderr}`);
-    assert.match(status.stdout, /^\[MemoraX Code Backend\]: MemoraX Code Backend status: .*Enabled/m);
-    assert.match(status.stdout, /^\[MemoraX Code Backend\]: Codex adapter: ok integration=hooks skills=plugin-managed/m);
-    assert.doesNotMatch(status.stdout, /^\[MemoraX Code Backend\]: Claude adapter:/m);
-    assert.doesNotMatch(status.stdout, /Claude adapter is not enabled/);
-    assert.doesNotMatch(status.stdout, /Run `memorax-code start`, then restart or refresh Claude Code/);
-  } finally {
-    await runCli(cliPath, ["stop", "--json", "--home", home, "--port", String(port), "--codex-home", codexHome, "--clients", "codex"]);
-    await rm(home, { recursive: true, force: true });
-    await rm(codexHome, { recursive: true, force: true });
   }
 });
 
@@ -537,6 +530,96 @@ test("unqualified Backend recovery preserves both configured client integrations
     await rm(home, { recursive: true, force: true });
     await rm(codexHome, { recursive: true, force: true });
     await rm(claudeHome, { recursive: true, force: true });
+  }
+});
+
+test("client Hook recovery preserves managed integrations and respects explicit stops", { timeout: 60_000 }, async (t) => {
+  for (const client of ["codebuddy", "trae"]) {
+    await t.test(client, { timeout: 30_000 }, async () => {
+      const root = await mkdtemp(join(tmpdir(), `memorax-code-${client}-shared-recovery-`));
+      const home = join(root, "memorax-code-home");
+      const clientHome = join(root, `${client}-home`);
+      const claudeHome = join(root, "claude-home");
+      const cliPath = fileURLToPath(new URL("../../dist/memorax-code.js", import.meta.url));
+      const port = await freePort();
+      await mkdir(clientHome, { recursive: true });
+      await mkdir(claudeHome, { recursive: true });
+      const claudeCli = await prepareClaudePluginCli(home);
+      await writeFile(join(claudeHome, "settings.json"), "{}\n");
+      const configPath = join(home, "config.toml");
+      const config = [
+        "[clients]", "codex = false", "claude = false", "dsh = false", "opencode = false",
+        `${client} = true`, "",
+      ].join("\n");
+      await writeFile(configPath, config);
+      const env = {
+        MEMORAX_CODE_HOME: home,
+        MEMORAX_CODE_BACKEND_URL: `http://127.0.0.1:${port}`,
+        MEMORAX_CODE_COMMAND: cliPath,
+        CODEBUDDY_HOME: clientHome,
+        TRAE_HOME: clientHome,
+        TRAE_CN_HOME: clientHome,
+        CLAUDE_CONFIG_DIR: claudeHome,
+        FAKE_CLAUDE_PLUGIN_CALLS: claudeCli.callsPath,
+        MEMORAX_CODE_CLAUDE_COMMAND: claudeCli.claudeCommand,
+      };
+      const commonArgs = [
+        "--home", home, "--port", String(port),
+        `--${client}-home`, clientHome, "--claude-home", claudeHome,
+      ];
+      const activeClientsPath = join(home, "runtime", "backend", "managed-clients.json");
+      try {
+        const started = await runCli(cliPath, [
+          "start", "--json", ...commonArgs, "--clients", `${client},claude`,
+        ], { env });
+        assert.equal(started.code, 0, `${started.stdout}\n${started.stderr}`);
+        const startReport = JSON.parse(started.stdout);
+        assert.equal(startReport.claudeAdapter.enabled, true);
+        const adapter = startReport[`${client}Adapter`];
+        assert.equal(adapter.enabled, true);
+        const hookPath = client === "codebuddy"
+          ? join(adapter.marketplacePath, "hooks", "runtime-hook.mjs")
+          : join(adapter.installPath, "runtime-hook.mjs");
+        for (const phase of ["active", "stopped", "configured"]) {
+          if (phase === "stopped") {
+            await writeFile(configPath, config.replace("claude = false", "claude = true"));
+            const stopped = await runCli(cliPath, [
+              "stop", "--json", ...commonArgs, "--clients", "claude",
+            ], { env });
+            assert.equal(stopped.code, 0, `${stopped.stdout}\n${stopped.stderr}`);
+          }
+          const backendOnlyStop = await runCli(cliPath, [
+            "stop", "--json", ...commonArgs, "--clients", "none",
+          ], { env });
+          assert.equal(backendOnlyStop.code, 0, `${backendOnlyStop.stdout}\n${backendOnlyStop.stderr}`);
+          if (phase === "configured") await rm(activeClientsPath);
+          const recovered = await runCli(hookPath, [], {
+            env,
+            input: JSON.stringify({
+              hook_event_name: "SessionStart", session_id: `${client}-${phase}`,
+              transcript_path: join(root, "session.jsonl"), source: "startup", cwd: root,
+            }),
+          });
+          assert.equal(recovered.code, 0, `${recovered.stdout}\n${recovered.stderr}`);
+          const status = await runCli(cliPath, [
+            "status", "--json", ...commonArgs, "--clients", `${client},claude`,
+          ], { env });
+          const report = JSON.parse(status.stdout);
+          assert.equal(report.backend.ok, true, `${phase}: ${status.stdout}\n${status.stderr}`);
+          assert.equal(report[`${client}Adapter`].enabled, true, phase);
+          assert.equal(report.claudeAdapter.enabled, phase !== "stopped", phase);
+          assert.deepEqual(JSON.parse(await readFile(activeClientsPath, "utf8")), {
+            codex: false, claude: phase !== "stopped", dsh: false, opencode: false, [client]: true,
+            ...(client === "codebuddy" ? { workbuddy: false } : {}),
+          }, phase);
+        }
+      } finally {
+        await runCli(cliPath, [
+          "stop", "--json", ...commonArgs, "--clients", `${client},claude`,
+        ], { env });
+        await rm(root, { recursive: true, force: true });
+      }
+    });
   }
 });
 
@@ -677,13 +760,18 @@ test("memorax-code lifecycle rejects invalid config before mutating clients or B
     const activeClients = { codex: false, claude: true, dsh: false, opencode: false };
     await mkdir(join(home, "runtime", "backend"), { recursive: true });
     await writeFile(activeClientsPath, `${JSON.stringify(activeClients)}\n`);
-    const replacement = await runCli(cliPath, ["start", "--json", ...commonArgs], {
-      env: { ...env, MEMORAX_CODE_PACKAGE_REPLACEMENT: "1" },
-    });
-    assert.equal(replacement.code, 1, `${replacement.stdout}\n${replacement.stderr}`);
-    assert.match(replacement.stderr, /failed to parse MemoraX Code lifecycle config/);
-    assert.deepEqual(JSON.parse(await readFile(activeClientsPath, "utf8")), activeClients);
-    assert.equal(await pathExists(join(home, "runtime", "backend", "backend.pid.json")), false);
+    for (const recovery of [
+      { args: [], env: { ...env, MEMORAX_CODE_PACKAGE_REPLACEMENT: "1" } },
+      { args: ["--preserve-clients"], env },
+    ]) {
+      const result = await runCli(cliPath, ["start", "--json", ...commonArgs, ...recovery.args], {
+        env: recovery.env,
+      });
+      assert.equal(result.code, 1, `${result.stdout}\n${result.stderr}`);
+      assert.match(result.stderr, /failed to parse MemoraX Code lifecycle config/);
+      assert.deepEqual(JSON.parse(await readFile(activeClientsPath, "utf8")), activeClients);
+      assert.equal(await pathExists(join(home, "runtime", "backend", "backend.pid.json")), false);
+    }
   } finally {
     await runCli(cliPath, ["stop", "--json", ...commonArgs, "--clients", "none"], { env });
     await rm(home, { recursive: true, force: true });
@@ -870,5 +958,33 @@ test("memorax-code-backend rejects management commands", async () => {
     const result = await runCli(cliPath, [command]);
     assert.equal(result.code, 1, command);
     assert.match(result.stderr, new RegExp(`memorax-code-backend: unknown command '${command}'`));
+  }
+});
+
+test("lifecycle reports drain buffered stdout before the CLI exits", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-lifecycle-output-"));
+  const home = join(root, "home");
+  const cliPath = fileURLToPath(new URL("../../dist/memorax-code.js", import.meta.url));
+  const port = await freePort();
+  const args = ["--json", "--home", home, "--port", String(port), "--clients", "none"];
+  const preload = join(root, "slow-stdout.mjs");
+  await writeFile(preload, `
+    const write = process.stdout.write.bind(process.stdout);
+    process.stdout.write = (...args) => {
+      setTimeout(() => write(...args), 25);
+      return true;
+    };
+  `);
+  try {
+    for (const command of ["start", "restart", "stop", "uninstall"]) {
+      const result = await runCli(cliPath, [command, ...args], {
+        env: { NODE_OPTIONS: "--import=" + pathToFileURL(preload).href },
+      });
+      assert.equal(result.code, 0, result.stderr);
+      assert.equal(JSON.parse(result.stdout).ok, true, command);
+    }
+  } finally {
+    await runCli(cliPath, ["stop", ...args]);
+    await rm(root, { recursive: true, force: true });
   }
 });

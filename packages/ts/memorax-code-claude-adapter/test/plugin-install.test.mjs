@@ -1,4 +1,7 @@
+import { nativeCliCommand, writeNativeCliFixture } from "../../../../test/support/native-cli-fixture.mjs";
 import { strict as assert } from "node:assert";
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,17 +12,28 @@ import { buildClaudeMarketplace } from "../scripts/build-marketplace.mjs";
 
 const pluginSourceRoot = fileURLToPath(new URL("..", import.meta.url));
 
-test("Claude plugin lifecycle uses the official CLI with the selected config home", async () => {
+test("Claude plugin lifecycle uses the official CLI with the selected config home", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-claude-plugin-install-"));
   const claudeHome = join(root, "Claude Home With Spaces");
   const memoraxCodeHome = join(root, "memorax-code");
   const marketplacePath = join(root, "Marketplace With Spaces");
-  const claudeCommand = join(root, "fake-claude.mjs");
+  const claudeCommand = nativeCliCommand(root, "claude");
   const callsPath = join(root, "calls.jsonl");
+  const npmExecPath = join(root, "npm-cli.js");
+  const previousNpmExecPath = process.env.MEMORAX_CODE_NPM_EXEC_PATH;
+  const originalSpawnSync = childProcess.spawnSync;
+  const commandTimeouts = [];
+  t.mock.method(childProcess, "spawnSync", (command, args, options) => {
+    commandTimeouts.push(options.timeout);
+    return originalSpawnSync(command, args, options);
+  });
+  syncBuiltinESMExports();
   try {
     await mkdir(join(marketplacePath, ".claude-plugin"), { recursive: true });
     await writeFile(join(marketplacePath, ".claude-plugin", "marketplace.json"), "{}\n");
     await writeFakeClaude(claudeCommand);
+    await writeFile(npmExecPath, "// test npm entrypoint\n");
+    process.env.MEMORAX_CODE_NPM_EXEC_PATH = npmExecPath;
 
     const installed = ensureClaudePluginInstalled({ claudeHome, memoraxCodeHome, marketplacePath, claudeCommand });
     assert.equal(installed.ok, true);
@@ -30,6 +44,8 @@ test("Claude plugin lifecycle uses the official CLI with the selected config hom
     assert.equal(metadata.version, 1);
     assert.equal(metadata.memoraxCodeCommand, process.argv[1]);
     assert.equal(metadata.claudeCommand, claudeCommand);
+    assert.equal(metadata.memoraxCodeHome, memoraxCodeHome);
+    assert.equal(metadata.npmExecPath, npmExecPath);
     await writeFile(join(claudeHome, "settings.json"), `${JSON.stringify({
       extraKnownMarketplaces: { "memorax-code-local": { source: { source: "directory", path: marketplacePath } } },
       enabledPlugins: { "memorax-code-claude-adapter@memorax-code-local": true },
@@ -47,7 +63,12 @@ test("Claude plugin lifecycle uses the official CLI with the selected config hom
       { args: ["plugin", "uninstall", "memorax-code-claude-adapter@memorax-code-local", "--scope", "user", "--yes", "--keep-data"], claudeConfigDir: claudeHome },
       { args: ["plugin", "marketplace", "remove", "memorax-code-local"], claudeConfigDir: claudeHome },
     ]);
+    assert.deepEqual(commandTimeouts, [30_000, 30_000, 30_000, 30_000, 30_000, 30_000, 30_000]);
   } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+    if (previousNpmExecPath === undefined) delete process.env.MEMORAX_CODE_NPM_EXEC_PATH;
+    else process.env.MEMORAX_CODE_NPM_EXEC_PATH = previousNpmExecPath;
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -125,6 +146,49 @@ test("Claude plugin lifecycle resolves a Windows cmd shim without a shell", asyn
   }
 });
 
+test("Claude plugin install refreshes the personal-memory home while preserving a current shell", async () => {
+  const root = await mkdtemp(join(tmpdir(), "memorax-code-claude-plugin-memory-home-"));
+  const cli = join(root, "claude-cli.mjs");
+  const previousCli = process.env.MEMORAX_CODE_CLAUDE_CLI_JS;
+  const options = {
+    claudeHome: join(root, "claude"),
+    memoraxCodeHome: join(root, "first memory home"),
+    marketplacePath: join(root, "marketplace"),
+    claudeCommand: "claude",
+    windowsCliResolution: {
+      platform: "win32",
+      resolvedCommand: "C:\\npm prefix\\claude.cmd",
+      nodePath: process.execPath,
+      existsSync: (candidate) => candidate === cli,
+    },
+  };
+  try {
+    process.env.MEMORAX_CODE_CLAUDE_CLI_JS = cli;
+    await mkdir(join(options.marketplacePath, ".claude-plugin"), { recursive: true });
+    await writeFile(join(options.marketplacePath, ".claude-plugin", "marketplace.json"), "{}\n");
+    await writeFakeClaude(cli);
+    const installed = ensureClaudePluginInstalled(options);
+    assert.equal(installed.ok, true);
+    const metadataPath = join(installed.installPath, ".memorax-code-package.json");
+    assert.equal(JSON.parse(await readFile(metadataPath, "utf8")).memoraxCodeHome, options.memoraxCodeHome);
+
+    await rm(metadataPath);
+    for (const memoraxCodeHome of [options.memoraxCodeHome, join(root, "second memory home")]) {
+      const refreshed = ensureClaudePluginInstalled({ ...options, memoraxCodeHome });
+      assert.equal(refreshed.ok, true);
+      assert.equal(refreshed.shellUnchanged, true);
+      assert.equal(refreshed.restartRequired, false);
+      assert.equal(JSON.parse(await readFile(metadataPath, "utf8")).memoraxCodeHome, memoraxCodeHome);
+    }
+    const calls = (await readFile(join(root, "calls.jsonl"), "utf8")).trim().split("\n").map(JSON.parse);
+    assert.equal(calls.filter(({ args }) => args[0] === "plugin" && ["install", "update"].includes(args[1])).length, 1);
+  } finally {
+    if (previousCli === undefined) delete process.env.MEMORAX_CODE_CLAUDE_CLI_JS;
+    else process.env.MEMORAX_CODE_CLAUDE_CLI_JS = previousCli;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 test("Claude plugin install reports missing marketplace before invoking the CLI", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-claude-plugin-missing-marketplace-"));
   try {
@@ -132,10 +196,11 @@ test("Claude plugin install reports missing marketplace before invoking the CLI"
       claudeHome: join(root, "claude"),
       memoraxCodeHome: join(root, "memorax-code"),
       marketplacePath: join(root, "missing"),
-      claudeCommand: join(root, "missing-claude"),
+      claudeCommand: join(root, process.platform === "win32" ? "missing-claude.exe" : "missing-claude"),
     });
     assert.equal(result.ok, false);
     assert.equal(result.reason, "marketplace_missing");
+    assert.deepEqual(result.failure, { stage: "discover", errorCode: "CLIENT_DISCOVER_FAILED", failureReason: "missing_source" });
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -148,7 +213,7 @@ test("Claude plugin install reports a falsy marketplace path without throwing", 
       claudeHome: join(root, "claude"),
       memoraxCodeHome: join(root, "memorax-code"),
       marketplacePath: false,
-      claudeCommand: join(root, "missing-claude"),
+      claudeCommand: join(root, process.platform === "win32" ? "missing-claude.exe" : "missing-claude"),
     });
     assert.equal(result.ok, false);
     assert.equal(result.reason, "marketplace_missing");
@@ -167,10 +232,12 @@ test("Claude plugin install identifies an unavailable CLI", async () => {
       claudeHome: join(root, "claude"),
       memoraxCodeHome: join(root, "memorax-code"),
       marketplacePath,
-      claudeCommand: join(root, "missing-claude"),
+      claudeCommand: join(root, process.platform === "win32" ? "missing-claude.exe" : "missing-claude"),
     });
     assert.equal(result.ok, false);
     assert.equal(result.reason, "claude_cli_unavailable");
+    assert.deepEqual(result.failure, { stage: "plugin-list", errorCode: "CLIENT_PLUGIN_LIST_FAILED", systemCode: "ENOENT", failureReason: "not_found" });
+    assert.equal(JSON.stringify(result.failure).includes(root), false);
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -180,7 +247,7 @@ test("Claude plugin install preserves an existing marketplace path", async () =>
   const root = await mkdtemp(join(tmpdir(), "memorax-code-claude-plugin-existing-marketplace-"));
   const claudeHome = join(root, "claude");
   const marketplacePath = join(root, "custom-marketplace");
-  const claudeCommand = join(root, "fake-claude.mjs");
+  const claudeCommand = nativeCliCommand(root, "claude");
   try {
     await mkdir(join(marketplacePath, ".claude-plugin"), { recursive: true });
     await mkdir(claudeHome, { recursive: true });
@@ -206,7 +273,7 @@ test("Claude plugin install replaces a stale official CLI marketplace registrati
   const memoraxCodeHome = join(root, "memorax-code");
   const marketplacePath = join(memoraxCodeHome, "lib", "memorax-code-claude-marketplace");
   const staleMarketplacePath = join(root, "deleted-marketplace");
-  const claudeCommand = join(root, "fake-claude.mjs");
+  const claudeCommand = nativeCliCommand(root, "claude");
   const callsPath = join(root, "calls.jsonl");
   try {
     await mkdir(join(marketplacePath, ".claude-plugin"), { recursive: true });
@@ -249,18 +316,18 @@ test("Claude plugin install replaces a stale official CLI marketplace registrati
   }
 });
 
-test("Claude plugin install surfaces CLI failures", async () => {
+test("Claude plugin install surfaces CLI failures", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-claude-plugin-install-failure-"));
   const marketplacePath = join(root, "marketplace");
-  const claudeCommand = join(root, "fake-claude.mjs");
+  const claudeCommand = nativeCliCommand(root, "claude");
   try {
     await mkdir(join(marketplacePath, ".claude-plugin"), { recursive: true });
     await writeFile(join(marketplacePath, ".claude-plugin", "marketplace.json"), "{}\n");
-    await writeFile(claudeCommand, [
+    await writeNativeCliFixture(claudeCommand, "claude", [
       "#!/usr/bin/env node",
       "if (process.argv.slice(2).join(' ') === 'plugin list --json') { console.log('[]'); process.exit(0); }",
       "if (process.argv.slice(2).join(' ') === 'plugin marketplace list --json') { console.log('[]'); process.exit(0); }",
-      "console.error('intentional plugin install failure');",
+      "console.error('intentional plugin install failure bearer secret-diagnostic-token /private/plugin-path');",
       "process.exit(7);",
       "",
     ].join("\n"));
@@ -270,7 +337,31 @@ test("Claude plugin install surfaces CLI failures", async () => {
     assert.equal(result.ok, false);
     assert.equal(result.reason, "marketplace_add_failed");
     assert.match(result.message, /intentional plugin install failure/);
+    assert.deepEqual(result.failure, { stage: "plugin-register", errorCode: "CLIENT_PLUGIN_REGISTER_FAILED", commandExitCode: 7, failureReason: "exit_status" });
+    assert.doesNotMatch(JSON.stringify(result.failure), /secret-diagnostic-token|private|intentional/);
+
+    t.mock.method(childProcess, "spawnSync", (_command, args, options) => {
+      if (!args.includes("install")) return { status: 0, stdout: "[]", stderr: "" };
+      assert.equal(options.timeout, 30_000);
+      return {
+        status: 143,
+        error: Object.assign(new Error("Native plugin installation timed out"), { code: "ETIMEDOUT" }),
+        stdout: "bearer secret-diagnostic-token",
+        stderr: "/private/plugin-path",
+      };
+    });
+    syncBuiltinESMExports();
+    const timedOut = ensureClaudePluginInstalled({ claudeHome: join(root, "timeout-claude"), marketplacePath, claudeCommand });
+    assert.equal(timedOut.ok, false);
+    assert.equal(timedOut.reason, "plugin_install_failed");
+    assert.deepEqual(timedOut.failure, {
+      stage: "plugin-install", errorCode: "CLIENT_PLUGIN_INSTALL_FAILED",
+      systemCode: "ETIMEDOUT", commandExitCode: 143, failureReason: "timeout",
+    });
+    assert.doesNotMatch(JSON.stringify(timedOut), /secret-diagnostic-token|private\/plugin-path/);
   } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
     await rm(root, { recursive: true, force: true });
   }
 });
@@ -280,7 +371,7 @@ test("Claude plugin install preserves a matching shell and requires refresh only
   const claudeHome = join(root, "claude");
   const memoraxCodeHome = join(root, "memorax-code");
   const marketplacePath = join(root, "marketplace");
-  const claudeCommand = join(root, "fake-claude.mjs");
+  const claudeCommand = nativeCliCommand(root, "claude");
   const callsPath = join(root, "calls.jsonl");
   try {
     await mkdir(join(marketplacePath, ".claude-plugin"), { recursive: true });
@@ -333,7 +424,7 @@ test("Claude plugin install refreshes a changed shell and requires a reload", as
   const claudeHome = join(root, "claude");
   const memoraxCodeHome = join(root, "memorax-code");
   const marketplacePath = join(root, "marketplace");
-  const claudeCommand = join(root, "fake-claude.mjs");
+  const claudeCommand = nativeCliCommand(root, "claude");
   const callsPath = join(root, "calls.jsonl");
   try {
     await mkdir(join(marketplacePath, ".claude-plugin"), { recursive: true });
@@ -383,7 +474,7 @@ test("Claude plugin install refreshes an incomplete matching shell", async () =>
   const claudeHome = join(root, "claude");
   const memoraxCodeHome = join(root, "memorax-code");
   const marketplacePath = join(root, "marketplace");
-  const claudeCommand = join(root, "fake-claude.mjs");
+  const claudeCommand = nativeCliCommand(root, "claude");
   const callsPath = join(root, "calls.jsonl");
   try {
     await mkdir(join(marketplacePath, ".claude-plugin"), { recursive: true });
@@ -434,7 +525,7 @@ test("Claude plugin install rejects an incomplete installed artifact", async () 
   const claudeHome = join(root, "claude");
   const marketplacePath = join(root, "marketplace");
   const installedMarketplace = join(root, "installed-marketplace");
-  const claudeCommand = join(root, "fake-claude.mjs");
+  const claudeCommand = nativeCliCommand(root, "claude");
   try {
     await mkdir(join(marketplacePath, ".claude-plugin"), { recursive: true });
     await writeFile(join(marketplacePath, ".claude-plugin", "marketplace.json"), "{}\n");
@@ -468,9 +559,9 @@ test("Claude plugin install rejects an incomplete installed artifact", async () 
 
 test("Claude plugin removal is idempotent when plugin and marketplace are absent", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-claude-plugin-remove-missing-"));
-  const claudeCommand = join(root, "fake-claude.mjs");
+  const claudeCommand = nativeCliCommand(root, "claude");
   try {
-    await writeFile(claudeCommand, [
+    await writeNativeCliFixture(claudeCommand, "claude", [
       "#!/usr/bin/env node",
       "console.error('requested plugin or marketplace not found');",
       "process.exit(1);",
@@ -488,13 +579,13 @@ test("Claude plugin removal is idempotent when plugin and marketplace are absent
 test("Claude plugin removal accepts official CLI not-found results for registered entries", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-claude-plugin-remove-not-found-"));
   const claudeHome = join(root, "claude");
-  const claudeCommand = join(root, "fake-claude.mjs");
+  const claudeCommand = nativeCliCommand(root, "claude");
   try {
     await mkdir(claudeHome, { recursive: true });
     await writeFile(join(claudeHome, "settings.json"), `${JSON.stringify({
       enabledPlugins: { "memorax-code-claude-adapter@memorax-code-local": true },
     }, null, 2)}\n`);
-    await writeFile(claudeCommand, [
+    await writeNativeCliFixture(claudeCommand, "claude", [
       "#!/usr/bin/env node",
       "console.error('requested plugin or marketplace not found');",
       "process.exit(1);",
@@ -514,7 +605,7 @@ test("Claude plugin removal clears an orphaned marketplace registry", async () =
   const claudeHome = join(root, "claude");
   const memoraxCodeHome = join(root, "memorax-code");
   const marketplacePath = join(root, "marketplace");
-  const claudeCommand = join(root, "fake-claude.mjs");
+  const claudeCommand = nativeCliCommand(root, "claude");
   const callsPath = join(root, "calls.jsonl");
   try {
     await mkdir(join(marketplacePath, ".claude-plugin"), { recursive: true });
@@ -523,7 +614,7 @@ test("Claude plugin removal clears an orphaned marketplace registry", async () =
     assert.equal(ensureClaudePluginInstalled({ claudeHome, memoraxCodeHome, marketplacePath, claudeCommand }).ok, true);
 
     await writeFile(callsPath, "");
-    await writeFile(claudeCommand, [
+    await writeNativeCliFixture(claudeCommand, "claude", [
       "#!/usr/bin/env node",
       "import { appendFileSync } from 'node:fs';",
       "import { join } from 'node:path';",
@@ -554,7 +645,7 @@ test("Claude plugin status detects enabled and missing managed plugins", async (
   const claudeHome = join(root, "claude");
   const memoraxCodeHome = join(root, "memorax-code");
   const marketplacePath = join(root, "marketplace");
-  const claudeCommand = join(root, "fake-claude.mjs");
+  const claudeCommand = nativeCliCommand(root, "claude");
   try {
     await mkdir(join(marketplacePath, ".claude-plugin"), { recursive: true });
     await writeFile(join(marketplacePath, ".claude-plugin", "marketplace.json"), "{}\n");
@@ -580,13 +671,13 @@ test("Claude plugin removal remains retryable after a CLI failure", async () => 
   const claudeHome = join(root, "claude");
   const memoraxCodeHome = join(root, "memorax-code");
   const marketplacePath = join(root, "marketplace");
-  const claudeCommand = join(root, "fake-claude.mjs");
+  const claudeCommand = nativeCliCommand(root, "claude");
   try {
     await mkdir(join(marketplacePath, ".claude-plugin"), { recursive: true });
     await writeFile(join(marketplacePath, ".claude-plugin", "marketplace.json"), "{}\n");
     await writeFakeClaude(claudeCommand);
     assert.equal(ensureClaudePluginInstalled({ claudeHome, memoraxCodeHome, marketplacePath, claudeCommand }).ok, true);
-    await writeFile(claudeCommand, ["#!/usr/bin/env node", "process.exit(7);", ""].join("\n"));
+    await writeNativeCliFixture(claudeCommand, "claude", ["#!/usr/bin/env node", "process.exit(7);", ""].join("\n"));
     await chmod(claudeCommand, 0o755);
     assert.equal(removeClaudePluginInstallation({ claudeHome, memoraxCodeHome, claudeCommand }).ok, false);
     const statusAfterFailure = readClaudePluginStatus({ claudeHome, memoraxCodeHome, claudeCommand });
@@ -604,7 +695,7 @@ test("Claude plugin state is isolated by Claude home", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-claude-plugin-multi-home-"));
   const memoraxCodeHome = join(root, "memorax-code");
   const marketplacePath = join(root, "marketplace");
-  const claudeCommand = join(root, "fake-claude.mjs");
+  const claudeCommand = nativeCliCommand(root, "claude");
   const claudeHomeA = join(root, "claude-a");
   const claudeHomeB = join(root, "claude-b");
   try {
@@ -624,17 +715,18 @@ test("Claude plugin state is isolated by Claude home", async () => {
   }
 });
 
-test("Claude plugin state uses the real Claude home behind symlinks", { skip: process.platform === "win32" }, async () => {
+test("Claude plugin state uses the real Claude home behind directory links", async () => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-claude-plugin-symlink-home-"));
   const memoraxCodeHome = join(root, "memorax-code");
   const marketplacePath = join(root, "marketplace");
-  const claudeCommand = join(root, "fake-claude.mjs");
+  const claudeCommand = nativeCliCommand(root, "claude");
   const realClaudeHome = join(root, "claude-real");
   const linkedClaudeHome = join(root, "claude-link");
   try {
     await mkdir(join(marketplacePath, ".claude-plugin"), { recursive: true });
     await mkdir(realClaudeHome, { recursive: true });
-    await symlink(realClaudeHome, linkedClaudeHome, "dir");
+    // Junctions exercise the same canonical-home contract without symlink privileges on Windows.
+    await symlink(realClaudeHome, linkedClaudeHome, process.platform === "win32" ? "junction" : "dir");
     await writeFile(join(marketplacePath, ".claude-plugin", "marketplace.json"), "{}\n");
     await writeFakeClaude(claudeCommand);
     assert.equal(ensureClaudePluginInstalled({ claudeHome: linkedClaudeHome, memoraxCodeHome, marketplacePath, claudeCommand }).ok, true);
@@ -651,7 +743,7 @@ async function writeFakeClaude(path, plugins) {
   const pluginArtifact = await buildClaudeMarketplace({
     outputDir: join(path, "..", ".fake-claude-marketplace"),
   });
-  await writeFile(path, [
+  await writeNativeCliFixture(path, "claude", [
     "#!/usr/bin/env node",
     "import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';",
     "import { dirname, join } from 'node:path';",

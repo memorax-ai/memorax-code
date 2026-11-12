@@ -1,3 +1,4 @@
+import { attachDeploymentFailure, deploymentFailure } from "../../../../memorax-code-adapter-common/src/deployment-failure.mjs";
 import { join } from "node:path";
 import type {
   AdapterLifecycleBackendContext,
@@ -33,7 +34,7 @@ export const claudeAdapterLifecycle = {
         ...(pluginStatus.ok === false ? { reason: pluginStatus.reason, message: pluginStatus.message } : {}),
       };
     } catch (error) {
-      return { ok: false, action: "status", error: error instanceof Error ? error.message : String(error) };
+      return { ok: false, action: "status", failure: deploymentFailure(error, "deploy"), error: error instanceof Error ? error.message : String(error) };
     }
   },
   async prepareEnable({ argv, serviceOptions, backendUrl }) {
@@ -66,7 +67,7 @@ export const claudeAdapterLifecycle = {
       const status = adapter.readClaudeAdapterStatus(adapterOptions);
       return { ...enabled, ...status, action: "enable", changed: enabled.changed, pluginInstall };
     } catch (error) {
-      return { ok: false, action: "enable", error: error instanceof Error ? error.message : String(error) };
+      return { ok: false, action: "enable", failure: deploymentFailure(error, "deploy"), error: error instanceof Error ? error.message : String(error) };
     }
   },
   async disable({ argv, serviceOptions }) {
@@ -74,7 +75,7 @@ export const claudeAdapterLifecycle = {
       const adapter = await loadClaudeAdapterConfig();
       return adapter.disableClaudeAdapter(claudeAdapterOptions(argv, serviceOptions));
     } catch (error) {
-      return { ok: false, action: "disable", error: error instanceof Error ? error.message : String(error) };
+      return { ok: false, action: "disable", failure: deploymentFailure(error, "deploy"), error: error instanceof Error ? error.message : String(error) };
     }
   },
   async remove({ argv, serviceOptions }) {
@@ -87,7 +88,7 @@ export const claudeAdapterLifecycle = {
         ok: false,
         action: "claude-plugin-remove",
         reason: "plugin_remove_failed",
-        message: error instanceof Error ? error.message : String(error),
+        failure: deploymentFailure(error, "plugin-remove"), message: error instanceof Error ? error.message : String(error),
       };
     }
   },
@@ -124,7 +125,7 @@ async function readClaudeAdapterStatus(
       ...(claudePluginSkillsRoot ? { claudePluginSkillsRoot } : {}),
     });
   } catch (error) {
-    return { ok: false, action: "status", error: error instanceof Error ? error.message : String(error) };
+    return { ok: false, action: "status", failure: deploymentFailure(error, "deploy"), error: error instanceof Error ? error.message : String(error) };
   }
 }
 
@@ -146,7 +147,8 @@ async function loadClaudeAdapterConfig(): Promise<{
   disableClaudeAdapter: (options: Record<string, unknown>) => AdapterReport;
   readClaudeAdapterStatus: (options: Record<string, unknown>) => AdapterReport;
 }> {
-  return await import(new URL("../../../../memorax-code-claude-adapter/src/config.mjs", import.meta.url).href);
+  return await import(new URL("../../../../memorax-code-claude-adapter/src/config.mjs", import.meta.url).href)
+    .catch((error) => { throw attachDeploymentFailure(error, "adapter-load"); });
 }
 
 async function loadClaudePluginInstaller(): Promise<{
@@ -154,7 +156,8 @@ async function loadClaudePluginInstaller(): Promise<{
   removeClaudePluginInstallation: (options: Record<string, unknown>) => AdapterPluginLifecycleReport;
   readClaudePluginStatus: (options: Record<string, unknown>) => AdapterReport;
 }> {
-  return await import(new URL("../../../../memorax-code-claude-adapter/src/plugin-install.mjs", import.meta.url).href);
+  return await import(new URL("../../../../memorax-code-claude-adapter/src/plugin-install.mjs", import.meta.url).href)
+    .catch((error) => { throw attachDeploymentFailure(error, "adapter-load"); });
 }
 
 function argValue(argv: string[], name: string): string | undefined {

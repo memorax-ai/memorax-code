@@ -150,6 +150,8 @@ export function writeBackendServiceStateAtPath(
   });
 }
 
+// Callers hold the lifecycle lock across the ownership decision and cleanup;
+// the checks below do not replace that cross-process serialization.
 export function removeBackendServiceStateIfOwnedAtPath(
   path: string,
   expected: Pick<BackendServiceState, "pid" | "instanceId">,
@@ -164,6 +166,8 @@ export function removeBackendServiceStateIfOwnedAtPath(
   if (current.status !== "valid" || !sameServiceInstance(current.record, expected)) {
     return { disposition: "not_owned", reason: "replacement" };
   }
+  // The hard link gives cleanup a stable inode to compare with the path;
+  // recheck instance identity before removing the PID authority.
   const claimPath = `${path}.delete-${randomUUID()}`;
   try {
     linkSync(path, claimPath);

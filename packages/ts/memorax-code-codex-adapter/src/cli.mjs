@@ -11,6 +11,7 @@ import {
 } from "./config.mjs";
 import { resolveBackendConnection } from "../../memorax-code-adapter-common/src/backend-connection.mjs";
 
+const BACKEND_HEALTH_TIMEOUT_MS = 5_000;
 const VALUE_OPTIONS = new Set([
   "--codex-home",
   "--memorax-code-home",
@@ -162,7 +163,10 @@ function parseNonNegativeInteger(value, optionName) {
 async function backendHealth(backendUrl, token) {
   try {
     const headers = token ? { authorization: `Bearer ${token}` } : {};
-    const response = await fetch(new URL("/health", backendUrl), { headers });
+    const response = await fetch(new URL("/health", backendUrl), {
+      headers,
+      signal: AbortSignal.timeout(BACKEND_HEALTH_TIMEOUT_MS),
+    });
     const body = await response.json().catch(() => undefined);
     return { ok: response.ok && body?.ok === true && body?.service === "memorax-code-backend", status: response.status, body };
   } catch (error) {

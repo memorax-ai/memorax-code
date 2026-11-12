@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -37,9 +37,12 @@ test("combined UserPromptSubmit hook posts user prompt and first reminder to Bac
     assert.equal(result.code, 0, result.stderr);
     assert.match(JSON.parse(result.stdout).hookSpecificOutput.additionalContext, /\$memorax-code/);
     assert.equal(result.stderr, "");
-    assert.equal(requests.length, 2);
-    assert.equal(requests[0].path, "/memory/turn-start");
-    assert.equal(requests[1].path, "/memory/skill-reminder");
+    assert.deepEqual(requests.map((request) => request.path), [
+      "/memory/turn-start",
+      "/memory/search-guidance",
+      "/memory/skill-reminder",
+    ]);
+    assert.deepEqual(requests[1].body, requests[0].body);
     assert.equal(requestHeaders[0]["x-memorax-code-backend-token"], "backend-token");
     assert.deepEqual(requests[0].body, {
       version: 1,
@@ -51,7 +54,7 @@ test("combined UserPromptSubmit hook posts user prompt and first reminder to Bac
       workspaceKind: "projectless",
       transcriptPath: "/tmp/transcript.jsonl",
     });
-    assert.deepEqual(requests[1].body, {
+    assert.deepEqual(requests[2].body, {
       version: 1,
       client: "codex",
       sessionId: "session-1",
@@ -64,6 +67,50 @@ test("combined UserPromptSubmit hook posts user prompt and first reminder to Bac
     });
   } finally {
     server.close();
+    await rm(memoraxCodeHome, { recursive: true, force: true });
+  }
+});
+
+test("combined UserPromptSubmit hook refreshes Backend connection authority before its reminder", async () => {
+  const memoraxCodeHome = await mkdtemp(join(tmpdir(), "memorax-code-codex-memory-connection-refresh-"));
+  const reminderRecorder = await listenRecorder();
+  const turnRecorder = await listenRecorder({
+    beforeResponse: () => writeBackendConnection(memoraxCodeHome, reminderRecorder.url, "replacement-token"),
+  });
+  try {
+    await writeBackendConnection(memoraxCodeHome, turnRecorder.url, "initial-token");
+    const result = await runHook(userPromptHook, {
+      MEMORAX_CODE_BACKEND_URL: "",
+      MEMORAX_CODE_BACKEND_HOST: "",
+      MEMORAX_CODE_BACKEND_PORT: "",
+      MEMORAX_CODE_BACKEND_TOKEN: "",
+      MEMORAX_CODE_CODEX_MEMORY_HOOK_TIMEOUT_MS: "1000",
+      MEMORAX_CODE_HOME: memoraxCodeHome,
+    }, {
+      hook_event_name: "UserPromptSubmit",
+      session_id: "session-connection-refresh",
+      turn_id: "turn-connection-refresh",
+      prompt: "Keep the reminder bound to the current Backend.",
+      transcript_path: "/tmp/connection-refresh.jsonl",
+    });
+
+    assert.equal(result.code, 0, result.stderr);
+    assert.equal(result.stderr, "");
+    assert.match(JSON.parse(result.stdout).hookSpecificOutput.additionalContext, /\$memorax-code/);
+    assert.deepEqual(turnRecorder.requests.map((request) => request.path), ["/memory/turn-start"]);
+    assert.deepEqual(reminderRecorder.requests.map((request) => request.path), [
+      "/memory/search-guidance",
+      "/memory/skill-reminder",
+    ]);
+    assert.deepEqual(reminderRecorder.requests[0].body, turnRecorder.requests[0].body);
+    assert.equal(turnRecorder.requestHeaders[0]["x-memorax-code-backend-token"], "initial-token");
+    assert.deepEqual(reminderRecorder.requestHeaders.map((headers) => headers["x-memorax-code-backend-token"]), [
+      "replacement-token",
+      "replacement-token",
+    ]);
+  } finally {
+    turnRecorder.server.close();
+    reminderRecorder.server.close();
     await rm(memoraxCodeHome, { recursive: true, force: true });
   }
 });
@@ -115,35 +162,35 @@ test("combined UserPromptSubmit hook skips pathless Codex background turns but w
   }
 });
 
-test("memory writeback hook posts assistant message to Backend", async () => {
-  const { server, url, requests } = await listenRecorder();
-  const memoraxCodeHome = await mkdtemp(join(tmpdir(), "memorax-code-codex-writeback-hook-"));
+test("memory writeback hook preserves projectless content using the persisted Backend connection and token", async () => {
+  const { server, url, requests, requestHeaders } = await listenRecorder();
+  const memoraxCodeHome = await mkdtemp(join(tmpdir(), "memorax-code-codex-memory-connection-"));
   const userHome = join(memoraxCodeHome, "user-home");
   const managedCwd = join(userHome, "Documents", "Codex", "2026-07-29", "new-chat");
   await mkdir(managedCwd, { recursive: true });
   try {
+    await writeBackendConnection(memoraxCodeHome, url, "persisted-backend-token");
     const env = {
       HOME: userHome,
-      MEMORAX_CODE_BACKEND_URL: url,
+      MEMORAX_CODE_BACKEND_URL: "",
+      MEMORAX_CODE_BACKEND_TOKEN: "",
       MEMORAX_CODE_CODEX_MEMORY_HOOK_TIMEOUT_MS: "1000",
       MEMORAX_CODE_HOME: memoraxCodeHome,
       USERPROFILE: userHome,
     };
     const pinned = await runHook(userPromptHook, env, {
       hook_event_name: "UserPromptSubmit",
-      session_id: "session-1",
-      turn_id: "turn-1",
+      session_id: "session-persisted-connection",
+      turn_id: "turn-persisted-connection",
       prompt: "Pin this turn.",
       cwd: managedCwd,
     });
     assert.equal(pinned.code, 0, pinned.stderr);
-    const result = await runHook(writebackHook, {
-      ...env,
-    }, {
+    const result = await runHook(writebackHook, env, {
       hook_event_name: "Stop",
-      session_id: "session-1",
-      turn_id: "turn-1",
-      last_assistant_message: "Assistant answer.",
+      session_id: "session-persisted-connection",
+      turn_id: "turn-persisted-connection",
+      last_assistant_message: "Persist this answer.",
       cwd: managedCwd,
       transcript_path: "/tmp/transcript.jsonl",
     });
@@ -156,50 +203,13 @@ test("memory writeback hook posts assistant message to Backend", async () => {
     assert.deepEqual(requests[0].body, {
       version: 1,
       client: "codex",
-      sessionId: "session-1",
-      turnId: "turn-1",
-      lastAssistantMessage: "Assistant answer.",
+      sessionId: "session-persisted-connection",
+      turnId: "turn-persisted-connection",
+      lastAssistantMessage: "Persist this answer.",
       cwd: managedCwd,
       workspaceKind: "projectless",
       transcriptPath: "/tmp/transcript.jsonl",
     });
-  } finally {
-    server.close();
-    await rm(memoraxCodeHome, { recursive: true, force: true });
-  }
-});
-
-test("memory writeback hook reads the persisted Backend connection and token", async () => {
-  const { server, url, requests, requestHeaders } = await listenRecorder();
-  const memoraxCodeHome = await mkdtemp(join(tmpdir(), "memorax-code-codex-memory-connection-"));
-  try {
-    await writeBackendConnection(memoraxCodeHome, url, "persisted-backend-token");
-    const env = {
-      MEMORAX_CODE_BACKEND_URL: "",
-      MEMORAX_CODE_BACKEND_TOKEN: "",
-      MEMORAX_CODE_CODEX_MEMORY_HOOK_TIMEOUT_MS: "1000",
-      MEMORAX_CODE_HOME: memoraxCodeHome,
-    };
-    const pinned = await runHook(userPromptHook, env, {
-      hook_event_name: "UserPromptSubmit",
-      session_id: "session-persisted-connection",
-      turn_id: "turn-persisted-connection",
-      prompt: "Pin this turn.",
-      cwd: "/repo",
-    });
-    assert.equal(pinned.code, 0, pinned.stderr);
-    const result = await runHook(writebackHook, env, {
-      hook_event_name: "Stop",
-      session_id: "session-persisted-connection",
-      turn_id: "turn-persisted-connection",
-      last_assistant_message: "Persist this answer.",
-      cwd: "/repo",
-      transcript_path: "/tmp/transcript.jsonl",
-    });
-
-    assert.equal(result.code, 0, result.stderr);
-    assert.equal(requests.length, 1);
-    assert.equal(requests[0].path, "/memory/writeback");
     assert.equal(requestHeaders[0]["x-memorax-code-backend-token"], "persisted-backend-token");
   } finally {
     server.close();
@@ -313,7 +323,7 @@ async function writeBackendConnection(memoraxCodeHome, url, token) {
   })}\n`);
 }
 
-async function listenRecorder() {
+async function listenRecorder({ beforeResponse, status = 200 } = {}) {
   const requests = [];
   const requestHeaders = [];
   const server = createServer(async (request, response) => {
@@ -324,8 +334,10 @@ async function listenRecorder() {
       path: new URL(request.url ?? "/", "http://127.0.0.1").pathname,
       body: text ? JSON.parse(text) : {},
     });
-    response.writeHead(200, { "content-type": "application/json" });
-    response.end(JSON.stringify({ ok: true }));
+    await beforeResponse?.();
+    response.writeHead(status, { "content-type": "application/json" });
+    response.end(JSON.stringify(request.url === "/memory/search-guidance"
+      ? { ok: false, reason: "disabled" } : { ok: true }));
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   const address = server.address();
@@ -337,3 +349,33 @@ async function listenRecorder() {
     requestHeaders,
   };
 }
+
+test("writeback HTTP failure is recorded once with Debug off without changing Hook output or exit", async () => {
+  const { server, url, requests } = await listenRecorder({ status: 503 });
+  const memoraxCodeHome = await mkdtemp(join(tmpdir(), "memorax-code-codex-hook-diagnostic-"));
+  try {
+    const env = {
+      MEMORAX_CODE_HOME: memoraxCodeHome,
+      MEMORAX_CODE_BACKEND_URL: url,
+      MEMORAX_CODE_CODEX_HOOK_DEBUG: "0",
+    };
+    const input = { session_id: "private-session", turn_id: "private-turn", last_assistant_message: "private answer", transcript_path: "/private/transcript.jsonl" };
+    const command = [fileURLToPath(new URL("../runtime-hooks/memory-writeback.mjs", import.meta.url))];
+    assert.deepEqual(await runHook(command, env, input), { code: 0, stdout: "", stderr: "" });
+    const directory = join(memoraxCodeHome, "runtime", "diagnostics");
+    const names = await readdir(directory);
+    assert.equal(names.length, 1);
+    const record = JSON.parse(await readFile(join(directory, names[0]), "utf8"));
+    assert.equal(record.errorCode, "HOOK_BACKEND_HTTP_REJECTED");
+    assert.equal(record.httpStatus, 503);
+    assert.equal(JSON.stringify(record).includes("private"), false);
+    assert.equal(requests.length, 1);
+    await rm(directory, { recursive: true });
+    await writeFile(directory, "blocked");
+    assert.deepEqual(await runHook(command, env, input), { code: 0, stdout: "", stderr: "" });
+    assert.equal(requests.length, 2);
+  } finally {
+    server.close();
+    await rm(memoraxCodeHome, { recursive: true, force: true });
+  }
+});

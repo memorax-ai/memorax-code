@@ -34,6 +34,48 @@ function successEnvelope(overrides = {}) {
   };
 }
 
+test("provision uses the current service directly and preserves custom origins", async (t) => {
+  for (const [name, serviceBaseUrl, expectedOrigin] of [
+    ["default", undefined, "https://platform.memoraxai.com"],
+    ["legacy", "https://platform.memorax.net", "https://platform.memoraxai.com"],
+    ["legacy equivalent", "https://PLATFORM.MEMORAX.NET:443/", "https://platform.memoraxai.com"],
+    ["current", "https://platform.memoraxai.com/", "https://platform.memoraxai.com"],
+    ["custom", "https://provision.example/", "https://provision.example"],
+    ["custom port", "https://platform.memorax.net:8443", "https://platform.memorax.net:8443"],
+    ["different host", "https://platform.memorax.net.example", "https://platform.memorax.net.example"],
+    ["normalized path", "https://platform.memorax.net/path/..", "https://platform.memorax.net"],
+  ]) {
+    await t.test(name, async () => {
+      const calls = [];
+      const client = createTrialProvisionClient({
+        serviceBaseUrl,
+        env: {},
+        fetchImpl: async (url, options) => {
+          calls.push({ url, options });
+          return jsonResponse(successEnvelope());
+        },
+      });
+      const result = await client.provision(REQUEST);
+      assert.equal(result.apiKey, API_KEY);
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].url, `${expectedOrigin}/account/api/v1/trial/provision`);
+      assert.equal(calls[0].options.method, "POST");
+      assert.equal(calls[0].options.redirect, "error");
+      assert.equal(calls[0].options.credentials, "omit");
+      assert.deepEqual(JSON.parse(calls[0].options.body), {
+        mark_id: REQUEST.markId,
+        mark_version: REQUEST.markVersion,
+        app_salt: REQUEST.appSalt,
+        machine_id: REQUEST.machineId,
+        hostname: REQUEST.hostname,
+        platform: REQUEST.platform,
+        arch: REQUEST.arch,
+        mac_hash: REQUEST.macHash,
+      });
+    });
+  }
+});
+
 test("provision rejects invalid local fields before network access", async () => {
   let called = false;
   const client = createTrialProvisionClient({
@@ -186,13 +228,40 @@ test("provision bounds response size", async () => {
 test("provision preserves timeout and caller aborts while reading the response", async () => {
   const fetchImpl = async (_url, options) => stalledResponse(options.signal);
   const timed = createTrialProvisionClient({ env: {}, fetchImpl, timeoutMs: 10 });
-  await assert.rejects(timed.provision(REQUEST), clientError("timeout"));
+  await assert.rejects(timed.provision(REQUEST), clientError("timeout", { httpStatus: 200 }));
 
   const controller = new AbortController();
   const aborted = createTrialProvisionClient({ env: {}, fetchImpl });
   const pending = aborted.provision(REQUEST, { signal: controller.signal });
   controller.abort();
-  await assert.rejects(pending, clientError("aborted"));
+  await assert.rejects(pending, clientError("aborted", { httpStatus: 200 }));
+});
+
+test("provision retains only bounded allowlisted transport codes", async () => {
+  const nested = new Error(API_KEY, {
+    cause: new AggregateError([Object.assign(new Error(API_KEY), { code: "ENOTFOUND" })], API_KEY),
+  });
+  const unknown = Object.assign(new Error(API_KEY), { code: API_KEY });
+  unknown.cause = unknown;
+  let deep = Object.assign(new Error(API_KEY), { code: "ECONNREFUSED" });
+  for (let index = 0; index < 8; index += 1) deep = new Error(API_KEY, { cause: deep });
+  for (const [failure, systemCode] of [[nested, "ENOTFOUND"], [unknown, undefined], [deep, undefined]]) {
+    const client = createTrialProvisionClient({
+      env: {},
+      fetchImpl: async () => { throw failure; },
+    });
+    await assert.rejects(client.provision(REQUEST), (error) => {
+      assert.equal(error.reason, "transport");
+      assert.equal(error.systemCode, systemCode);
+      assert.equal(error.cause, undefined);
+      assert.equal(JSON.stringify(error).includes(API_KEY), false);
+      assert.equal(
+        `${error.message} ${error.stack}`.includes(API_KEY),
+        false,
+      );
+      return true;
+    });
+  }
 });
 
 function jsonResponse(body, options = {}) {
@@ -213,10 +282,11 @@ function stalledResponse(signal) {
   }));
 }
 
-function clientError(reason) {
+function clientError(reason, fields = {}) {
   return (error) => {
     assert.ok(error instanceof TrialProvisionClientError);
     assert.equal(error.reason, reason);
+    for (const [key, value] of Object.entries(fields)) assert.equal(error[key], value);
     return true;
   };
 }

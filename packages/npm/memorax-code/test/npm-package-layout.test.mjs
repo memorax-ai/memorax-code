@@ -4,6 +4,7 @@ import {
   isAllowedNpmPackFilePath,
   isAllowedNpmPackPath,
   isReviewedCredentialRuntimePath,
+  requiredNpmPackagePaths,
 } from "../../../../scripts/npm-package-layout.mjs";
 import { npmShippedDocs } from "../../../../scripts/npm-shipped-docs.mjs";
 
@@ -17,9 +18,14 @@ test("single npm package layout accepts declared paths and rejects unknown trees
   assert.equal(isAllowedNpmPackPath("bin/memorax-code-plugin-postinstall.mjs"), true);
   assert.equal(isAllowedNpmPackPath("bin/memorax-code-setup.mjs"), true);
   assert.equal(isAllowedNpmPackPath("bin/memorax-code-opencode.mjs"), true);
+  assert.equal(isAllowedNpmPackPath("bin/memorax-code-trae.mjs"), true);
+  assert.equal(isAllowedNpmPackPath("lib/automatic-update.mjs"), true);
+  assert.equal(isAllowedNpmPackPath("lib/client-discovery.mjs"), true);
+  assert.equal(isAllowedNpmPackPath("lib/update-diagnostics.mjs"), true);
   assert.equal(isAllowedNpmPackPath("lib/node-version.mjs"), true);
   assert.equal(isAllowedNpmPackPath("lib/dsh-plugin-install.mjs"), true);
   assert.equal(isAllowedNpmPackPath("lib/package-transition.mjs"), true);
+  assert.equal(isAllowedNpmPackPath("lib/package-update.mjs"), true);
   assert.equal(isAllowedNpmPackPath("lib/resolve-claude-command.mjs"), true);
   assert.equal(isAllowedNpmPackPath("lib/vscode-extension-command.mjs"), true);
   assert.equal(isAllowedNpmPackPath("lib/setup-memory-preferences.mjs"), true);
@@ -54,7 +60,49 @@ test("single npm package layout accepts declared paths and rejects unknown trees
   assert.equal(isAllowedNpmPackPath("docs/undeclared.md"), false);
 });
 
+test("CodeBuddy adapter ships the canonical MemoraX skill", () => {
+  assert.equal(isAllowedNpmPackPath("lib/memorax-code-codebuddy-adapter/skills/memorax-code/SKILL.md"), true);
+  assert.equal(isAllowedNpmPackPath("lib/memorax-code-codebuddy-adapter/skills/memorax-code/references/memorax-search.md"), true);
+});
+
+test("Trae adapter ships the canonical MemoraX skill and Hook runtime", () => {
+  assert.equal(isAllowedNpmPackPath("lib/memorax-code-trae-adapter/skills/memorax-code/SKILL.md"), true);
+  assert.equal(isAllowedNpmPackPath("lib/memorax-code-trae-adapter/hooks/runtime-hook.mjs"), true);
+});
+
+test("Qoder adapter ships the canonical MemoraX skill and Hook runtime", () => {
+  assert.equal(isAllowedNpmPackPath("lib/memorax-code-qoder-adapter/skills/memorax-code/SKILL.md"), true);
+  assert.equal(isAllowedNpmPackPath("lib/memorax-code-qoder-adapter/hooks/runtime-hook.mjs"), true);
+});
+
+test("Cursor native Repo Memory agent must be included in the npm package", () => {
+  for (const path of [
+    "lib/memorax-code-cursor-adapter/agents/memorax-repo-memory.md",
+    "lib/memorax-code-cursor-adapter/src/native-repo-memory.mjs",
+  ]) {
+    assert.equal(isAllowedNpmPackFilePath(path), true);
+    assert.ok(requiredNpmPackagePaths({ bin: { "memorax-code": "bin/memorax-code.mjs" } }).includes(path));
+  }
+});
+
+test("runtime package accepts the User Profile launcher and rejects Python artifacts", () => {
+  for (const adapter of ["codex", "claude", "dsh", "opencode", "codebuddy", "trae", "cursor", "qoder"]) {
+    const scripts = `lib/memorax-code-${adapter}-adapter/skills/memorax-code/scripts`;
+    assert.equal(isAllowedNpmPackFilePath(`${scripts}/user-profile-memory.mjs`), true);
+    for (const suffix of ["py", "pyc", "pyo"]) {
+      assert.equal(isAllowedNpmPackFilePath(`${scripts}/user_profile_memory.${suffix}`), false);
+    }
+  }
+  assert.equal(isAllowedNpmPackFilePath("lib/memorax-code-backend/dist/user-profile.js"), true);
+  assert.equal(isAllowedNpmPackFilePath("lib/memorax-code-backend/dist/personal-memory/cli.js"), true);
+  assert.equal(isAllowedNpmPackFilePath(
+    "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/skills/memorax-code/scripts/user_profile_memory.py",
+  ), false);
+});
+
 test("credential runtime allowlist accepts only reviewed main and marketplace files", () => {
+  assert.equal(isReviewedCredentialRuntimePath("lib/setup-api-key-input.mjs"), true);
+  assert.equal(isAllowedNpmPackFilePath("lib/setup-api-key-input.mjs"), true);
   const names = [
     "linux-secret-service.mjs",
     "macos-keychain.mjs",
@@ -77,6 +125,7 @@ test("credential runtime allowlist accepts only reviewed main and marketplace fi
     }
   }
   for (const path of [
+    "lib/setup-api-key-input.mjs.bak",
     "lib/memorax-code-adapter-common/src/credentials/evil-secret.mjs",
     "lib/memorax-code-claude-marketplace/plugins/memorax-code-claude-adapter/memorax-code-adapter-common/src/credentials/evil-secret.mjs",
     "lib/memorax-code-adapter-common/src/credentials/macos-keychain.mjs.bak",

@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { unsupportedNodeVersionMessage } from "../lib/node-version.mjs";
 import { runNpmPreinstallPackageTransition } from "../lib/package-transition.mjs";
+import { reportUpdateFailure } from "../lib/update-diagnostics.mjs";
 
 const PREFIX = "[MemoraX Code Install]:";
 const nodeVersionError = unsupportedNodeVersionMessage();
@@ -27,8 +28,7 @@ try {
     console.warn(`${PREFIX} Existing managed Backend retired for package replacement.`);
   }
 } catch (error) {
-  printCommandOutput(error?.command);
-  console.error(`${PREFIX} Package replacement stopped: ${error instanceof Error ? error.message : String(error)}`);
+  reportUpdateFailure(error, { home: memoraxCodeHome, operation: "install.retire", code: "PACKAGE_TRANSITION_FAILED", stage: "transition_read" });
   process.exit(1);
 }
 
@@ -38,12 +38,4 @@ function packageVersion(root) {
     throw new Error("package metadata does not contain a version");
   }
   return pkg.version.trim();
-}
-
-function printCommandOutput(command) {
-  for (const output of [command?.stdout, command?.stderr]) {
-    for (const line of String(output ?? "").split(/\r?\n/)) {
-      if (line) console.warn(`${PREFIX} ${line}`);
-    }
-  }
 }

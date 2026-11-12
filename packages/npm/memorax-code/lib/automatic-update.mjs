@@ -1,0 +1,395 @@
+import { spawn, spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { join, resolve } from "node:path";
+import { UpdateFailure, updateFailure, npmRegistryFailureFields, projectUpdateDiagnosticMessage } from "./update-diagnostics.mjs";
+import { installPackageUpdate } from "./package-update.mjs";
+import { assertNoPendingPackageTransition } from "./package-transition.mjs";
+import { withJsonFileLockAsync } from "./memorax-code-adapter-common/src/config-utils.mjs";
+import {
+  AUTOMATIC_UPDATE_CHECK_INTERVAL_MS,
+  AUTOMATIC_UPDATE_RECORD_VERSION,
+  AUTOMATIC_UPDATE_RETRY_INTERVAL_MS,
+  automaticUpdateStatePath,
+  readAutomaticUpdateState,
+  writeAutomaticUpdateState,
+} from "./memorax-code-adapter-common/src/automatic-update-state.mjs";
+import {
+  readJsonRuntimeRecord,
+  writePrivateJsonRecord,
+} from "./memorax-code-adapter-common/src/runtime-record.mjs";
+import {
+  readSetupCompletionRecord,
+  withSetupCompletionLock,
+} from "./memorax-code-adapter-common/src/setup-completion.mjs";
+import {
+  npmCommandCwd,
+  resolveNpmInvocation,
+  runNpmCommand,
+  waitForChildProcess,
+} from "./npm-invocation.mjs";
+
+const CLIENT_ACTIVATION_RECORD_VERSION = 1;
+
+export {
+  AUTOMATIC_UPDATE_CHECK_INTERVAL_MS,
+  AUTOMATIC_UPDATE_RECORD_VERSION,
+  AUTOMATIC_UPDATE_RETRY_INTERVAL_MS,
+  automaticUpdateStatePath,
+  readAutomaticUpdateState,
+};
+
+export async function runAutomaticUpdate(options) {
+  const memoraxCodeHome = resolve(requiredString(options?.memoraxCodeHome, "memoraxCodeHome"));
+  const packageRoot = resolve(requiredString(options?.packageRoot, "packageRoot"));
+  const packageName = requiredString(options?.packageName, "packageName");
+  const packageVersion = requiredString(options?.packageVersion, "packageVersion");
+  const env = options?.env ?? process.env;
+  if (automaticUpdateDisabled(env.MEMORAX_CODE_AUTO_UPDATE)) {
+    return { ok: true, disposition: "disabled" };
+  }
+
+  const completion = readSetupCompletionRecord(memoraxCodeHome);
+  if (completion.status === "absent") {
+    return { ok: true, disposition: "setup-incomplete" };
+  }
+  if (completion.status !== "valid") {
+    return { ok: false, disposition: "failed", reason: "setup_completion_invalid",
+      error: setupCompletionFailure(completion) };
+  }
+
+  const channel = packageVersion.includes("-") ? "preview" : "latest";
+  return await runAutomaticUpdateCore({
+    memoraxCodeHome,
+    installedVersion: packageVersion,
+    completedByVersion: completion.record.completedByVersion,
+    channel,
+    checkPending: () => assertNoPendingPackageTransition(memoraxCodeHome),
+    resolveTargetVersion: async (targetChannel) => resolveTargetVersion({
+      channel: targetChannel,
+      env,
+      packageName,
+    }),
+    installVersion: (targetVersion) => installPackageUpdate({
+      memoraxCodeHome, packageRoot, packageName, targetVersion,
+      npmArgs: ["install", "-g", `${packageName}@${targetVersion}`],
+      env: { ...env, MEMORAX_CODE_AUTOMATIC_UPDATE_PROCESS: "1" },
+      stdio: "ignore",
+    }),
+    reconcile: async (targetVersion, setupOptions) => await runAutomaticSetup({
+      env,
+      memoraxCodeHome,
+      packageRoot,
+      targetVersion,
+      reuseRestoredBackend: setupOptions?.reuseRestoredBackend === true,
+      newClients: setupOptions?.newClients,
+    }),
+    discoverClients: options?.discoverClients,
+  });
+}
+
+export async function runAutomaticUpdateCore(options) {
+  const memoraxCodeHome = resolve(requiredString(options?.memoraxCodeHome, "memoraxCodeHome"));
+  const installedVersion = requiredString(options?.installedVersion, "installedVersion");
+  const completedByVersion = requiredString(options?.completedByVersion, "completedByVersion");
+  const channel = options?.channel === "preview" ? "preview" : "latest";
+  const resolveTargetVersion = requiredFunction(options?.resolveTargetVersion, "resolveTargetVersion");
+  const installVersion = requiredFunction(options?.installVersion, "installVersion");
+  const reconcile = requiredFunction(options?.reconcile, "reconcile");
+  const path = automaticUpdateStatePath(memoraxCodeHome);
+
+  let stage = "update_lock";
+  let completedResult;
+  try {
+    return await withJsonFileLockAsync(path, async () => {
+      stage = "update_state";
+      const nowMs = currentTime(options);
+      const withClientActivation = async (result, version) => {
+        const failures = await activateNewClients({
+          memoraxCodeHome,
+          discoverClients: options.discoverClients,
+          reconcile,
+          version,
+          nowMs,
+        });
+        return failures.length > 0 ? { ...result, clientActivationFailures: failures } : result;
+      };
+      const finish = (result, effectiveVersion, retry) => {
+        try {
+          const state = writeAutomaticUpdateState({
+            memoraxCodeHome,
+            nowMs,
+            installedVersion: effectiveVersion,
+            retry,
+          });
+          stage = "update_lock";
+          completedResult = { ...result, state };
+          return completedResult;
+        } catch (error) {
+          const failure = updateFailure(error, "UPDATE_STATE_WRITE_FAILED", "update_state");
+          if (result.error) {
+            result.error.recovery ??= failure;
+            throw result.error;
+          }
+          throw failure;
+        }
+      };
+      // A pending replacement needs diagnosis even within the registry check window.
+      try {
+        options.checkPending?.();
+      } catch (error) {
+        return finish({ ok: false, disposition: "failed", reason: "recovery_required",
+          error: updateFailure(error, "PACKAGE_TRANSITION_FAILED", "transition_read") }, installedVersion, true);
+      }
+      const state = readAutomaticUpdateState(memoraxCodeHome);
+      if (state.status === "valid"
+        && state.record.installedVersion === installedVersion
+        && nowMs < Date.parse(state.record.nextCheckAt)) {
+        const throttled = { ok: true, disposition: "throttled", state: state.record };
+        // An unfinished version reconcile must complete before another client joins.
+        const result = completedByVersion === installedVersion
+          ? await withClientActivation(throttled, installedVersion)
+          : throttled;
+        stage = "update_lock";
+        return result;
+      }
+
+      let targetVersion;
+      try {
+        targetVersion = requiredString(
+          await resolveTargetVersion(channel),
+          "targetVersion",
+        );
+      } catch (error) {
+        return finish({ ok: false, disposition: "failed", reason: "check_failed",
+          error: updateFailure(error, "UPDATE_VERSION_CHECK_FAILED", "version_check") }, installedVersion, true);
+      }
+
+      let effectiveVersion = installedVersion;
+      let updated = false;
+      let installResult;
+      if (targetVersion !== installedVersion) {
+        let installed = false;
+        let failure;
+        try {
+          installResult = await installVersion(targetVersion);
+          installed = installResult === true || installResult?.exitCode === 0;
+          if (!installed) {
+            failure = installResult?.failure;
+            if (typeof installResult?.installedVersion === "string") effectiveVersion = installResult.installedVersion;
+          }
+        } catch (error) {
+          failure = error;
+        }
+        if (!installed) {
+          return finish({ ok: false, disposition: "failed", reason: "update_failed",
+            error: updateFailure(failure, "UPDATE_INSTALL_FAILED", "install") }, effectiveVersion, true);
+        }
+        effectiveVersion = targetVersion;
+        updated = true;
+      }
+
+      // An interrupted update can leave current package files with client setup
+      // still completed by an older version.
+      if (updated || completedByVersion !== effectiveVersion) {
+        let reconciled = false;
+        let failure;
+        try {
+          reconciled = await reconcile(effectiveVersion, {
+            reuseRestoredBackend: installResult?.restored === true,
+          }) === true;
+        } catch (error) {
+          failure = error;
+        }
+        if (!reconciled) {
+          return finish({ ok: false, disposition: "failed", reason: "reconcile_failed",
+            error: updateFailure(failure, "UPDATE_RECONCILE_FAILED", "reconcile") }, effectiveVersion, true);
+        }
+      }
+
+      const outcome = updated
+        ? "updated"
+        : completedByVersion === effectiveVersion
+          ? "up-to-date"
+          : "reconciled";
+      const finished = finish({ ok: true, disposition: outcome }, effectiveVersion, false);
+      // A replaced package discovers clients with its own code on the next wake.
+      return updated ? finished : await withClientActivation(finished, effectiveVersion);
+    });
+  } catch (error) {
+    const failure = updateFailure(error, "UPDATE_FAILED", stage, { lockStage: "update_lock" });
+    if (completedResult?.error) {
+      completedResult.error.recovery ??= failure;
+      throw completedResult.error;
+    }
+    throw failure;
+  }
+}
+
+// Each client gets its own reconcile, so one failure cannot stop the others or
+// the update that started this pass. The next attempt time is saved first: a
+// crash or Backend restart must not repeat the attempt on every local wake.
+async function activateNewClients({ memoraxCodeHome, discoverClients, reconcile, version, nowMs }) {
+  if (!discoverClients) return [];
+  const failures = [];
+  try {
+    const nextAttemptAt = readClientActivationDeadlines(memoraxCodeHome);
+    const deferredClients = Object.keys(nextAttemptAt)
+      .filter((client) => nowMs < Date.parse(nextAttemptAt[client]));
+    for (const client of await discoverClients(deferredClients)) {
+      nextAttemptAt[client] = new Date(nowMs + AUTOMATIC_UPDATE_CHECK_INTERVAL_MS).toISOString();
+      writeClientActivationDeadlines(memoraxCodeHome, nextAttemptAt);
+      try {
+        if (await reconcile(version, { reuseRestoredBackend: false, newClients: [client] }) !== true) {
+          throw new UpdateFailure("UPDATE_RECONCILE_FAILED", "reconcile");
+        }
+      } catch (error) {
+        failures.push(updateFailure(error, "UPDATE_RECONCILE_FAILED", "reconcile"));
+      }
+    }
+  } catch (error) {
+    failures.push(updateFailure(error, "UPDATE_RECONCILE_FAILED", "reconcile"));
+  }
+  return failures;
+}
+
+function clientActivationPath(memoraxCodeHome) {
+  return join(memoraxCodeHome, "runtime", "install", "client-activation.json");
+}
+
+function readClientActivationDeadlines(memoraxCodeHome) {
+  const state = readJsonRuntimeRecord(clientActivationPath(memoraxCodeHome));
+  if (state.status !== "present" || state.value.version !== CLIENT_ACTIVATION_RECORD_VERSION) return {};
+  return Object.fromEntries(Object.entries(state.value.nextAttemptAt ?? {})
+    .filter(([, deadline]) => Number.isFinite(Date.parse(deadline))));
+}
+
+function writeClientActivationDeadlines(memoraxCodeHome, nextAttemptAt) {
+  try {
+    writePrivateJsonRecord(clientActivationPath(memoraxCodeHome), {
+      version: CLIENT_ACTIVATION_RECORD_VERSION,
+      nextAttemptAt,
+    }, { durableBoundary: memoraxCodeHome });
+  } catch (error) {
+    throw updateFailure(error, "UPDATE_STATE_WRITE_FAILED", "update_state");
+  }
+}
+
+function resolveTargetVersion({ channel, env, packageName }) {
+  const args = ["view", `${packageName}@${channel}`, "version", "--json"];
+  const invocation = resolveNpmInvocation(args, { env });
+  const cwd = npmCommandCwd(env);
+  const result = spawnSync(invocation.command, invocation.args, {
+    cwd,
+    encoding: "utf8",
+    env: { ...env, PWD: cwd, MEMORAX_CODE_AUTOMATIC_UPDATE_PROCESS: "1" },
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: 30_000,
+    maxBuffer: 64 * 1024,
+    windowsHide: true,
+  });
+  if (result.error || result.signal || result.status !== 0) {
+    throw new UpdateFailure("UPDATE_VERSION_CHECK_FAILED", "version_check", { commandResult: result, ...npmRegistryFailureFields(result.stdout) });
+  }
+  let version;
+  try {
+    version = JSON.parse(String(result.stdout ?? ""));
+  } catch {
+    throw new UpdateFailure("UPDATE_VERSION_RESPONSE_INVALID", "version_check", { failureReason: "invalid_response" });
+  }
+  if (typeof version !== "string"
+    || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) {
+    throw new UpdateFailure("UPDATE_VERSION_RESPONSE_INVALID", "version_check", { failureReason: "invalid_version" });
+  }
+  return version;
+}
+
+export async function runAutomaticSetup({ env, memoraxCodeHome, packageRoot, targetVersion, reuseRestoredBackend = false, newClients = [] }) {
+  const children = new Map();
+  let childFailed = false;
+  let stage = "setup_state";
+  try {
+    return await withSetupCompletionLock(memoraxCodeHome, async (completion) => {
+      if (completion.status !== "valid") throw setupCompletionFailure(completion);
+      stage = "reconcile";
+      const setupPath = join(packageRoot, "bin", "memorax-code-setup.mjs");
+      if (!existsSync(setupPath)) throw new UpdateFailure("UPDATE_RECONCILE_FAILED", "reconcile", { failureReason: "missing_entrypoint" });
+      const setupEnv = {
+        ...env,
+        MEMORAX_CODE_AUTOMATIC_UPDATE_PROCESS: "1",
+        MEMORAX_CODE_HOME: memoraxCodeHome,
+        MEMORAX_CODE_SETUP_AUTOMATIC_UPDATE: "1",
+        MEMORAX_CODE_SETUP_UPDATE: "1",
+        MEMORAX_CODE_SETUP_REUSE_RESTORED_BACKEND: reuseRestoredBackend ? "1" : "0",
+        MEMORAX_CODE_SETUP_NEW_CLIENTS: newClients.join(","),
+      };
+      delete setupEnv.MEMORAX_CODE_SETUP_MODE;
+      let result;
+      try {
+        const child = spawn(process.execPath, [setupPath], {
+          env: setupEnv,
+          stdio: ["ignore", "ignore", "ignore", "ipc"],
+          windowsHide: true,
+        });
+        child.on("message", (message) => {
+          const diagnostic = projectUpdateDiagnosticMessage(message);
+          if (diagnostic && children.size < 32 && !children.has(diagnostic.diagnostic.id)) {
+            children.set(diagnostic.diagnostic.id, diagnostic);
+          }
+        });
+        result = await waitForChildProcess(child);
+      } catch (error) {
+        childFailed = true;
+        throw updateFailure(error, "UPDATE_RECONCILE_FAILED", "reconcile");
+      }
+      if (result.exitCode !== 0) {
+        childFailed = true;
+        throw new UpdateFailure("UPDATE_RECONCILE_FAILED", "reconcile", { commandResult: result });
+      }
+      const reconciled = readSetupCompletionRecord(memoraxCodeHome);
+      if (reconciled.status !== "valid") throw setupCompletionFailure(reconciled);
+      if (reconciled.record.completedByVersion !== targetVersion) {
+        throw new UpdateFailure("UPDATE_RECONCILE_FAILED", "reconcile", { failureReason: "setup_mismatch", recordReason: reconciled.reason });
+      }
+      stage = "setup_state";
+      return true;
+    });
+  } catch (error) {
+    const failure = updateFailure(error, "UPDATE_RECONCILE_FAILED", stage, { lockStage: "setup_state" });
+    if (childFailed && children.size) failure.children = [...children.values()];
+    throw failure;
+  }
+}
+
+function setupCompletionFailure(state) {
+  const code = {
+    invalid: "SETUP_COMPLETION_RECORD_INVALID",
+    unsupported: "SETUP_COMPLETION_RECORD_UNSUPPORTED",
+    absent: "SETUP_COMPLETION_RECORD_ABSENT",
+  }[state.status] ?? "UPDATE_SETUP_STATE_INVALID";
+  return new UpdateFailure(code, "setup_state", { recordReason: state.reason });
+}
+
+function currentTime(options) {
+  const value = typeof options?.now === "function" ? Number(options.now()) : Date.now();
+  if (!Number.isFinite(value)) throw new TypeError("automatic update now must return a timestamp");
+  return value;
+}
+
+function requiredFunction(value, name) {
+  if (typeof value !== "function") throw new TypeError(`automatic update requires ${name}`);
+  return value;
+}
+
+function requiredString(value, name) {
+  const result = nonEmptyString(value);
+  if (!result) throw new TypeError(`automatic update requires ${name}`);
+  return result;
+}
+
+function nonEmptyString(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function automaticUpdateDisabled(value) {
+  return ["0", "false", "no", "off", "disabled"].includes(String(value ?? "").trim().toLowerCase());
+}

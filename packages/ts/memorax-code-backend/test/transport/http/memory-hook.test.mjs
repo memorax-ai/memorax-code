@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { createServer } from "node:http";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -7,7 +9,9 @@ import { fileURLToPath } from "node:url";
 import { createBackendState } from "../../../dist/app/state.js";
 import { createBackendServer } from "../../../dist/server.js";
 import { clientTracePaths, tracePaths } from "../../../dist/trace/config.js";
+import { handleMemoryHookRequest } from "../../../dist/transport/http/memory-hook.js";
 import { listen } from "../../support/helpers.mjs";
+import { contentTurnId, memoryHookCommands } from "../../support/memory-hook-commands.mjs";
 import {
   memoraxAddFetch,
   waitFor,
@@ -37,13 +41,25 @@ test("Backend memory hook endpoints record and write back a turn", async () => {
     reply: "HTTP hook answer.",
   }]);
   const { fetchImpl, requests } = memoraxAddFetch();
-  const restoreEnv = withEnv(WRITEBACK_ENV);
+  const restoreEnv = withEnv({ ...WRITEBACK_ENV, MEMORAX_CODE_HOME: join(root, "state") });
   const originalFetch = globalThis.fetch;
   globalThis.fetch = fetchImpl;
   const state = createBackendState();
   const server = createBackendServer(state);
   const url = await listen(server);
   try {
+    const commands = memoryHookCommands()[0];
+    for (const [path, command] of [["turn-start", commands.start], ["writeback", commands.writeback]]) {
+      const rejected = await originalFetch(`${url}/memory/${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ...command, version: 2 }),
+      });
+      assert.equal(rejected.status, 400, path);
+      assert.deepEqual(await rejected.json(), { ok: false, error: "invalid memory Hook command" }, path);
+    }
+    assert.deepEqual(requests, []);
+
     const start = await originalFetch(`${url}/memory/turn-start`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -74,7 +90,62 @@ test("Backend memory hook endpoints record and write back a turn", async () => {
     });
     assert.equal(writeback.status, 200);
     assert.deepEqual(await writeback.json(), { ok: true, scheduled: true });
-    await waitFor(() => requests.length === 1, "HTTP hook writeback did not call MemoraX add");
+
+    const traePrompt = "HTTP Trae Hook prompt.";
+    const traeTurn = traeTurnId("session-http-trae", traePrompt);
+    const traeStart = await originalFetch(`${url}/memory/turn-start`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        version: 1,
+        client: "trae",
+        sessionId: "session-http-trae",
+        turnId: traeTurn,
+        prompt: traePrompt,
+        cwd: TEST_WORKSPACE,
+      }),
+    });
+    assert.equal(traeStart.status, 200);
+    assert.deepEqual(await traeStart.json(), GIT_TURN_START_RESULT);
+
+    const cursorStart = {
+      version: 1, client: "cursor", sessionId: randomUUID(), turnId: randomUUID(),
+      prompt: "HTTP Cursor Hook prompt.", cwd: TEST_WORKSPACE,
+      databasePath: join(root, "state.vscdb"),
+    };
+    for (const recorded of [true, false]) {
+      const result = await originalFetch(`${url}/memory/turn-start`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(cursorStart),
+      });
+      assert.equal(result.status, 200);
+      assert.deepEqual(await result.json(), recorded
+        ? { ...GIT_TURN_START_RESULT, recorded: true }
+        : { ok: true, recorded: false });
+    }
+
+    const traeWriteback = await originalFetch(`${url}/memory/writeback`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        version: 1,
+        client: "trae",
+        sessionId: "session-http-trae",
+        turnId: traeTurn,
+        prompt: traePrompt,
+        lastAssistantMessage: "HTTP Trae Hook answer.",
+        cwd: TEST_WORKSPACE,
+      }),
+    });
+    assert.equal(traeWriteback.status, 200);
+    assert.deepEqual(await traeWriteback.json(), { ok: true, scheduled: true });
+    await waitFor(() => requests.length === 2, "HTTP Hook writebacks did not call MemoraX add");
+    const codexAdd = requests.find((request) => request.body.session_id === "session-http").body;
+    assert.deepEqual(codexAdd.messages.map((message) => message.timestamp), [
+      Date.parse("2026-07-16T00:00:02.000Z"), Date.parse("2026-07-16T00:00:03.000Z"),
+    ]);
+    assert.deepEqual(codexAdd.metadata.memorax_code_timestamp_sources, ["native", "native"]);
   } finally {
     await new Promise((resolve) => server.close(resolve));
     globalThis.fetch = originalFetch;
@@ -83,187 +154,116 @@ test("Backend memory hook endpoints record and write back a turn", async () => {
   }
 });
 
-test("Backend memory hook endpoints reject commands outside the closed schema", async () => {
-  const root = await mkdtemp(join(tmpdir(), "memorax-code-hook-http-contract-"));
-  const state = createBackendState("127.0.0.1", { sessionHome: root });
-  const server = createBackendServer(state);
+test("memory Hook HTTP routes reject invalid commands before dispatch and forward valid commands", async () => {
+  const calls = [];
+  const startResult = { ok: true, additionalContext: "Accepted start context." };
+  const writebackResult = { ok: true, scheduled: true };
+  const dependencies = {
+    memoryService: {
+      recordTurnStart(command) {
+        calls.push({ operation: "start", command });
+        return startResult;
+      },
+      writebackTurn(command) {
+        calls.push({ operation: "writeback", command });
+        return writebackResult;
+      },
+    },
+  };
+  const server = createServer(async (req, res) => {
+    await handleMemoryHookRequest(dependencies, new URL(req.url, "http://localhost"), req, res);
+  });
   const url = await listen(server);
-  const codexTurnStart = {
-    version: 1,
-    client: "codex",
-    sessionId: "session-codex-turn-start",
-    prompt: "Codex turn start.",
-    transcriptPath: "/tmp/codex.jsonl",
-  };
-  const claudeTurnStart = {
-    version: 1,
-    client: "claude-code",
-    sessionId: "session-claude-turn-start",
-    promptId: "prompt-claude-turn-start",
-    prompt: "Claude turn start.",
-    transcriptPath: "/tmp/claude.jsonl",
-  };
-  const codexWriteback = {
-    version: 1,
-    client: "codex",
-    sessionId: "session-codex-writeback",
-    lastAssistantMessage: "Codex writeback.",
-  };
-  const claudeWriteback = {
-    version: 1,
-    client: "claude-code",
-    sessionId: "session-claude-writeback",
-    promptId: "prompt-claude-writeback",
-    lastAssistantMessage: "Claude writeback.",
-    transcriptPath: "/tmp/claude.jsonl",
-  };
-  const openCodeTurnStart = {
-    version: 1,
-    client: "opencode",
-    sessionId: "session-opencode-turn-start",
-    userMessageId: "user-opencode-turn-start",
-    prompt: "OpenCode turn start.",
-  };
-  const openCodeWriteback = {
-    version: 1,
-    client: "opencode",
-    sessionId: "session-opencode-writeback",
-    userMessageId: "user-opencode-writeback",
-    assistantMessageId: "assistant-opencode-writeback",
-    messages: [],
-  };
-  const dshTurnStart = {
-    version: 1,
-    client: "dsh",
-    sessionId: "session-dsh-turn-start",
-    turn: 1,
-    startSeq: 0,
-    cwd: "/workspace/dsh",
-    prompt: "DSH turn start.",
-  };
-  const dshWriteback = {
-    version: 1,
-    client: "dsh",
-    sessionId: "session-dsh-writeback",
-    turn: 1,
-    startSeq: 0,
-    endSeq: 1,
-    cwd: "/workspace/dsh",
-    sessionHeader: {},
-    events: [],
-  };
   try {
-    for (const [caseName, path, body] of [
-      ["unversioned command", "/memory/turn-start", {
-        client: "codex",
-        sessionId: "session-unversioned",
-        prompt: "Old commands must not inherit Codex authority.",
-        transcriptPath: "/tmp/codex.jsonl",
-      }],
-      ["missing client", "/memory/turn-start", {
-        version: 1,
-        sessionId: "session-clientless",
-        prompt: "Client identity is required.",
-        transcriptPath: "/tmp/codex.jsonl",
-      }],
-      ["unsupported version", "/memory/turn-start", {
-        version: 2,
-        client: "codex",
-        sessionId: "session-future",
-        prompt: "Unknown versions fail closed.",
-        transcriptPath: "/tmp/codex.jsonl",
-      }],
-      ["unknown client", "/memory/turn-start", {
-        version: 1,
-        client: "unknown-client",
-        sessionId: "session-unknown",
-        prompt: "Unknown clients fail closed.",
-        transcriptPath: "/tmp/codex.jsonl",
-      }],
-      ["incomplete Claude writeback", "/memory/writeback", {
-        version: 1,
-        client: "claude-code",
-        sessionId: "session-incomplete-writeback",
-        lastAssistantMessage: "Client-specific required fields fail closed.",
-        transcriptPath: "/tmp/claude.jsonl",
-      }],
-      ["unknown Codex turn-start field", "/memory/turn-start", {
-        ...codexTurnStart,
-        unexpected: true,
-      }],
-      ["Codex field on Claude turn-start", "/memory/turn-start", {
-        ...claudeTurnStart,
-        turnId: "wrong-client-field",
-      }],
-      ["invalid optional Codex turn id", "/memory/turn-start", {
-        ...codexTurnStart,
-        turnId: 42,
-      }],
-      ["invalid optional Claude cwd", "/memory/turn-start", {
-        ...claudeTurnStart,
-        cwd: {},
-      }],
-      ["unknown snake-case Codex writeback field", "/memory/writeback", {
-        ...codexWriteback,
-        session_id: codexWriteback.sessionId,
-      }],
-      ["Claude field on Codex writeback", "/memory/writeback", {
-        ...codexWriteback,
-        promptId: "wrong-client-field",
-      }],
-      ["invalid optional Codex transcript path", "/memory/writeback", {
-        ...codexWriteback,
-        transcriptPath: 42,
-      }],
-      ["Codex field on Claude writeback", "/memory/writeback", {
-        ...claudeWriteback,
-        turnId: "wrong-client-field",
-      }],
-      ["invalid optional Claude workspace kind", "/memory/writeback", {
-        ...claudeWriteback,
-        workspaceKind: {},
-      }],
-      ["transcript field on OpenCode turn-start", "/memory/turn-start", {
-        ...openCodeTurnStart,
-        transcriptPath: "/tmp/opencode.jsonl",
-      }],
-      ["Hook assistant text on OpenCode writeback", "/memory/writeback", {
-        ...openCodeWriteback,
-        lastAssistantMessage: "Hook text is not OpenCode writeback authority.",
-      }],
-      ["invalid OpenCode messages container", "/memory/writeback", {
-        ...openCodeWriteback,
-        messages: {},
-      }],
-      ["transcript field on DSH turn-start", "/memory/turn-start", {
-        ...dshTurnStart,
-        transcriptPath: "/tmp/dsh.jsonl",
-      }],
-      ["invalid DSH events container", "/memory/writeback", {
-        ...dshWriteback,
-        events: {},
-      }],
-      ["invalid DSH event interval", "/memory/writeback", {
-        ...dshWriteback,
-        endSeq: -1,
-      }],
-    ]) {
-      const response = await fetch(`${url}${path}`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      });
-      assert.equal(response.status, 400, caseName);
-      assert.deepEqual(await response.json(), {
-        ok: false,
-        error: "invalid memory Hook command",
-      }, caseName);
+    for (const { start, writeback } of memoryHookCommands()) {
+      const phases = [
+        ["turn-start", "start", start, startResult],
+        ["writeback", "writeback", writeback, writebackResult],
+      ];
+      if (writeback.client === "cursor") {
+        const { status, ...response } = writeback;
+        phases.push(["writeback", "writeback", {
+          ...response, phase: "response", responseDigest: "a".repeat(64),
+        }, writebackResult]);
+      }
+      for (const [path, operation, command, expected] of phases) {
+        const name = `${command.client} ${operation}`;
+        const request = (body) => fetch(`${url}/memory/${path}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const rejected = await request({ ...command, unexpected: true });
+        assert.equal(rejected.status, 400, name);
+        assert.deepEqual(await rejected.json(), { ok: false, error: "invalid memory Hook command" }, name);
+        assert.deepEqual(calls, [], `${name}: invalid command must not reach the memory service`);
+
+        const accepted = await request(command);
+        assert.equal(accepted.status, 200, name);
+        assert.deepEqual(await accepted.json(), expected, name);
+        assert.deepEqual(calls.splice(0), [{ operation, command }], `${name}: dispatch exactly once`);
+      }
     }
   } finally {
     await new Promise((resolve) => server.close(resolve));
-    await rm(root, { recursive: true, force: true });
   }
 });
+
+test("pre-compact HTTP validates Cursor observation identity without ordinary turn dispatch", async () => {
+  const calls = [];
+  const result = { ok: true, recorded: true };
+  const dependencies = {
+    memoryService: {
+      recordPreCompact(command) {
+        calls.push(command);
+        return result;
+      },
+      recordTurnStart() { assert.fail("pre-compact must not register an ordinary turn"); },
+      writebackTurn() { assert.fail("pre-compact must not write back content"); },
+    },
+  };
+  const server = createServer(async (req, res) => {
+    const handled = await handleMemoryHookRequest(dependencies, new URL(req.url, "http://localhost"), req, res);
+    if (!handled) { res.writeHead(404); res.end(); }
+  });
+  const url = await listen(server);
+  const command = {
+    version: 1, client: "cursor", sessionId: randomUUID(), turnId: randomUUID(),
+    cwd: TEST_WORKSPACE, databasePath: join(TEST_WORKSPACE, "state.vscdb"),
+  };
+  const request = (body) => fetch(`${url}/memory/pre-compact`, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+  });
+  try {
+    for (const fields of [
+      { client: "codex" }, { sessionId: undefined }, { turnId: undefined },
+      { cwd: "relative" }, { databasePath: undefined }, { databasePath: "state.vscdb" },
+      { transcriptPath: "transcript.jsonl" }, { trigger: "manual" }, { prompt: "Hook prompt" },
+    ]) {
+      const response = await request({ ...command, ...fields });
+      assert.equal(response.status, 400);
+      assert.deepEqual(await response.json(), { ok: false, error: "invalid memory Hook command" });
+      assert.deepEqual(calls, []);
+    }
+    const response = await request(command);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), result);
+    assert.deepEqual(calls, [command]);
+    const wrongMethod = await fetch(`${url}/memory/pre-compact`);
+    assert.equal(wrongMethod.status, 404);
+    assert.equal(calls.length, 1);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+function codeBuddyTurnId(sessionId, boundary, prompt) {
+  return contentTurnId(sessionId, boundary, prompt);
+}
+
+function traeTurnId(sessionId, prompt, createdAt = 1_700_000_000_000) {
+  return contentTurnId(sessionId, createdAt, prompt);
+}
 
 test("Backend memory hook endpoints write client-isolated trace events", async () => {
   const { fetchImpl, requests } = memoraxAddFetch();
@@ -277,7 +277,10 @@ test("Backend memory hook endpoints write client-isolated trace events", async (
     MEMORAX_CODE_CLAUDE_TRACE_ENABLED: undefined,
     MEMORAX_CODE_CODEX_TRACE_ENABLED: undefined,
     MEMORAX_CODE_DSH_TRACE_ENABLED: undefined,
+    MEMORAX_CODE_CODEBUDDY_TRACE_ENABLED: undefined,
+    MEMORAX_CODE_WORKBUDDY_TRACE_ENABLED: undefined,
     MEMORAX_CODE_OPENCODE_TRACE_ENABLED: undefined,
+    MEMORAX_CODE_TRAE_TRACE_ENABLED: undefined,
   });
   const originalFetch = globalThis.fetch;
   globalThis.fetch = fetchImpl;
@@ -463,6 +466,52 @@ test("Backend memory hook endpoints write client-isolated trace events", async (
     assert.equal(openCodeReminder.status, 200);
     assert.deepEqual(await openCodeReminder.json(), { ok: true });
 
+    const codeBuddyReminderTurnId = codeBuddyTurnId(
+      "session-trace-hook",
+      0,
+      "MemoraX Code reminder in WorkBuddy.",
+    );
+    for (const client of ["codebuddy", "workbuddy"]) {
+      const codeBuddyReminder = await originalFetch(`${url}/memory/skill-reminder`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          version: 1,
+          client,
+          sessionId: "session-trace-hook",
+          turnId: codeBuddyReminderTurnId,
+          transcriptPath,
+          cwd: TEST_WORKSPACE,
+          workspaceKind: "project",
+          content: "MemoraX Code reminder: use the memorax-code-codebuddy-adapter:memorax-code skill in WorkBuddy.",
+          triggers: ["cadence"],
+        }),
+      });
+      assert.equal(codeBuddyReminder.status, 200);
+      assert.deepEqual(await codeBuddyReminder.json(), { ok: true });
+    }
+
+    const traeReminderTurnId = traeTurnId(
+      "session-trace-hook",
+      "MemoraX Code reminder in Trae.",
+    );
+    const traeReminder = await originalFetch(`${url}/memory/skill-reminder`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        version: 1,
+        client: "trae",
+        sessionId: "session-trace-hook",
+        turnId: traeReminderTurnId,
+        cwd: TEST_WORKSPACE,
+        workspaceKind: "project",
+        content: "MemoraX Code reminder: use the memorax-code skill in Trae.",
+        triggers: ["cadence"],
+      }),
+    });
+    assert.equal(traeReminder.status, 200);
+    assert.deepEqual(await traeReminder.json(), { ok: true });
+
     const writeback = await originalFetch(`${url}/memory/writeback`, {
       method: "POST",
       headers: { "content-type": "application/json" },
@@ -551,6 +600,42 @@ test("Backend memory hook endpoints write client-isolated trace events", async (
       role: "developer",
       content: "MemoraX Code reminder: use the memorax-code skill in OpenCode.",
     });
+    for (const client of ["codebuddy", "workbuddy"]) {
+      const codeBuddyEventsPath = clientTracePaths(client, sessionHome).eventsJsonl("session-trace-hook");
+      await waitForFile(codeBuddyEventsPath, /skill_reminder/, "CodeBuddy reminder trace event was not written");
+      const codeBuddyEvents = (await readFile(codeBuddyEventsPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+      assert.equal(codeBuddyEvents.length, 1);
+      assert.equal(codeBuddyEvents[0].type, "skill_reminder");
+      assert.equal(codeBuddyEvents[0].source, `${client}-hook`);
+      assert.equal(codeBuddyEvents[0].operation, "reminder");
+      assert.equal(codeBuddyEvents[0].trace.client, client);
+      assert.equal(codeBuddyEvents[0].trace.session_id, "session-trace-hook");
+      assert.equal(codeBuddyEvents[0].trace.turn_id, codeBuddyReminderTurnId);
+      assert.equal(codeBuddyEvents[0].trace.context_origin, `${client}-hook-body`);
+      assert.equal(codeBuddyEvents[0].trace.transcript_path, transcriptPath);
+      assert.deepEqual(codeBuddyEvents[0].request.triggers, ["cadence"]);
+      assert.deepEqual(codeBuddyEvents[0].response, {
+        role: "developer",
+        content: "MemoraX Code reminder: use the memorax-code-codebuddy-adapter:memorax-code skill in WorkBuddy.",
+      });
+    }
+    const traeEventsPath = clientTracePaths("trae", sessionHome).eventsJsonl("session-trace-hook");
+    await waitForFile(traeEventsPath, /skill_reminder/, "Trae reminder trace event was not written");
+    const traeEvents = (await readFile(traeEventsPath, "utf8")).trim().split("\n").map((line) => JSON.parse(line));
+    assert.equal(traeEvents.length, 1);
+    assert.equal(traeEvents[0].type, "skill_reminder");
+    assert.equal(traeEvents[0].source, "trae-hook");
+    assert.equal(traeEvents[0].operation, "reminder");
+    assert.equal(traeEvents[0].trace.client, "trae");
+    assert.equal(traeEvents[0].trace.session_id, "session-trace-hook");
+    assert.equal(traeEvents[0].trace.turn_id, traeReminderTurnId);
+    assert.equal(traeEvents[0].trace.context_origin, "trae-hook-body");
+    assert.equal(traeEvents[0].trace.transcript_path, undefined);
+    assert.deepEqual(traeEvents[0].request.triggers, ["cadence"]);
+    assert.deepEqual(traeEvents[0].response, {
+      role: "developer",
+      content: "MemoraX Code reminder: use the memorax-code skill in Trae.",
+    });
     const turnEnd = events.find((event) => event.type === "turn_end");
     assert.equal(turnEnd.source, "codex-hook");
     assert.equal(turnEnd.trace.session_id, "session-trace-hook");
@@ -634,8 +719,15 @@ test("Backend memory hook endpoints keep working when Codex trace is disabled", 
     assert.equal(writeback.status, 200);
     assert.deepEqual(await writeback.json(), { ok: true, scheduled: true });
     await waitFor(() => requests.length === 1, "disabled trace hook writeback did not call MemoraX add");
-    await assert.rejects(readFile(tracePaths(sessionHome).currentTurnPath, "utf8"));
-    await assert.rejects(readFile(tracePaths(sessionHome).eventsJsonl("session-trace-disabled"), "utf8"));
+    const currentText = await readFile(tracePaths(sessionHome).currentTurnPath, "utf8");
+    const current = JSON.parse(currentText);
+    assert.equal(current.turn_state, "completed");
+    assert.equal(current.trace.client, "codex");
+    assert.equal(current.trace.session_id, "session-trace-disabled");
+    assert.equal(current.trace.turn_id, "turn-trace-disabled");
+    assert.doesNotMatch(currentText, /Trace disabled prompt|Trace disabled answer/);
+    await assert.rejects(readFile(tracePaths(sessionHome).traceJson("session-trace-disabled"), "utf8"), { code: "ENOENT" });
+    await assert.rejects(readFile(tracePaths(sessionHome).eventsJsonl("session-trace-disabled"), "utf8"), { code: "ENOENT" });
   } finally {
     await new Promise((resolve) => server.close(resolve));
     globalThis.fetch = originalFetch;

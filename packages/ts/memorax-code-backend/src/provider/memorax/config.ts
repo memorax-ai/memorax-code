@@ -17,9 +17,6 @@ export { MEMORAX_DEFAULT_BASE_URL, MEMORAX_DEFAULT_MEMORY_OUTPUT_LANGUAGE };
 
 export const MEMORAX_PROVIDER_ID = "memory.memorax";
 export const MEMORAX_DEFAULT_MEMORY_TYPE_ORDER = ["core", "episodic", "semantic", "procedural", "unclassified"] as const;
-export const MEMORAX_DEFAULT_STARTUP_TIMEOUT_MS = 3000;
-export const MEMORAX_MIN_STARTUP_TIMEOUT_MS = 100;
-export const MEMORAX_MAX_STARTUP_TIMEOUT_MS = 10_000;
 
 export const MEMORY_WRITEBACK_BUFFER_DEFAULT_MAX_TURNS = 8;
 export const MEMORY_WRITEBACK_BUFFER_DEFAULT_MAX_AGE_MS = 10 * 60 * 1000;
@@ -48,7 +45,7 @@ export type MemoraxAdapterConfig = Readonly<{
 }>;
 
 export type MemoraxAddOptions = Readonly<{
-  contentType?: "dialogue" | "code";
+  contentType?: "dialogue" | "code" | "auto" | "work";
   mode?: "default" | "raw" | "pre_summarized";
 }>;
 
@@ -70,12 +67,10 @@ export type MemoraxConfigStatus = Readonly<{
   configured: boolean;
   search: Readonly<{
     enabled: boolean;
-    retrievalEnabled: boolean;
     topK: number;
     kDense: number;
     kSparse: number;
     timeoutMs: number;
-    startupTimeoutMs: number;
     minScore?: number;
     maxContextChars: number;
     maxItemChars: number;
@@ -92,7 +87,7 @@ export type MemoraxConfigStatus = Readonly<{
     writebackChunk: MemoryWritebackChunkConfig;
   }>;
   add: Readonly<{
-    contentType?: "dialogue" | "code";
+    contentType?: "dialogue" | "code" | "auto" | "work";
     mode?: "default" | "raw" | "pre_summarized";
     outputLanguage?: MemoraxMemoryOutputLanguage;
   }>;
@@ -146,11 +141,11 @@ function memoraxSearchConfig(
   | "memoryTypeOrder"
   | "renderByMemoryType"
 > {
-  const topK = clampInteger(env.MEMORAX_CODE_MEMORAX_TOP_K ?? config.memory?.retrieval?.top_k, 1, 100, config.memory?.retrieval?.top_k ?? 6);
+  const topK = clampInteger(env.MEMORAX_CODE_MEMORAX_TOP_K ?? config.memory?.retrieval?.top_k, 1, 50, config.memory?.retrieval?.top_k ?? 6);
   return {
     topK,
-    kDense: clampInteger(env.MEMORAX_CODE_MEMORAX_K_DENSE ?? config.memory?.retrieval?.k_dense, 0, 100, config.memory?.retrieval?.k_dense ?? topK),
-    kSparse: clampInteger(env.MEMORAX_CODE_MEMORAX_K_SPARSE ?? config.memory?.retrieval?.k_sparse, 0, 100, config.memory?.retrieval?.k_sparse ?? topK),
+    kDense: clampInteger(env.MEMORAX_CODE_MEMORAX_K_DENSE ?? config.memory?.retrieval?.k_dense, 0, 50, config.memory?.retrieval?.k_dense ?? topK),
+    kSparse: clampInteger(env.MEMORAX_CODE_MEMORAX_K_SPARSE ?? config.memory?.retrieval?.k_sparse, 0, 50, config.memory?.retrieval?.k_sparse ?? topK),
     timeoutMs: clampInteger(env.MEMORAX_CODE_MEMORAX_TIMEOUT_MS ?? config.memorax?.timeout_ms, 1000, 120_000, config.memorax?.timeout_ms ?? 5000),
     maxContextChars: clampInteger(env.MEMORAX_CODE_MEMORAX_MAX_CONTEXT_CHARS ?? config.memory?.retrieval?.max_context_chars, 256, 200_000, config.memory?.retrieval?.max_context_chars ?? 4000),
     maxItemChars: clampInteger(env.MEMORAX_CODE_MEMORAX_MAX_ITEM_CHARS ?? config.memory?.retrieval?.max_item_chars, 64, 50_000, config.memory?.retrieval?.max_item_chars ?? 1000),
@@ -159,31 +154,8 @@ function memoraxSearchConfig(
   };
 }
 
-export function startupRetrieveTimeoutMs(
-  env: Record<string, string | undefined>,
-  providerTimeoutMs: number,
-  fileConfig?: MemoraxCodeConfig,
-): number {
-  const config = configForEnv(env, fileConfig);
-  const startupCap = clampInteger(
-    env.MEMORAX_CODE_MEMORAX_STARTUP_TIMEOUT_MS ?? config.memorax?.startup_timeout_ms,
-    MEMORAX_MIN_STARTUP_TIMEOUT_MS,
-    MEMORAX_MAX_STARTUP_TIMEOUT_MS,
-    config.memorax?.startup_timeout_ms ?? MEMORAX_DEFAULT_STARTUP_TIMEOUT_MS,
-  );
-  return Math.min(providerTimeoutMs, startupCap);
-}
-
 export function memoraxWritebackEnabled(env: Record<string, string | undefined> = process.env): boolean {
   return env.MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED !== "false";
-}
-
-export function memoryRetrievalEnabled(
-  env: Record<string, string | undefined> = process.env,
-  fileConfig?: MemoraxCodeConfig,
-): boolean {
-  const config = configForEnv(env, fileConfig);
-  return parseBoolean(env.MEMORAX_CODE_MEMORY_RETRIEVAL_ENABLED, config.memory?.retrieval?.enabled) === true;
 }
 
 export function memoryWritebackEnabled(
@@ -292,6 +264,9 @@ export function memoraxAddOptionsFromContext(
 
   const contentType = contentTypeResult.value;
   const mode = modeResult.value ?? (contentType ? "default" : undefined);
+  if ((contentType === "auto" || contentType === "work") && mode !== "default") {
+    return { ok: false, error: "auto/work content requires default mode" };
+  }
   return {
     ok: true,
     options: {
@@ -320,12 +295,10 @@ export function memoryConfigStatus(
     configured: configResult.ok,
     search: {
       enabled: configResult.ok,
-      retrievalEnabled: memoryRetrievalEnabled(env, config),
       topK: searchConfig.topK,
       kDense: searchConfig.kDense,
       kSparse: searchConfig.kSparse,
       timeoutMs: searchConfig.timeoutMs,
-      startupTimeoutMs: startupRetrieveTimeoutMs(env, searchConfig.timeoutMs, config),
       ...(searchConfig.minScore === undefined ? {} : { minScore: searchConfig.minScore }),
       maxContextChars: searchConfig.maxContextChars,
       maxItemChars: searchConfig.maxItemChars,
@@ -386,10 +359,10 @@ function memoraxMemoryOutputLanguage(
     : { ok: false, error: "memory output language must be zh or en" };
 }
 
-function parseAddContentType(value: string | undefined, label: string): { ok: true; value?: "dialogue" | "code" } | { ok: false; error: string } {
+function parseAddContentType(value: string | undefined, label: string): { ok: true; value?: MemoraxAddOptions["contentType"] } | { ok: false; error: string } {
   if (!value) return { ok: true };
-  if (value === "dialogue" || value === "code") return { ok: true, value };
-  return { ok: false, error: `${label} must be dialogue or code` };
+  if (value === "dialogue" || value === "code" || value === "auto" || value === "work") return { ok: true, value };
+  return { ok: false, error: `${label} must be dialogue, code, auto, or work` };
 }
 
 function parseAddMode(value: string | undefined, label: string): { ok: true; value?: MemoraxAddOptions["mode"] } | { ok: false; error: string } {

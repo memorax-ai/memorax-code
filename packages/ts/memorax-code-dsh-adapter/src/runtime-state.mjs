@@ -1,5 +1,6 @@
-import { readFileSync } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { isDeepStrictEqual } from "node:util";
 
 import { parseDshVersion } from "./dsh-version.mjs";
 
@@ -11,9 +12,60 @@ export function buildDshCommand(command, args, options = {}) {
   if (!executable) throw new TypeError("DSH command must be a non-empty string");
   if (!Array.isArray(args)) throw new TypeError("DSH arguments must be an array");
   if (isNpxCommand(executable)) throw disabledError();
+  const desktop = inspectDshDesktopCommand(executable, options);
+  if (desktop?.platform === "win32") {
+    // Invoke exactly the native Desktop .cmd launcher's Electron entrypoint;
+    // cmd.exe would reinterpret plugin paths and prompts as shell syntax.
+    return [desktop.executable, "--expose-internals", desktop.entrypoint, ...args];
+  }
   return isAbsolute(executable) && /\.(?:cjs|js|mjs)$/i.test(executable)
     ? [nonEmptyString(options.nodePath) ?? process.execPath, executable, ...args]
     : [executable, ...args];
+}
+
+/** Recognize the installed native Desktop launcher, including PATH symlinks. */
+export function inspectDshDesktopCommand(command, options = {}) {
+  if (!nonEmptyString(command) || !isAbsolute(command)) return undefined;
+  const platform = options.platform ?? process.platform;
+  if (platform !== "darwin" && platform !== "win32") return undefined;
+  try {
+    const launcher = realpathSync(command);
+    const expectedName = platform === "win32" ? "dsh.cmd" : "dsh";
+    if (basename(launcher).toLowerCase() !== expectedName
+      || basename(dirname(launcher)) !== "bin"
+      || basename(resolve(launcher, "../..")) !== "cli"
+      || basename(resolve(launcher, "../../..")) !== "runtime") return undefined;
+    const resources = resolve(launcher, "../../../..");
+    const archive = join(resources, "app.asar");
+    const executable = platform === "win32"
+      ? resolve(resources, "..", "DeepSeek Harness.exe")
+      : resolve(resources, "..", "MacOS", "DeepSeek Harness");
+    if (!existsSync(archive) || !existsSync(executable)) return undefined;
+    return {
+      command: launcher,
+      platform,
+      executable,
+      entrypoint: join(archive, "dsh", "node_modules", "@deepseek-ai", "dsh-desktop-host", "lib", "cli.js"),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+export function dshCommandEnvironment(command, options = {}) {
+  return inspectDshDesktopCommand(command, options)?.platform === "win32"
+    ? { ELECTRON_RUN_AS_NODE: "1" }
+    : {};
+}
+
+export function validDshDesktopRuntime(value) {
+  return value === undefined || Boolean(value && typeof value === "object"
+    && !Array.isArray(value)
+    && value.version === 1
+    && nonEmptyString(value.command)
+    && isAbsolute(value.command)
+    && !isNpxCommand(value.command)
+    && parseDshVersion(value.dshVersion));
 }
 
 /** Read the current durable enablement authority for this installed DSH bundle. */
@@ -26,6 +78,7 @@ export function requireEnabledDshRuntime(pluginRoot) {
     dshCommand: authority.dshCommand,
     dshHome: authority.dshHome,
     dshVersion: authority.dshVersion,
+    ...(authority.desktopRuntime ? { desktopRuntime: authority.desktopRuntime } : {}),
     profiles: authority.profiles,
     revision: authority.revision,
   };
@@ -42,6 +95,7 @@ export function requireDshRuntimeAuthority(pluginRoot) {
     || isNpxCommand(metadata.dshCommand)
     || !nonEmptyString(metadata.dshHome)
     || !parseDshVersion(metadata.dshVersion)
+    || !validDshDesktopRuntime(metadata.desktopRuntime)
     || !nonEmptyString(metadata.sourceAdapterRoot)
     || !nonEmptyString(metadata.runtimeBundleRoot)) {
     throw disabledError();
@@ -68,6 +122,8 @@ export function requireDshRuntimeAuthority(pluginRoot) {
     || state.memoraxCodeCommand !== metadata.memoraxCodeCommand
     || state.dshCommand !== metadata.dshCommand
     || state.dshVersion !== metadata.dshVersion
+    || !validDshDesktopRuntime(state.desktopRuntime)
+    || !isDeepStrictEqual(state.desktopRuntime, metadata.desktopRuntime)
     || !Array.isArray(state.profiles)
     || !state.profiles.every(validProfileName)
     || !timestampString(state.updatedAt)) {
@@ -83,6 +139,7 @@ export function requireDshRuntimeAuthority(pluginRoot) {
     dshCommand: metadata.dshCommand,
     dshHome,
     dshVersion: metadata.dshVersion,
+    ...(metadata.desktopRuntime ? { desktopRuntime: { ...metadata.desktopRuntime } } : {}),
     profiles: [...state.profiles],
     revision: state.updatedAt,
   };

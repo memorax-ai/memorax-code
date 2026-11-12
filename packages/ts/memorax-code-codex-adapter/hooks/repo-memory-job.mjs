@@ -12,7 +12,7 @@ try {
   const payload = runRepoMemoryJob(process.argv.slice(2), {
     runner: "codex",
     finalMessageSource: "file",
-    validatorPath: resolve(pluginRoot, "skills/memorax-code/scripts/validate_memory.py"),
+    validatorPath: resolve(pluginRoot, "skills/memorax-code/scripts/repo-memory.mjs"),
     evaluateRepository,
     createCommand({ finalMessagePath, prompt, repo }) {
       const codex = resolveHookCodexCommand({
@@ -25,6 +25,8 @@ try {
         repo,
         "--sandbox",
         "danger-full-access",
+        "--config",
+        'model_reasoning_effort="medium"',
         "--output-last-message",
         finalMessagePath,
         prompt,

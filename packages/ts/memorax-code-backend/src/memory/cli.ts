@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
-import { readFile } from "node:fs/promises";
+import { open, readFile } from "node:fs/promises";
 import { backendDebug } from "../shared/debug-log.js";
+import { diagnoseMemoryCliFailure, fileErrorFields, memoryCliUnexpectedFailure, type MemoryCliFailureDetails } from "./cli-diagnostics.js";
 import { invokeMemoraxMemoryProvider } from "../provider/memorax/adapter.js";
 import type { MemoryObservabilityEvent, MemoryObservabilityHook } from "./observability.js";
 import {
@@ -20,7 +21,7 @@ import {
   repositoryMemoryScopeKind,
   repositoryMemoryScopesMatch,
 } from "../repository/scope.js";
-import { isTraceClient, type TraceClient } from "../trace/context.js";
+import { isTraceClient, type TraceClient, type TraceContext } from "../trace/context.js";
 import { readCurrentTraceTurn, recordTraceEvent } from "../trace/store.js";
 import {
   claimQuotaNotice,
@@ -32,9 +33,10 @@ type MemoryCliOptions = {
   env?: Record<string, string | undefined>;
   fetchImpl?: typeof fetch;
   claimQuotaNotice?: QuotaNoticeClaimer;
+  diagnosticTrace?: TraceContext;
 };
 
-type MemoryCliResult = {
+type MemoryCliResult = MemoryCliFailureDetails & {
   ok: boolean;
   action: "memory.status" | "memory.search" | "memory.add";
   error?: string;
@@ -43,7 +45,7 @@ type MemoryCliResult = {
   userId?: string;
   baseUserId?: string;
   workspace?: string;
-  scopeKind?: "git-repository" | "local-directory" | "codex-projectless";
+  scopeKind?: "git-repository" | "local-directory" | "general";
   effectiveUserId?: string;
   workspaceScope?: "bound" | "unavailable";
   workspaceScopeReason?: string;
@@ -66,17 +68,30 @@ type MemoryCliObservability = {
 };
 
 type MemoryCliTraceBinding = Readonly<{
-  client: TraceClient;
+  client: TraceClient | "codebuddy-native";
   expectedSessionId?: string;
 }>;
 
 export async function runMemoryCli(args: string[], options: MemoryCliOptions = {}): Promise<MemoryCliResult> {
   const command = args[0] || "status";
   const env = options.env ?? process.env;
-  const nextOptions = { ...options, env };
+  const nextOptions: MemoryCliOptions = { ...options, env };
   if (command === "status") return await memoryStatus(nextOptions, args.includes("--config-only"));
-  if (command === "search") return memorySearch(args.slice(1), nextOptions);
-  if (command === "add") return memoryAdd(args.slice(1), nextOptions);
+  if (command === "search" || command === "add") {
+    const action = command === "search" ? "memory.search" : "memory.add";
+    let result: MemoryCliResult;
+    try {
+      result = await (command === "search" ? memorySearch : memoryAdd)(args.slice(1), nextOptions);
+    } catch (error) {
+      result = { ok: false, action, ...memoryCliUnexpectedFailure(error) };
+    }
+    if (result.ok) return result;
+    const binding = memoryCliTraceBinding(env);
+    return diagnoseMemoryCliFailure(
+      { ...result, action }, defaultMemoraxCodeHome(env), nextOptions.diagnosticTrace,
+      binding?.client === "codebuddy-native" ? undefined : binding?.client,
+    );
+  }
   return { ok: false, action: "memory.status", error: `unknown memory command: ${command}` };
 }
 
@@ -128,14 +143,17 @@ async function memoryStatus(options: MemoryCliOptions, configOnly = false): Prom
 }
 
 async function memorySearch(args: string[], options: MemoryCliOptions): Promise<MemoryCliResult> {
+  const searchOptions = memorySearchOptions(args);
+  if (!searchOptions.ok) return { ...searchOptions, action: "memory.search" };
   const queryResult = await readTextArg(args, "--query", "--query-file", "query");
-  if (!queryResult.ok) return { ok: false, action: "memory.search", error: queryResult.error };
+  if (!queryResult.ok) return { ...queryResult, action: "memory.search" };
   const query = queryResult.text;
   const repositoryMemory = await resolveMemoryCliRepositoryMemory(options);
   if (!repositoryMemory.ok) {
     return memoryCliRepositoryFailure("memory.search", repositoryMemory, { query });
   }
-  const observability = await memoryCliObservability(options.env);
+  options.diagnosticTrace = repositoryMemory.traceContext;
+  const observability = await memoryCliObservability(options.env, repositoryMemory.traceContext);
   const response = await invokeMemoraxMemoryProvider(
     { sessionId: memoryCliSessionId(args, options.env), prompt: query },
     {
@@ -147,6 +165,7 @@ async function memorySearch(args: string[], options: MemoryCliOptions): Promise<
       query,
       context: {
         ...(limitFromArgs(args) === undefined ? {} : { limit: limitFromArgs(args) }),
+        ...searchOptions.context,
       },
     },
     {
@@ -160,7 +179,7 @@ async function memorySearch(args: string[], options: MemoryCliOptions): Promise<
     },
   );
   await observability.flush();
-  if (!response.ok) return { ok: false, action: "memory.search", query, error: response.error };
+  if (!response.ok) return { ...response, action: "memory.search" };
   const quotaNotice = response.result.quota
     ? await (options.claimQuotaNotice ?? claimQuotaNotice)(
       repositoryMemory.memory.config,
@@ -185,29 +204,26 @@ async function memorySearch(args: string[], options: MemoryCliOptions): Promise<
 async function memoryAdd(args: string[], options: MemoryCliOptions): Promise<MemoryCliResult> {
   const env = options.env ?? process.env;
   if (env.MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED === "false") {
-    return { ok: false, action: "memory.add", error: "MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED=false disables MemoraX add" };
+    return { ok: false, action: "memory.add", errorCode: "MEMORY_ADD_DISABLED", stage: "configuration", error: "MEMORAX_CODE_MEMORAX_WRITEBACK_ENABLED=false disables MemoraX add" };
   }
   if (!memoryCliAddEnabled(env)) {
-    return { ok: false, action: "memory.add", error: "memory add is disabled by MEMORAX_CODE_MEMORY_CLI_ADD_ENABLED=false or [memory.cli].add_enabled=false" };
+    return { ok: false, action: "memory.add", errorCode: "MEMORY_ADD_DISABLED", stage: "configuration", error: "memory add is disabled by MEMORAX_CODE_MEMORY_CLI_ADD_ENABLED=false or [memory.cli].add_enabled=false" };
   }
-  const memoryResult = await readTextArg(args, "--memory", "--memory-file", "memory");
-  if (!memoryResult.ok) return { ok: false, action: "memory.add", error: memoryResult.error };
+  const memoryResult = await readAddInput(args, memoryCliMaxMemoryChars(env));
+  if (!memoryResult.ok) return { ...memoryResult, action: "memory.add" };
   const memory = memoryResult.text;
-  const maxChars = memoryCliMaxMemoryChars(env);
-  if (memory.length > maxChars) {
-    return { ok: false, action: "memory.add", error: `memory is too long: ${memory.length} chars > ${maxChars}` };
-  }
   const memoryType = requiredArg(args, "--type");
   if (!memoryType.ok) return { ok: false, action: "memory.add", error: memoryType.error };
   const reason = requiredArg(args, "--reason");
   if (!reason.ok) return { ok: false, action: "memory.add", error: reason.error };
-  const contentOptions = memoryAddContentOptions(args);
+  const contentOptions = memoryAddContentOptions(args, memoryResult.structured);
   if (!contentOptions.ok) return { ok: false, action: "memory.add", error: contentOptions.error };
   const repositoryMemory = await resolveMemoryCliRepositoryMemory(options);
   if (!repositoryMemory.ok) return memoryCliRepositoryFailure("memory.add", repositoryMemory);
+  options.diagnosticTrace = repositoryMemory.traceContext;
 
   const sessionId = memoryCliSessionId(args, env);
-  const observability = await memoryCliObservability(env);
+  const observability = await memoryCliObservability(env, repositoryMemory.traceContext);
   const response = await invokeMemoraxMemoryProvider(
     { sessionId, prompt: memory },
     {
@@ -218,8 +234,8 @@ async function memoryAdd(args: string[], options: MemoryCliOptions): Promise<Mem
       operation: "writeback",
       dispatch: "async_best_effort",
       context: {
-        idempotencyKey: `memory-cli:${sessionId}:${hashText(`${memoryType.value}\n${reason.value}\n${memory}`)}`,
-        messages: [{ role: "user", content: memory }],
+        idempotencyKey: `memory-cli:${sessionId}:${hashText(`${memoryType.value}\n${reason.value}\n${memoryResult.identity}`)}`,
+        messages: memoryResult.messages,
         ...contentOptions.context,
         metadata: {
           source_detail: "memorax_code_memory_cli",
@@ -239,7 +255,7 @@ async function memoryAdd(args: string[], options: MemoryCliOptions): Promise<Mem
     },
   );
   await observability.flush();
-  if (!response.ok) return { ok: false, action: "memory.add", error: response.error };
+  if (!response.ok) return { ...response, action: "memory.add" };
   const quotaNotice = response.result.quota
     ? await (options.claimQuotaNotice ?? claimQuotaNotice)(
       repositoryMemory.memory.config,
@@ -257,54 +273,88 @@ async function memoryAdd(args: string[], options: MemoryCliOptions): Promise<Mem
   };
 }
 
-async function resolveMemoryCliRepositoryMemory(options: MemoryCliOptions): Promise<ConfiguredRepositoryMemoryResult> {
+async function resolveMemoryCliRepositoryMemory(
+  options: MemoryCliOptions,
+): Promise<ConfiguredRepositoryMemoryResult & { traceContext?: TraceContext }> {
+  const env = options.env ?? process.env;
+  const memoraxCodeHome = defaultMemoraxCodeHome(env);
+  const binding = memoryCliTraceBinding(env);
+  if (binding?.client === "codebuddy-native") {
+    // Both products expose the same native session variable. Only a unique,
+    // exact current-turn record whose workspace validates can identify one.
+    const candidates = await Promise.all((["codebuddy", "workbuddy"] as const).map(async (client) => {
+      const current = await readCurrentTraceTurn({ client, memoraxCodeHome, env, expectedSessionId: binding.expectedSessionId });
+      if (!current.ok || !current.traceContext.turnId || !current.traceContext.cwd) return undefined;
+      const result = await resolveMemoryCliRepositoryMemoryFromTurn(options, current.traceContext);
+      return result.ok ? { ...result, traceContext: current.traceContext } : result;
+    }));
+    const matches = candidates.filter((candidate) => candidate?.ok === true);
+    if (matches.length === 1) return matches[0]!;
+    // Without an operational turn, native shell commands retain ordinary cwd
+    // scope. A present turn with conflicting scope must still fail closed.
+    if (candidates.every((candidate) => candidate === undefined)) {
+      return resolveMemoryCliRepositoryMemoryFromTurn(options);
+    }
+    return {
+      ok: false,
+      reason: "workspace_scope_mismatch",
+      error: "memory CLI cannot uniquely bind the native CodeBuddy/WorkBuddy session to a current turn in this workspace; start a new session in the target scope",
+    };
+  }
+  const current = binding
+    ? await readCurrentTraceTurn({ client: binding.client, memoraxCodeHome, env, expectedSessionId: binding.expectedSessionId })
+    : undefined;
+  const traceContext = current?.ok ? current.traceContext : undefined;
+  const result = await resolveMemoryCliRepositoryMemoryFromTurn(options, traceContext);
+  return result.ok ? { ...result, traceContext } : result;
+}
+
+async function resolveMemoryCliRepositoryMemoryFromTurn(
+  options: MemoryCliOptions,
+  traceContext?: TraceContext,
+): Promise<ConfiguredRepositoryMemoryResult> {
   const env = options.env ?? process.env;
   const memoraxCodeHome = defaultMemoraxCodeHome(env);
   let turnMemory: ConfiguredRepositoryMemoryResult | undefined;
-  const traceBinding = memoryCliTraceBinding(env);
-  if (traceBinding?.expectedSessionId) {
-    const current = await readCurrentTraceTurn({
-      client: traceBinding.client,
+  if (traceContext && (traceContext.cwd?.trim() || traceContext.workspaceKind?.trim().toLowerCase() === "projectless")) {
+    // The operational bridge carries exact workspace identity even when tracing is disabled.
+    turnMemory = await resolveConfiguredRepositoryMemory({
+      workspaceRoot: traceContext.cwd,
+      workspaceKind: traceContext.workspaceKind,
       memoraxCodeHome,
       env,
-      expectedSessionId: traceBinding.expectedSessionId,
     });
-    if (
-      current.ok
-      && (current.traceContext.cwd?.trim() || current.traceContext.workspaceKind?.trim().toLowerCase() === "projectless")
-    ) {
-      turnMemory = await resolveConfiguredRepositoryMemory({
-        workspaceRoot: current.traceContext.cwd,
-        workspaceKind: current.traceContext.workspaceKind,
-        memoraxCodeHome,
-        env,
-      });
-      if (!turnMemory.ok) return turnMemory;
-    }
+    if (!turnMemory.ok) return turnMemory;
   }
 
   const commandWorkspace = options.cwd ?? process.cwd();
+  const unboundGeneral = turnMemory?.ok
+    && turnMemory.memory.scope?.scopeKind === "general"
+    && !turnMemory.memory.scope.boundWorkspaceRoot;
   if (turnMemory?.ok && turnMemory.memory.scope) {
     const turnScope = turnMemory.memory.scope;
     const turnScopeKind = repositoryMemoryScopeKind(turnScope);
     if (
-      (turnScopeKind === "codex-projectless" && !turnScope.boundWorkspaceRoot)
-      || (
-        (turnScopeKind === "codex-projectless" || turnScopeKind === "local-directory")
-        && await repositoryMemoryScopeContainsWorkspace(turnScope, commandWorkspace)
-      )
+      (turnScopeKind === "general" || turnScopeKind === "local-directory")
+      && await repositoryMemoryScopeContainsWorkspace(turnScope, commandWorkspace)
     ) {
       return turnMemory;
     }
   }
   const commandMemory = await resolveConfiguredRepositoryMemory({
     workspaceRoot: commandWorkspace,
+    // A cwd-less projectless turn still requires a readable, non-Git command
+    // directory. Resolve the hint normally so Git authority cannot be bypassed.
+    workspaceKind: unboundGeneral ? "projectless" : undefined,
     memoraxCodeHome,
     env,
   });
   if (!commandMemory.ok || !commandMemory.memory.scope) return commandMemory;
+  if (unboundGeneral && repositoryMemoryScopeKind(commandMemory.memory.scope) === "general") {
+    return commandMemory;
+  }
   if (turnMemory?.ok && (!turnMemory.memory.scope || !repositoryMemoryScopesMatch(commandMemory.memory.scope, turnMemory.memory.scope))) {
-    const clientLabel = traceClientLabel(traceBinding?.client);
+    const clientLabel = traceClientLabel(traceContext?.client);
     return {
       ok: false,
       reason: "workspace_scope_mismatch",
@@ -320,13 +370,16 @@ function memoryCliRepositoryFailure(
   fields: Pick<MemoryCliResult, "query"> = {},
 ): MemoryCliResult {
   const userAction = failure.reason === "workspace_scope_mismatch"
-    ? "Start a new Codex, Claude Code, DSH, or OpenCode session from the target repository or local workspace."
+    ? "Start a new Codex, Claude Code, CodeBuddy CLI, WorkBuddy, DSH, OpenCode, or Cursor session from the target repository or local workspace."
     : failure.reason === "workspace_scope_unavailable"
-      ? "Start a new Codex, Claude Code, DSH, or OpenCode session from the target repository or local workspace. If the problem continues, make sure its .git metadata is readable and valid."
+      ? "Start a new Codex, Claude Code, CodeBuddy CLI, WorkBuddy, DSH, OpenCode, or Cursor session from the target repository or local workspace. If the problem continues, make sure its .git metadata is readable and valid."
       : undefined;
   return {
     ok: false,
     action,
+    errorCode: failure.reason === "config_missing" ? "MEMORY_CONFIG_MISSING"
+      : failure.reason === "workspace_scope_mismatch" ? "MEMORY_SCOPE_MISMATCH" : "MEMORY_SCOPE_UNAVAILABLE",
+    stage: failure.reason === "config_missing" ? "configuration" : "scope",
     ...fields,
     ...(userAction ? {
       workspaceScope: "unavailable" as const,
@@ -366,26 +419,19 @@ function memoryCliIdentityFields(memory: ConfiguredRepositoryMemory): Pick<
 
 async function memoryCliObservability(
   env: Record<string, string | undefined> = process.env,
+  traceContext?: TraceContext,
 ): Promise<MemoryCliObservability> {
   const memoraxCodeHome = defaultMemoraxCodeHome(env);
-  const traceBinding = memoryCliTraceBinding(env);
-  const current = traceBinding
-    ? await readCurrentTraceTurn({
-      client: traceBinding.client,
-      memoraxCodeHome,
-      env,
-      expectedSessionId: traceBinding.expectedSessionId,
-    })
-    : undefined;
+  // Reuse the snapshot whose scope was verified before provider I/O.
   const pending: Promise<unknown>[] = [];
-  if (!current?.ok) return { flush: async () => undefined };
+  if (!traceContext) return { flush: async () => undefined };
   return {
     hook: {
       recordEvent(event: MemoryObservabilityEvent) {
         pending.push(recordTraceEvent({
           memoraxCodeHome,
           env,
-          traceContext: current.traceContext,
+          traceContext,
           type: memoryCliTraceEventType(event),
           source: event.source,
           operation: event.operation,
@@ -419,6 +465,11 @@ function memoryCliTraceBinding(
     return { client, expectedSessionId };
   }
 
+  // Native WorkBuddy/CodeBuddy tools carry this identity even when the client
+  // does not provide CODEBUDDY_ENV_FILE for the SessionStart export bridge.
+  const codeBuddySessionId = env.CODEBUDDY_SESSION_ID?.trim();
+  if (codeBuddySessionId) return { client: "codebuddy-native", expectedSessionId: codeBuddySessionId };
+
   const expectedSessionId = env.CODEX_THREAD_ID?.trim();
   return expectedSessionId
     ? { client: "codex", expectedSessionId }
@@ -433,22 +484,123 @@ function traceClientLabel(client: TraceClient | undefined): string {
   if (client === "claude") return "Claude";
   if (client === "dsh") return "DSH";
   if (client === "opencode") return "OpenCode";
+  if (client === "codebuddy") return "CodeBuddy CLI";
+  if (client === "workbuddy") return "WorkBuddy";
+  if (client === "cursor") return "Cursor";
+  if (client === "qoder") return "Qoder";
   return client === "codex" ? "Codex" : "coding agent";
 }
 
 function memoryAddContentOptions(
   args: string[],
+  structured = false,
 ):
   | { ok: true; context: Record<string, string> }
   | { ok: false; error: string } {
   const contentType = argValue(args, "--content-type")?.trim();
   const mode = argValue(args, "--mode")?.trim();
   const context: Record<string, string> = {};
-  const effectiveContentType = contentType || "code";
+  const effectiveContentType = contentType || (structured ? "auto" : "code");
   const effectiveMode = mode || (effectiveContentType === "code" ? "pre_summarized" : "default");
   context.contentType = effectiveContentType;
   context.mode = effectiveMode;
   return { ok: true, context };
+}
+
+function memorySearchOptions(args: string[]):
+  | { ok: true; context: Record<string, string[]> }
+  | { ok: false; error: string } {
+  const context: Record<string, string[]> = {};
+  for (const [flag, key] of [["--sources", "sources"], ["--document-ids", "document_ids"]]) {
+    const option = singleOption(args, flag);
+    if (!option.ok) return option;
+    if (option.value !== undefined) {
+      const values = option.value.split(",").map((value) => value.trim());
+      if (values.some((value) => !value)) return { ok: false, error: `${flag} requires nonempty comma-separated values` };
+      context[key] = values;
+    }
+  }
+  if (context.document_ids && (context.sources?.length !== 1 || context.sources[0] !== "document")) {
+    return { ok: false, error: "--document-ids requires --sources document" };
+  }
+  return { ok: true, context };
+}
+
+function singleOption(args: string[], flag: string):
+  | { ok: true; value?: string }
+  | { ok: false; error: string } {
+  const positions = args.flatMap((value, index) => value === flag ? [index] : []);
+  if (positions.length === 0) return { ok: true };
+  const value = args[positions[0] + 1];
+  if (positions.length !== 1 || !value?.trim() || value.startsWith("--")) {
+    return { ok: false, error: `${flag} requires exactly one value` };
+  }
+  return { ok: true, value };
+}
+
+// Explicit file input is isolated from native transcript acquisition. Bound the
+// bytes read, including a file that grows after the initial stat.
+const MAX_MESSAGES_FILE_BYTES = 32 * 1024 * 1024;
+
+async function readAddInput(args: string[], maxChars: number): Promise<
+  | { ok: true; text: string; identity: string; messages: unknown[]; structured: boolean }
+  | ({ ok: false; error: string } & MemoryCliFailureDetails)
+> {
+  const option = singleOption(args, "--messages-file");
+  if (!option.ok) return option;
+  if (option.value === undefined) {
+    const result = await readTextArg(args, "--memory", "--memory-file", "memory");
+    if (!result.ok) return result;
+    if (result.text.length > maxChars) return { ok: false, error: `memory is too long: ${result.text.length} chars > ${maxChars}` };
+    return { ok: true, text: result.text, identity: result.text, messages: [{ role: "user", content: result.text }], structured: false };
+  }
+  if (args.includes("--memory") || args.includes("--memory-file")) {
+    return { ok: false, error: "use --messages-file or --memory/--memory-file, not both" };
+  }
+  let raw: string;
+  try {
+    const handle = await open(option.value, "r");
+    try {
+      const stat = await handle.stat();
+      if (!stat.isFile() || stat.size > MAX_MESSAGES_FILE_BYTES) {
+        return { ok: false, error: "--messages-file must be a regular JSON file of at most 32 MiB" };
+      }
+      const buffers: Buffer[] = [];
+      let total = 0;
+      while (true) {
+        const buffer = Buffer.alloc(Math.min(64 * 1024, MAX_MESSAGES_FILE_BYTES + 1 - total));
+        const { bytesRead } = await handle.read(buffer, 0, buffer.length, null);
+        if (bytesRead === 0) break;
+        total += bytesRead;
+        if (total > MAX_MESSAGES_FILE_BYTES) return { ok: false, error: "--messages-file exceeds 32 MiB" };
+        buffers.push(buffer.subarray(0, bytesRead));
+      }
+      raw = Buffer.concat(buffers, total).toString("utf8");
+    } finally {
+      await handle.close();
+    }
+  } catch (error) {
+    return { ok: false, error: "failed to read --messages-file", errorCode: "MEMORY_INPUT_UNREADABLE", stage: "input", ...fileErrorFields(error) };
+  }
+  let messages: unknown;
+  try { messages = JSON.parse(raw); }
+  catch { return { ok: false, error: "--messages-file must contain valid JSON" }; }
+  if (!Array.isArray(messages) || messages.length < 1 || messages.length > 100) {
+    return { ok: false, error: "--messages-file must contain an array of 1-100 messages" };
+  }
+  // Provider validation owns content-part semantics; this layer enforces the
+  // explicit CLI text budget without counting Base64 as prose.
+  const text = messages.flatMap((message) => {
+    if (!isRecord(message)) return [];
+    if (typeof message.content === "string") return [message.content];
+    if (!Array.isArray(message.content)) return [];
+    return message.content.flatMap((part: unknown) => {
+      if (!isRecord(part)) return [];
+      return typeof part.text === "string" ? [part.text] : typeof part.caption === "string" ? [part.caption] : [];
+    });
+  }).join("\n");
+  if (text.length > maxChars) return { ok: false, error: `memory is too long: ${text.length} chars > ${maxChars}` };
+  return { ok: true, text, identity: JSON.stringify(messages), messages, structured: true };
 }
 
 async function readTextArg(
@@ -456,7 +608,7 @@ async function readTextArg(
   inlineFlag: string,
   fileFlag: string,
   label: string,
-): Promise<{ ok: true; text: string } | { ok: false; error: string }> {
+): Promise<{ ok: true; text: string } | ({ ok: false; error: string } & MemoryCliFailureDetails)> {
   const inline = argValue(args, inlineFlag);
   const file = argValue(args, fileFlag);
   if (inline && file) return { ok: false, error: `use either ${inlineFlag} or ${fileFlag}, not both` };
@@ -465,7 +617,7 @@ async function readTextArg(
     try {
       text = await readFile(file, "utf8");
     } catch (error) {
-      return { ok: false, error: `failed to read ${fileFlag}: ${error instanceof Error ? error.message : String(error)}` };
+      return { ok: false, error: `failed to read ${fileFlag}`, errorCode: "MEMORY_INPUT_UNREADABLE", stage: "input", ...fileErrorFields(error) };
     }
   }
   text = text.trim();

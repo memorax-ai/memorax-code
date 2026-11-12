@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
+import childProcess from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+import os from "node:os";
 import test from "node:test";
 import {
   createTrialMacHash,
   deriveTrialPluginIdentity,
+  generateTrialPluginIdentity,
   TRIAL_APP_SALT,
   TRIAL_MARK_VERSION,
 } from "../lib/trial-plugin-mark.mjs";
@@ -17,6 +21,26 @@ const DEVICE = Object.freeze({
   macHash: "b".repeat(64),
 });
 const GOLDEN_MARK_ID = "mk_e07c335dfbdd06d4752cf8a17e7d4f82555bf4828d82a8efa7cc5b527d4c858e";
+
+test("trial identity tolerates a slow Windows machine ID query", (t) => {
+  t.mock.method(os, "platform", () => "win32");
+  t.mock.method(os, "hostname", () => DEVICE.hostname);
+  t.mock.method(os, "networkInterfaces", () => ({}));
+  t.mock.method(childProcess, "spawnSync", (command, args, options) => {
+    assert.equal(command, "reg.exe");
+    assert.deepEqual(args, ["query", "HKLM\\SOFTWARE\\Microsoft\\Cryptography", "/v", "MachineGuid"]);
+    // Simulate a valid query finishing after the old one-second deadline.
+    if (options.timeout < 1_500) return { status: null, error: { code: "ETIMEDOUT" } };
+    return { status: 0, stdout: `    MachineGuid    REG_SZ    ${DEVICE.machineId}\r\n` };
+  });
+  syncBuiltinESMExports();
+  try {
+    assert.equal(generateTrialPluginIdentity().machineId, DEVICE.machineId);
+  } finally {
+    t.mock.restoreAll();
+    syncBuiltinESMExports();
+  }
+});
 
 test("trial identity matches the backend v1 golden vector", () => {
   assert.deepEqual(deriveTrialPluginIdentity(DEVICE), {

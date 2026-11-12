@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { recordAutomaticAddFailure } from "./background-diagnostics.js";
 import {
   createMemoryWritebackBufferRuntime,
   type MemoryWritebackBufferedDecision,
@@ -21,6 +22,7 @@ import type {
 } from "./observability.js";
 import {
   memoraxConfigFromEnv,
+  memoraxAddOptionsFromContext,
   memoryWritebackBufferEnabled,
   memoryWritebackEnabled,
   memoryWritebackMaxMessageChars,
@@ -34,14 +36,24 @@ import type {
 import type { TraceContext } from "../trace/context.js";
 import {
   hasMeaningfulMemoryPayloadText,
+  redactBoundedMemoryPayloadText,
   redactMemoryPayloadText,
   type MemoryPayloadRedactionKind,
 } from "./payload-redaction.js";
 import type { MemoraxQuotaSnapshot } from "../provider/memorax/quota.js";
+import { parseNativeMessageTimestamp } from "../shared/message-time.js";
+import { countAddTextChars, MEMORAX_DIALOGUE_MAX_MESSAGE_CHARS } from "../provider/memorax/add-limits.js";
 
-export type AutomaticMemoryWritebackClient = "codex" | "claude-code" | "opencode" | "dsh";
+export type AutomaticMemoryWritebackClient = "codex" | "claude-code" | "opencode" | "dsh" | "codebuddy" | "workbuddy" | "trae" | "cursor" | "qoder";
 
-export type AutomaticMemoryWritebackOptions = {
+export type AutomaticMemoryWritebackTiming = {
+  userTimestamp?: number;
+  assistantTimestamp?: number;
+  userTimestampSource?: "native" | "observed";
+  assistantTimestampSource?: "native" | "observed";
+};
+
+export type AutomaticMemoryWritebackOptions = AutomaticMemoryWritebackTiming & {
   client: AutomaticMemoryWritebackClient;
   sessionKey?: string;
   userText?: string;
@@ -58,6 +70,7 @@ export type AutomaticMemoryWritebackOptions = {
 };
 
 type AutomaticMemoryWritebackDecision = {
+  contentType?: "auto" | "work" | "code" | "dialogue";
   client: AutomaticMemoryWritebackClient;
   sessionKey: string;
   idempotencyKey: string;
@@ -75,6 +88,8 @@ export type AutomaticMemoryWritebackRejectionReason =
   | "config_missing"
   | RepositoryMemoryScopeFailureReason;
 
+// Acceptance confirms local handling, including duplicates already accepted.
+// Callers may consume matching metadata; remote writeback can still fail.
 export type AutomaticMemoryWritebackEnqueueResult =
   | { accepted: true }
   | { accepted: false; reason: AutomaticMemoryWritebackRejectionReason };
@@ -91,13 +106,17 @@ export type AutomaticMemoryWritebackRuntime = {
 };
 
 export type AutomaticMemoryWritebackRuntimeOptions = {
+  memoraxCodeHome?: string;
   diagnosticLogger?: MemoryDiagnosticLogger;
   queueQuotaNotice?: (config: MemoraxAdapterConfig, quota: MemoraxQuotaSnapshot) => void;
 };
 
 type AutomaticMemoryWritebackState = {
+  memoraxCodeHome?: string;
   diagnosticLogger: MemoryDiagnosticLogger;
   queueQuotaNotice?: (config: MemoraxAdapterConfig, quota: MemoraxQuotaSnapshot) => void;
+  // Tracks in-flight and recently successful writes in a bounded TTL cache.
+  // Success keeps keys to suppress replay; terminal failure releases them.
   pendingWritebacks: Map<string, number>;
   writebackBuffer: MemoryWritebackBufferRuntime;
   accepting: boolean;
@@ -110,11 +129,14 @@ const WRITEBACK_DEDUPE_MAX = 1024;
 const AUTOMATIC_MEMORY_WRITEBACK_MAX_ATTEMPTS = 2;
 const AUTOMATIC_MEMORY_WRITEBACK_RETRY_DELAY_MS = 100;
 const AUTOMATIC_MEMORY_WRITEBACK_MAX_RETRY_DELAY_MS = 5_000;
+const MEMORY_IMPACT_MAX_PARAGRAPH_CHARS = 600;
+const MEMORY_IMPACT_LABEL_PATTERN = /(?:MemoraX Code(?:['’]s| 的)?\s+Memory|Memory\s+from\s+MemoraX Code)/iu;
 
 export function createAutomaticMemoryWritebackRuntime(
   options: AutomaticMemoryWritebackRuntimeOptions = {},
 ): AutomaticMemoryWritebackRuntime {
   const state: AutomaticMemoryWritebackState = {
+    memoraxCodeHome: options.memoraxCodeHome,
     diagnosticLogger: options.diagnosticLogger ?? (() => {}),
     queueQuotaNotice: options.queueQuotaNotice,
     pendingWritebacks: new Map(),
@@ -172,8 +194,9 @@ function enqueueAutomaticMemoryWritebackForRuntime(
         ? { accepted: true }
         : { accepted: false, reason: decision.skipReason };
     }
-    if (memoryWritebackBufferEnabled(options.env ?? process.env)) {
-      state.writebackBuffer.enqueue(decision, options, {
+    if (decision.contentType !== "work"
+      && memoryWritebackBufferEnabled(options.env ?? process.env)) {
+      state.writebackBuffer.enqueue({ ...decision, contentType: decision.contentType }, options, {
         debug: redactAutomaticMemoryWritebackDiagnosticIdentifiers(state.diagnosticLogger),
         flush: (bufferedDecision, bufferedOptions) => flushAutomaticMemoryWritebackBuffer(
           state,
@@ -246,47 +269,111 @@ function automaticMemoryWritebackDecision(
     };
   }
 
+  const route = memoraxAddOptionsFromContext({ mode: "default" }, env);
+  if (!route.ok) throw new Error(route.error);
+  const contentType = route.options.contentType ?? "auto";
   const sessionKey = options.sessionKey.trim();
   const maxMessageChars = memoryWritebackMaxMessageChars(env);
   const rawUserText = options.userText?.trim() ?? "";
-  const rawAssistantText = options.assistantText?.trim() ?? "";
+  const assistantOutput = options.assistantText ?? "";
+  const assistantImpact = stripLeadingMemoryImpactParagraph(assistantOutput);
+  const rawAssistantText = assistantImpact.text.trim();
+  if (assistantImpact.removedParagraphs > 0) {
+    state.diagnosticLogger("memory.automatic_writeback.impact_stripped", {
+      sessionKeyHash: hashText(sessionKey),
+      removedParagraphs: assistantImpact.removedParagraphs,
+      originalChars: options.assistantText?.length ?? 0,
+      keptChars: rawAssistantText.length,
+    });
+  }
   if (!rawUserText) return { write: false, skipReason: "user_prompt_empty" };
   if (!rawAssistantText) return { write: false, skipReason: "assistant_text_empty" };
-  const boundedUserText = limitMessageContent(rawUserText, maxMessageChars, {
-    role: "user",
-    sessionKey,
-  }, state.diagnosticLogger);
-  const boundedAssistantText = limitMessageContent(rawAssistantText, maxMessageChars, {
-    role: "assistant",
-    sessionKey,
-  }, state.diagnosticLogger);
-  const userRedaction = redactMemoryPayloadText(boundedUserText);
-  const assistantRedaction = redactMemoryPayloadText(boundedAssistantText);
-  logAutomaticMemoryPayloadRedaction(state, sessionKey, "user", rawUserText, userRedaction);
-  logAutomaticMemoryPayloadRedaction(state, sessionKey, "assistant", rawAssistantText, assistantRedaction);
-  const userText = limitMessageContent(userRedaction.text, maxMessageChars, {
-    role: "user",
-    sessionKey,
-  }, state.diagnosticLogger);
-  const assistantText = limitMessageContent(assistantRedaction.text, maxMessageChars, {
-    role: "assistant",
-    sessionKey,
-  }, state.diagnosticLogger);
+  const prepareMessage = (text: string, role: WritebackMessage["role"]): string => {
+    if (contentType !== "code") {
+      const limit = Math.min(maxMessageChars, MEMORAX_DIALOGUE_MAX_MESSAGE_CHARS);
+      const result = redactBoundedMemoryPayloadText(text, limit);
+      logAutomaticMemoryPayloadRedaction(state, sessionKey, role, text, result);
+      if (result.truncated) {
+        state.diagnosticLogger("memory.automatic_writeback.truncated", {
+          sessionKeyHash: hashText(sessionKey),
+          role,
+          keptChars: countAddTextChars(result.text),
+          maxChars: limit,
+        });
+      }
+      return result.text;
+    }
+    const bound = (value: string) =>
+      limitMessageContent(value, maxMessageChars, { role, sessionKey }, state.diagnosticLogger);
+    const result = redactMemoryPayloadText(bound(text));
+    logAutomaticMemoryPayloadRedaction(state, sessionKey, role, text, result);
+    return bound(result.text);
+  };
+  const userText = prepareMessage(rawUserText, "user");
+  const assistantText = prepareMessage(rawAssistantText, "assistant");
   if (!hasMeaningfulMemoryPayloadText(userText)) return { write: false, skipReason: "user_prompt_empty" };
   if (!hasMeaningfulMemoryPayloadText(assistantText)) return { write: false, skipReason: "assistant_text_empty" };
 
-  const idempotencyKey = `automatic:${options.client}:${hashText(options.repositoryScope.effectiveUserId)}:${sessionKey}:${hashText(userText)}:${hashText(assistantText)}`;
+  const idempotencyKey = `automatic:${options.client}:${hashText(options.repositoryScope.effectiveUserId)}:${sessionKey}:${hashText(userText)}:${hashText(assistantText)}${contentType === "code" ? "" : `:${contentType}`}`;
   if (hasPendingWriteback(state, idempotencyKey)) return { write: false, skipReason: "duplicate_pending" };
+  // Freeze missing-time observations before buffering or retries. Upload time
+  // must never replace a native message time or pretend to be one.
+  const observedAt = Date.now();
+  const userTimestamp = parseNativeMessageTimestamp(options.userTimestamp);
+  const assistantTimestamp = parseNativeMessageTimestamp(options.assistantTimestamp);
   return {
     write: true,
+    contentType,
     client: options.client,
     sessionKey,
     idempotencyKey,
     messages: [
-      { role: "user", content: userText },
-      { role: "assistant", content: assistantText },
+      {
+        role: "user", content: userText,
+        timestamp: userTimestamp ?? observedAt,
+        timestampSource: userTimestamp === undefined ? "observed" : options.userTimestampSource ?? "native",
+      },
+      {
+        role: "assistant", content: assistantText,
+        timestamp: assistantTimestamp ?? observedAt,
+        timestampSource: assistantTimestamp === undefined ? "observed" : options.assistantTimestampSource ?? "native",
+      },
     ],
   };
+}
+
+function stripLeadingMemoryImpactParagraph(text: string): {
+  text: string;
+  removedParagraphs: number;
+} {
+  const trimmedText = text.trimStart();
+  const paragraphSeparator = /\r?\n(?:[\t ]*\r?\n)+/;
+  const firstSeparator = paragraphSeparator.exec(trimmedText);
+  if (!firstSeparator || firstSeparator.index === undefined) {
+    return { text, removedParagraphs: 0 };
+  }
+  const paragraph = trimmedText.slice(0, firstSeparator.index).trim();
+  const followingText = trimmedText
+    .slice(firstSeparator.index + firstSeparator[0].length)
+    .trimStart();
+  if (!followingText || !isMemoryImpactParagraph(paragraph)) {
+    return { text, removedParagraphs: 0 };
+  }
+  return { text: followingText, removedParagraphs: 1 };
+}
+
+function isMemoryImpactParagraph(paragraph: string): boolean {
+  if (!paragraph || paragraph.length > MEMORY_IMPACT_MAX_PARAGRAPH_CHARS) return false;
+  if (!MEMORY_IMPACT_LABEL_PATTERN.test(paragraph)) return false;
+  const lines = paragraph.split(/\r?\n/);
+  if (lines.some((line) => /^(?:#{1,6}(?:\s|$)|[-+*]\s|\d+[.)]\s|>|```|~~~)/.test(line.trimStart()))) {
+    return false;
+  }
+  return /^(?:这次|本次|本轮|此次|本任务|这个任务)(?:中|里)?[,，]?\s*(?:我|我们)?\s*(?:参考|采用|使用|借助|依据|遵循|应用|结合)了?[\s\S]{0,80}MemoraX Code/u.test(paragraph)
+    || /^(?:我|我们)(?:在)?(?:这次|本次|本轮|此次|本任务|这个任务)?(?:中|里)?[,，]?\s*(?:参考|采用|使用|借助|依据|遵循|应用|结合)了?[\s\S]{0,80}MemoraX Code/u.test(paragraph)
+    || /^MemoraX Code[\s\S]{0,160}(?:帮我|帮我们|帮助(?:了)?我|帮助(?:了)?我们|让我|让我们|指导(?:了)?我|指导(?:了)?我们|使我|使我们)/u.test(paragraph)
+    || /^(?:(?:This time|For this (?:task|turn))[, ]+)?(?:I|We)\s+(?:used|applied|followed|consulted|referenced|relied on|drew on)\b[\s\S]{0,80}MemoraX Code/i.test(paragraph)
+    || /^(?:MemoraX Code|Memory from MemoraX Code)[\s\S]{0,160}\b(?:helped|guided|informed|led|kept|prevented|allowed|enabled)\b/i.test(paragraph);
 }
 
 function logAutomaticMemoryPayloadRedaction(
@@ -319,7 +406,10 @@ async function enqueueAutomaticMemoryWritebackAsync(
       });
       throw new Error("automatic writeback content must be redacted before provider dispatch");
     }
-    const parts = memoryWritebackAddParts(decision, options.env ?? process.env);
+    const contentType = decision.contentType ?? "code";
+    const parts = contentType === "code"
+      ? memoryWritebackAddParts(decision, options.env ?? process.env)
+      : [{ idempotencyKey: decision.idempotencyKey, messages: decision.messages, chunk: undefined }];
     for (const [index, part] of parts.entries()) {
       for (let attempt = 1; attempt <= AUTOMATIC_MEMORY_WRITEBACK_MAX_ATTEMPTS; attempt += 1) {
         const configResult = memoraxConfigFromEnv(options.env);
@@ -336,7 +426,7 @@ async function enqueueAutomaticMemoryWritebackAsync(
           context: {
             idempotencyKey: part.idempotencyKey,
             messages: part.messages,
-            contentType: "code",
+            contentType,
             mode: "default",
             ...(part.chunk ? { chunk: part.chunk } : {}),
           },
@@ -385,6 +475,14 @@ async function enqueueAutomaticMemoryWritebackAsync(
           break;
         }
         if (!retrying) {
+          // Persist only the terminal outcome, after the existing retry decision.
+          recordAutomaticAddFailure(response, {
+            memoraxCodeHome: state.memoraxCodeHome,
+            env: options.env,
+            client: decision.client,
+            sessionId: decision.sessionKey,
+            turnId: (decision.turnCount ?? 1) === 1 ? options.traceContext?.turnId : undefined,
+          });
           releasePendingWritebacks(state, [decision.idempotencyKey, ...(decision.dedupeKeys ?? [])]);
           return;
         }
@@ -393,6 +491,13 @@ async function enqueueAutomaticMemoryWritebackAsync(
     }
   } catch (error) {
     releasePendingWritebacks(state, [decision.idempotencyKey, ...(decision.dedupeKeys ?? [])]);
+    recordAutomaticAddFailure(undefined, {
+      memoraxCodeHome: state.memoraxCodeHome,
+      env: options.env,
+      client: decision.client,
+      sessionId: decision.sessionKey,
+      turnId: (decision.turnCount ?? 1) === 1 ? options.traceContext?.turnId : undefined,
+    }, error);
     state.diagnosticLogger("memory.automatic_writeback", {
       scheduled: true,
       accepted: false,

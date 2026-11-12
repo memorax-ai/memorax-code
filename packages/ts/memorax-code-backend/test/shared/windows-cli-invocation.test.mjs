@@ -37,6 +37,20 @@ test("Backend resolves a Windows Codex shim through its Node entrypoint", () => 
   });
 });
 
+test("Backend resolves the bare Windows WorkBuddy script through Node", () => {
+  const cli = "C:\\WorkBuddy\\resources\\app.asar.unpacked\\cli\\bin\\codebuddy";
+  assert.deepEqual(resolveWindowsCliInvocation("codebuddy", ["--version"], {
+    platform: "win32",
+    resolvedCommand: cli,
+    nodePath: "C:\\node.exe",
+    env: {},
+    existsSync: (candidate) => candidate === cli,
+  }), {
+    command: "C:\\node.exe",
+    args: [cli, "--version"],
+  });
+});
+
 test("Backend resolves Windows npm through the current Node executable", () => {
   const npmCli = "C:\\node\\node_modules\\npm\\bin\\npm-cli.js";
   assert.deepEqual(resolveWindowsNpmInvocation(

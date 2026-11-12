@@ -7,7 +7,7 @@ import {
   composeMemoryObservabilityHooks,
   createBackendMemoryObservability,
 } from "../../dist/app/memory-observability.js";
-import { claudeTracePaths, tracePaths } from "../../dist/trace/config.js";
+import { TRACE_RUNTIME_CLIENTS, claudeTracePaths, tracePaths } from "../../dist/trace/config.js";
 
 test("createBackendMemoryObservability preserves an existing memory hook", () => {
   const existingHook = { recordEvent() {} };
@@ -36,8 +36,8 @@ test("memory observability isolates synchronous sink failures", () => {
   ]);
 
   const event = {
-    source: "automatic_retrieval",
-    operation: "retrieve",
+    source: "memory_cli",
+    operation: "query",
     ok: true,
   };
   observability.recordEvent(event);
@@ -86,11 +86,17 @@ test("memory observability drain waits for every sink and isolates drain failure
   assert.equal(settled, true);
 });
 
-test("Codex trace observability failures do not create unhandled rejections", async () => {
+test("Codex trace observability failures do not create unhandled rejections", async (t) => {
   const root = await mkdtemp(join(tmpdir(), "memorax-code-observability-trace-unhandled-"));
   const blocker = join(root, "debug");
   await writeFile(blocker, "file", "utf8");
-  const observability = createBackendMemoryObservability(root);
+  const observability = createBackendMemoryObservability(root, undefined, {
+    MEMORAX_CODE_CODEX_TRACE_ENABLED: "true",
+  });
+  const diagnostics = [];
+  const debugOutput = t.mock.method(console, "error", (message) => diagnostics.push(message));
+  const previousDebug = process.env.MEMORAX_CODE_BACKEND_DEBUG_REQUESTS;
+  process.env.MEMORAX_CODE_BACKEND_DEBUG_REQUESTS = "true";
   const unhandled = captureUnhandledRejections();
   try {
     observability.recordEvent({
@@ -106,47 +112,68 @@ test("Codex trace observability failures do not create unhandled rejections", as
         capturedAt: "2026-07-09T00:00:00.000Z",
       },
     });
-    await delay(50);
+    await observability.drain();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(diagnostics.length, 1);
+    assert.match(diagnostics[0], /codex_trace\.write_failed label="memory_observability"/);
+    assert.match(diagnostics[0], /ENOTDIR|EEXIST/);
     assert.deepEqual(unhandled.errors, []);
   } finally {
     unhandled.restore();
+    debugOutput.mock.restore();
+    if (previousDebug === undefined) delete process.env.MEMORAX_CODE_BACKEND_DEBUG_REQUESTS;
+    else process.env.MEMORAX_CODE_BACKEND_DEBUG_REQUESTS = previousDebug;
     await rm(root, { recursive: true, force: true });
   }
 });
 
-test("session trace observability routes Claude events to the trace root", async () => {
-  const root = await mkdtemp(join(tmpdir(), "memorax-code-observability-claude-trace-"));
-  try {
-    const sessionId = "session-observability-claude";
-    const observability = createBackendMemoryObservability(root, undefined, {
-      MEMORAX_CODE_CLAUDE_TRACE_ENABLED: "true",
-      MEMORAX_CODE_CODEX_TRACE_ENABLED: "false",
-    });
-    observability.recordEvent({
-      source: "claude_hook_retrieval",
-      operation: "retrieve",
-      ok: true,
-      traceContext: {
-        schemaVersion: "1",
-        client: "claude",
-        sessionId,
-        turnId: "turn-observability-claude",
-        contextOrigin: "manual",
-        capturedAt: "2026-07-24T00:00:00.000Z",
-      },
-      request: { payload: { query: "claude trace query" } },
-    });
-    const claudeEventsPath = claudeTracePaths(root).eventsJsonl(sessionId);
-    await waitFor(async () => {
+test("session trace observability follows live file switches and isolates client roots", async (t) => {
+  for (const [name, codexEnabled] of [["another client enabled", true], ["all clients disabled", false]]) {
+    await t.test(name, async () => {
+      const root = await mkdtemp(join(tmpdir(), "memorax-code-observability-claude-trace-"));
       try {
-        return (await readFile(claudeEventsPath, "utf8")).includes("claude trace query");
-      } catch {
-        return false;
+        const sessionId = "session-observability-claude";
+        const configure = async (claudeEnabled) => writeFile(join(root, "config.toml"), TRACE_RUNTIME_CLIENTS.map((client) => (
+          `[trace.${client}]\nenabled = ${client === "claude" ? claudeEnabled : client === "codex" && codexEnabled}\n`
+        )).join("\n"));
+        await configure(false);
+        const env = {};
+        const observability = createBackendMemoryObservability(root, undefined, env);
+        assert.ok(observability);
+        // Later caller mutations must not replace the Backend's environment snapshot.
+        env.MEMORAX_CODE_CLAUDE_TRACE_ENABLED = "false";
+        const claudeEventsPath = claudeTracePaths(root).eventsJsonl(sessionId);
+        const recorded = [];
+        for (const [enabled, phase] of [[false, "initial-disabled"], [true, "enabled"], [false, "disabled"], [true, "re-enabled"]]) {
+          await configure(enabled);
+          observability.recordEvent({
+            source: "memory_cli",
+            operation: "query",
+            ok: true,
+            traceContext: {
+              schemaVersion: "1",
+              client: "claude",
+              sessionId,
+              turnId: "turn-observability-claude",
+              contextOrigin: "manual",
+              capturedAt: "2026-07-24T00:00:00.000Z",
+            },
+            request: { payload: { query: phase } },
+          });
+          await observability.drain();
+          if (enabled) recorded.push(phase);
+          if (recorded.length === 0) {
+            await assert.rejects(readFile(claudeEventsPath, "utf8"), { code: "ENOENT" });
+          } else {
+            const events = (await readFile(claudeEventsPath, "utf8")).trim().split("\n").map(JSON.parse);
+            assert.deepEqual(events.map((event) => event.request.payload.query), recorded);
+          }
+        }
+        await assert.rejects(readFile(tracePaths(root).eventsJsonl(sessionId), "utf8"), { code: "ENOENT" });
+      } finally {
+        await rm(root, { recursive: true, force: true });
       }
     });
-    await assert.rejects(readFile(tracePaths(root).eventsJsonl(sessionId), "utf8"));
-  } finally {
-    await rm(root, { recursive: true, force: true });
   }
 });
 
@@ -162,17 +189,4 @@ function captureUnhandledRejections() {
       process.off("unhandledRejection", handler);
     },
   };
-}
-
-async function delay(ms) {
-  await new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function waitFor(predicate, timeoutMs = 1000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (await predicate()) return;
-    await delay(10);
-  }
-  assert.fail(`condition was not met within ${timeoutMs}ms`);
 }

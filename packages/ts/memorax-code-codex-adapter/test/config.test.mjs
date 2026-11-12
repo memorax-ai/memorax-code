@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -116,48 +117,39 @@ test("plugin package exposes the current Hook and memory entrypoints", async () 
   assert.match(memorySkill, /name: memorax-code/);
 });
 
-test("Hook adapter enable and disable never read or rewrite Codex provider config", async () => {
-  const { codexHome, memoraxCodeHome } = await fixture();
-  const configPath = join(codexHome, "config.toml");
-  const original = [
+for (const [provider, original] of [
+  ["official", 'model_provider = "openai"\n'],
+  ["custom", [
     'model_provider = "custom"',
     "[model_providers.custom]",
     'base_url = "https://provider.example/v1"',
     'wire_api = "responses"',
     "",
-  ].join("\n");
-  await writeFile(configPath, original);
-  await writeCachedPlugin(codexHome);
-
-  const enabled = enableCodexAdapter({ codexHome, memoraxCodeHome });
-  assert.equal(enabled.ok, true);
-  assert.equal(enabled.enabled, true);
-  assert.equal(enabled.integration, "hooks");
-  assert.equal(await readFile(configPath, "utf8"), original);
-  const disabled = disableCodexAdapter({ codexHome, memoraxCodeHome });
-  assert.equal(disabled.ok, true);
-  assert.equal(disabled.enabled, false);
-  assert.equal(await readFile(configPath, "utf8"), original);
-  const state = readAdapterState(adapterStatePath(memoraxCodeHome, "codex"));
-  assert.equal(state.integration, "hooks");
-  assert.equal(state.enabled, false);
-});
-
-test("official and custom-provider Codex homes produce the same Hook state shape", async () => {
-  for (const config of [
-    'model_provider = "openai"\n',
-    'model_provider = "custom"\n[model_providers.custom]\nbase_url = "https://provider.example/v1"\n',
-  ]) {
-    const { codexHome, memoraxCodeHome } = await fixture();
-    await writeFile(join(codexHome, "config.toml"), config);
+  ].join("\n")],
+]) {
+  test(`Hook adapter enable and disable preserve ${provider} Codex provider config`, async (t) => {
+    const { root, codexHome, memoraxCodeHome } = await fixture();
+    t.after(() => rm(root, { recursive: true, force: true }));
+    const configPath = join(codexHome, "config.toml");
+    await writeFile(configPath, original);
     await writeCachedPlugin(codexHome);
-    const result = enableCodexAdapter({ codexHome, memoraxCodeHome });
-    assert.equal(result.ok, true);
-    assert.equal(result.state.integration, "hooks");
-    assert.equal(result.state.enabled, true);
-    assert.equal(await readFile(join(codexHome, "config.toml"), "utf8"), config);
-  }
-});
+
+    const enabled = enableCodexAdapter({ codexHome, memoraxCodeHome });
+    assert.equal(enabled.ok, true);
+    assert.equal(enabled.enabled, true);
+    assert.equal(enabled.integration, "hooks");
+    assert.equal(enabled.state.integration, "hooks");
+    assert.equal(enabled.state.enabled, true);
+    assert.equal(await readFile(configPath, "utf8"), original);
+    const disabled = disableCodexAdapter({ codexHome, memoraxCodeHome });
+    assert.equal(disabled.ok, true);
+    assert.equal(disabled.enabled, false);
+    assert.equal(await readFile(configPath, "utf8"), original);
+    const state = readAdapterState(adapterStatePath(memoraxCodeHome, "codex"));
+    assert.equal(state.integration, "hooks");
+    assert.equal(state.enabled, false);
+  });
+}
 
 test("plugin delivery records plugin-managed skills without direct Codex skill links", async () => {
   const { root, codexHome, memoraxCodeHome } = await fixture();
@@ -280,6 +272,36 @@ test("CLI help lists the current diagnostics", () => {
   const result = runCli(["--help"]);
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stdout, /status\|doctor\|inspect-history/);
+});
+
+test("Codex doctor reports an unavailable Backend when health headers stall", async () => {
+  const { root, codexHome, memoraxCodeHome } = await fixture("memorax-code-codex-doctor-timeout-");
+  const server = createServer((_request, response) => {
+    const timer = setTimeout(() => response.end(JSON.stringify({
+      ok: true,
+      service: "memorax-code-backend",
+    })), 7_000);
+    response.once("close", () => clearTimeout(timer));
+  });
+  try {
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const result = await runCliAsync([
+      "doctor",
+      "--codex-home", codexHome,
+      "--memorax-code-home", memoraxCodeHome,
+      "--backend-url", `http://127.0.0.1:${server.address().port}`,
+      "--json",
+    ]);
+    assert.equal(result.code, 1, result.stderr);
+    const payload = JSON.parse(result.stdout);
+    assert.equal(payload.action, "doctor");
+    assert.equal(payload.backend.ok, false);
+    assert.match(payload.backend.error, /timeout/i);
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+    await rm(root, { recursive: true, force: true });
+  }
 });
 
 test("Codex diagnostics CLI rejects unknown commands", () => {

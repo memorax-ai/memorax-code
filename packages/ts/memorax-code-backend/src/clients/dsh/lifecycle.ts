@@ -1,3 +1,4 @@
+import { attachDeploymentFailure, deploymentFailure } from "../../../../memorax-code-adapter-common/src/deployment-failure.mjs";
 import type {
   AdapterLifecycleBackendContext,
   AdapterLifecycleContext,
@@ -90,6 +91,9 @@ function dshAdapterOptions(context: AdapterLifecycleContext): Record<string, unk
     memoraxCodeHome: serviceOptions.home,
     ...(argValue(argv, "--dsh-home") ? { dshHome: argValue(argv, "--dsh-home") } : {}),
     ...(argValue(argv, "--dsh-command") ? { dshCommand: argValue(argv, "--dsh-command") } : {}),
+    ...(argValue(argv, "--dsh-desktop-command")
+      ? { dshDesktopCommand: argValue(argv, "--dsh-desktop-command") }
+      : {}),
     ...(argValue(argv, "--dsh-adapter-root")
       ? { adapterRoot: argValue(argv, "--dsh-adapter-root") }
       : {}),
@@ -105,12 +109,13 @@ function dshFailure(action: string, error: unknown): AdapterReport {
     action,
     integration: "plugin",
     runtime: "dsh",
-    error: error instanceof Error ? error.message : String(error),
+    failure: deploymentFailure(error, "deploy"), error: error instanceof Error ? error.message : String(error),
   };
 }
 
 async function loadDshProfileLifecycle(): Promise<DshProfileLifecycleModule> {
-  return await import(new URL("../../../../memorax-code-dsh-adapter/src/profile-lifecycle.mjs", import.meta.url).href);
+  return await import(new URL("../../../../memorax-code-dsh-adapter/src/profile-lifecycle.mjs", import.meta.url).href)
+    .catch((error) => { throw attachDeploymentFailure(error, "adapter-load"); });
 }
 
 function argValue(argv: string[], name: string): string | undefined {

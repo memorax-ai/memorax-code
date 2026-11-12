@@ -14,7 +14,7 @@ import { handleHealthRequest } from "../transport/http/health.js";
 import { authorized, publicErrorMessage, statusCodeFromError } from "../transport/http/request.js";
 import { json } from "../transport/http/json.js";
 import { createBackendState, type BackendState } from "./state.js";
-import { TRACE_CLIENTS } from "../trace/config.js";
+import { TRACE_RUNTIME_CLIENTS } from "../trace/config.js";
 import { pruneExpiredTraceSessionsForClient } from "../trace/store.js";
 
 export type BackendServerOptions = {
@@ -59,7 +59,7 @@ export function createBackendServer(
       memoraxCodeHome: state.sessionHome,
     }),
   };
-  for (const client of TRACE_CLIENTS) {
+  for (const client of TRACE_RUNTIME_CLIENTS) {
     void pruneExpiredTraceSessionsForClient({
       client,
       memoraxCodeHome: state.sessionHome,

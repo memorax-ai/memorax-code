@@ -11,21 +11,68 @@ const backendRootFacades = [
   "jsonl-append.ts",
   "memorax-cli.ts",
   "memorax-code.ts",
+  "repo-memory.ts",
   "server.ts",
   "service-entrypoint.ts",
+  "user-profile.ts",
   "windows-cli-invocation.ts",
 ];
+const importPatterns = [
+  /\bimport\s+(?:type\s+)?[\s\S]*?\s+from\s+["']([^"']+)["']/g,
+  /\bimport\s+["']([^"']+)["']/g,
+  /\bexport\s+(?:type\s+)?[\s\S]*?\s+from\s+["']([^"']+)["']/g,
+  /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g,
+];
+const clientModules = await sourceModules(join(backendSrc, "clients"));
+const nativeReaders = [
+  "clients/codex/rollout-turn.ts",
+  "clients/codex/session-turn-index.ts",
+  "clients/claude/transcript-turn.ts",
+  "clients/dsh/session-turn.ts",
+  "clients/opencode/message-turn.ts",
+  "clients/codebuddy/jsonl-history.ts",
+  "clients/cursor/database-snapshot.ts",
+  "clients/cursor/database-turn.ts",
+  "clients/qoder/transcript-turn.ts",
+];
+const clientMemoryRuntimes = [];
+for (const module of clientModules) {
+  if ((await directRelativeImports(module)).includes("memory/harness-runtime")) {
+    clientMemoryRuntimes.push(module);
+  }
+}
 
 const rules = [
   {
+    name: "local User Profile management stays independent from Backend services and remote memory",
+    importers: ["personal-memory/user-profile.ts", "personal-memory/cli.ts"],
+    forbidden: ["node:http", "node:https", "app/", "transport/", "provider/", "memory/", "lifecycle/"],
+  },
+  {
     name: "provider kernel stays independent from server and adapter lifecycle",
-    importers: ["provider/memorax/adapter.ts", "provider/memorax/http.ts"],
+    importers: ["provider/memorax/adapter.ts", "provider/memorax/http.ts", "provider/jev/adapter.ts"],
     forbidden: ["server-", "entrypoints/", "transport/http/", "clients/codex/plugin-install"],
   },
   {
-    name: "memorax config stays independent from server routing",
-    importers: ["config/memorax-code.ts", "provider/memorax/config.ts"],
+    name: "provider config stays independent from server routing",
+    importers: ["config/memorax-code.ts", "provider/memorax/config.ts", "provider/jev/config.ts"],
     forbidden: ["server-", "entrypoints/", "transport/http/"],
+  },
+  {
+    name: "Jev evaluates normalized input without native content, trace, filesystem, or lifecycle authority",
+    importers: ["provider/jev/adapter.ts"],
+    forbidden: [
+      "clients/",
+      "trace/",
+      "repository/",
+      "node:fs",
+      "node:fs/promises",
+      "node:child_process",
+      "app/",
+      "lifecycle/",
+      "memory/background-diagnostics",
+      "memory/cli-diagnostics",
+    ],
   },
   {
     name: "repository memory identity stays independent from child processes and synchronous filesystem I/O",
@@ -33,18 +80,19 @@ const rules = [
     forbidden: ["node:child_process", "node:fs"],
   },
   {
+    name: "search guidance uses materialized context without native parsing or retained trace authority",
+    importers: ["memory/search-guidance.ts"],
+    forbidden: ["clients/", "trace/", "node:fs", "node:fs/promises", "app/", "lifecycle/", "transport/"],
+  },
+  {
     name: "request-time memory production does not depend on adapter lifecycle",
     importers: [
-      "memory/automatic-retrieval.ts",
       "memory/automatic-writeback.ts",
-      "clients/claude/memory-hook-runtime.ts",
-      "clients/claude/transcript-turn.ts",
-      "clients/codex/memory-hook-runtime.ts",
-      "clients/dsh/memory-hook-runtime.ts",
-      "clients/dsh/session-turn.ts",
-      "clients/opencode/memory-hook-runtime.ts",
-      "clients/opencode/message-turn.ts",
+      "memory/harness-runtime.ts",
+      ...clientMemoryRuntimes,
+      ...nativeReaders,
       "memory/turn-coordinator.ts",
+      "memory/search-guidance.ts",
       "memory/service.ts",
       "memory/writeback-buffer.ts",
       "memory/writeback-chunk.ts",
@@ -57,15 +105,30 @@ const rules = [
     forbidden: ["node:http", "server-", "entrypoints/", "transport/http/", "app/state"],
   },
   {
+    name: "shared harness memory runtime stays independent from native clients, HTTP, composition, and provider transport",
+    importers: ["memory/harness-runtime.ts"],
+    forbidden: [
+      "clients/",
+      "node:http",
+      "node:https",
+      "server-",
+      "entrypoints/",
+      "transport/http/",
+      "app/",
+      "lifecycle/",
+      "provider/memorax/adapter",
+      "provider/memorax/http",
+      "provider/jev/adapter",
+    ],
+  },
+  {
     name: "memory service kernel receives Backend diagnostics through a port",
     importers: [
-      "memory/automatic-retrieval.ts",
       "memory/automatic-writeback.ts",
-      "clients/claude/memory-hook-runtime.ts",
-      "clients/codex/memory-hook-runtime.ts",
-      "clients/dsh/memory-hook-runtime.ts",
-      "clients/opencode/memory-hook-runtime.ts",
+      "memory/harness-runtime.ts",
+      ...clientMemoryRuntimes,
       "provider/memorax/adapter.ts",
+      "provider/jev/adapter.ts",
       "memory/turn-coordinator.ts",
       "memory/service.ts",
     ],
@@ -84,38 +147,23 @@ const rules = [
   {
     name: "Hook memory runtimes use normalized automatic writeback",
     importers: [
-      "clients/claude/memory-hook-runtime.ts",
-      "clients/codex/memory-hook-runtime.ts",
-      "clients/dsh/memory-hook-runtime.ts",
-      "clients/opencode/memory-hook-runtime.ts",
+      ...clientMemoryRuntimes,
       "memory/turn-coordinator.ts",
     ],
     forbidden: ["memory/writeback"],
   },
   {
-    name: "Codex memory hook runtime stays independent from HTTP and Backend composition",
-    importers: ["clients/codex/memory-hook-runtime.ts"],
-    forbidden: ["node:http", "server-", "entrypoints/", "transport/http/", "app/state"],
-  },
-  {
-    name: "Claude memory hook runtime stays independent from HTTP and Backend composition",
-    importers: ["clients/claude/memory-hook-runtime.ts", "clients/claude/transcript-turn.ts"],
-    forbidden: ["node:http", "server-", "entrypoints/", "transport/http/", "app/state"],
-  },
-  {
-    name: "OpenCode memory hook runtime stays independent from HTTP and Backend composition",
-    importers: ["clients/opencode/memory-hook-runtime.ts", "clients/opencode/message-turn.ts"],
-    forbidden: ["node:http", "server-", "entrypoints/", "transport/http/", "app/state"],
-  },
-  {
-    name: "DSH memory hook runtime stays independent from HTTP and Backend composition",
-    importers: ["clients/dsh/memory-hook-runtime.ts", "clients/dsh/session-turn.ts"],
+    name: "client memory runtimes and native readers stay independent from HTTP and Backend composition",
+    importers: [
+      ...clientMemoryRuntimes,
+      ...nativeReaders,
+    ],
     forbidden: ["node:http", "server-", "entrypoints/", "transport/http/", "app/state"],
   },
   {
     name: "memory turn coordinator stays independent from HTTP, Backend composition, and client transcripts",
     importers: ["memory/turn-coordinator.ts"],
-    forbidden: ["node:http", "server-", "entrypoints/", "transport/http/", "app/state", "clients/codex/rollout", "clients/claude/", "clients/dsh/", "clients/opencode/"],
+    forbidden: ["node:http", "server-", "entrypoints/", "transport/http/", "app/state", "clients/"],
   },
   {
     name: "HTTP server stays independent from install watchdog and client plugin lifecycle",
@@ -140,6 +188,23 @@ const rules = [
     ],
   },
   {
+    name: "lifecycle report projections stay independent from client discovery and mutation",
+    importers: ["lifecycle/client-reports.ts"],
+    forbidden: [
+      "clients/",
+      "node:fs",
+      "node:fs/promises",
+      "node:child_process",
+      "node:http",
+      "node:https",
+      "app/",
+      "entrypoints/",
+      "transport/",
+      "lifecycle/orchestrator",
+      "lifecycle/backend/service",
+    ],
+  },
+  {
     name: "lifecycle helpers consume contracts instead of the service implementation",
     importers: [
       "lifecycle/participant.ts",
@@ -156,6 +221,12 @@ const rules = [
     forbidden: ["memory/", "server-", "entrypoints/", "transport/http/"],
   },
 ];
+
+test("every native client has a memory runtime covered by shared source boundaries", () => {
+  const clients = (modules) => [...new Set(modules.map((module) => module.split("/")[1]))].sort();
+  assert.notEqual(clientModules.length, 0);
+  assert.deepEqual(clients(clientMemoryRuntimes), clients(clientModules));
+});
 
 test("backend source boundaries keep production, observability, and lifecycle imports separated", async () => {
   const violations = [];
@@ -187,7 +258,36 @@ test("memorax-code lifecycle delegates client implementation details to adapter 
   const source = await readFile(join(backendSrc, "lifecycle", "orchestrator.ts"), "utf8");
 
   assert.doesNotMatch(source, /clients\/codex\/plugin-install/);
-  assert.doesNotMatch(source, /memorax-code-(?:codex|claude)-adapter\/src/);
+  assert.doesNotMatch(source, /memorax-code-[a-z0-9-]+-adapter\/src/);
+});
+
+test("managed Backend owns automatic-update wakeups instead of client Hooks", async () => {
+  const backendCli = await readFile(join(backendSrc, "entrypoints", "backend-cli.ts"), "utf8");
+  const scheduler = await readFile(join(
+    backendSrc,
+    "lifecycle",
+    "automatic-update-scheduler.ts",
+  ), "utf8");
+  const stateRecord = await readFile(join(
+    backendRoot,
+    "..",
+    "memorax-code-adapter-common",
+    "src",
+    "automatic-update-state.mjs",
+  ), "utf8");
+  const ensureBackendHook = await readFile(join(
+    backendRoot,
+    "..",
+    "memorax-code-adapter-common",
+    "src",
+    "hooks",
+    "ensure-backend-runner.mjs",
+  ), "utf8");
+
+  assert.match(backendCli, /startBackendAutomaticUpdateScheduler/);
+  assert.match(scheduler, /spawnProcess/);
+  assert.doesNotMatch(stateRecord, /spawn|startAutomaticUpdateScheduler/);
+  assert.doesNotMatch(ensureBackendHook, /AutomaticUpdate|automatic-update-scheduler/);
 });
 
 test("backend source dependency graph remains acyclic", async () => {
@@ -224,13 +324,6 @@ function importSpecifiers(text) {
   }
   return specs;
 }
-
-const importPatterns = [
-  /\bimport\s+(?:type\s+)?[\s\S]*?\s+from\s+["']([^"']+)["']/g,
-  /\bimport\s+["']([^"']+)["']/g,
-  /\bexport\s+(?:type\s+)?[\s\S]*?\s+from\s+["']([^"']+)["']/g,
-  /\bimport\s*\(\s*["']([^"']+)["']\s*\)/g,
-];
 
 function matchesForbiddenTarget(target, forbidden) {
   if (forbidden.endsWith("-") || forbidden.endsWith("/")) return target.startsWith(forbidden);
