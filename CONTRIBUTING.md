@@ -162,7 +162,7 @@ Current source and executable tests remain authoritative for behavior.
 | [Architecture](ARCHITECTURE.md) | Package and capability ownership, runtime flows, authority, dependencies, packaging boundaries, and test placement | A documented boundary changes; use its [maintenance criteria](ARCHITECTURE.md#9-maintaining-this-document) |
 | [Agent guide](AGENTS.md) | Mandatory agent constraints, runtime and data invariants, and Git permissions | An agent working rule or invariant changes |
 | [Contributor guide](CONTRIBUTING.md) | Shared developer entrypoint: source setup, isolation, running/debugging, verification profiles, harness onboarding, documentation routing, and PR workflow | A development or verification procedure changes |
-| [Native CI failure register](docs/native-ci-failure-register.md) and its machine-readable mirror, [registered-signatures.json](scripts/ci/shared/registered-signatures.json) | Native CI failure signatures with their first and later sightings, rechecks, and status; the mirror lists the evidence signature and status of each `open`, `observing #PR`, or `mitigated #PR` entry for the native auto recheck | A native CI cell fails, a registered signature recurs or is rechecked, or an entry's status changes; follow the [register rules](#native-ci-failure-register) and update the mirror in the same change |
+| [Native CI failure register](docs/native-ci-failure-register.md) and its machine-readable mirror, [registered-signatures.json](scripts/ci/shared/registered-signatures.json) | Native CI failure signatures with their first and later sightings, rechecks, and status; the mirror maps supported evidence signatures to their `open`, `observing #PR`, or `mitigated #PR` register entries for the native auto recheck | A native CI cell fails, a registered signature recurs or is rechecked, or an entry's status changes; follow the [register rules](#native-ci-failure-register) and update the mirror in the same change |
 | [Security policy](SECURITY.md) | Vulnerability reporting, trust policy, and data-protection guarantees | A security or trust boundary changes; implementation maps link to this policy |
 | [Changelog](CHANGELOG.md) | Notable user-facing release changes | Recording a release or its pending notes; internal-only refactors and tests normally do not need an entry |
 | [Canonical shared Skill](packages/ts/memorax-code-codex-adapter/skills/memorax-code/SKILL.md) and its references | Product instructions consumed by coding clients | Agent-facing product behavior changes; preserve shared materialization and keep maintainer runbooks out of the Skill |
@@ -795,8 +795,8 @@ failing ledger calls and an unusable evidence directory. It fails the job when
 any expected test fails or is skipped, and reports on its own summary line
 instead of in `testOutcome`.
 
-The Codex installation and setup-interruption suites, Claude installation
-smoke, and OpenCode background Repo Memory case append a journal when their
+The Codex and Claude installation and setup-interruption suites, and OpenCode
+background Repo Memory case append a journal when their
 progress or key observations change, so records
 written before a runner is killed stay readable; an interrupted last record is
 reported as a truncated tail. Before cleanup removes the runtime, a failure
@@ -1283,7 +1283,13 @@ stages. A fourth case cancels at the masked replacement-key prompt. Each case
 requires the saved account and unrelated Claude settings to remain intact, no
 false completion record, an ordinary retry without account input, native Claude
 readiness, and a Search using the saved account. These controlled process
-interruptions do not simulate power loss.
+interruptions do not simulate power loss. Before cleanup, the interruption
+suite preserves the first functional error separately from cleanup errors, the
+observed terminal exit and fixed product stages, and bounded dependency-gate
+observations. Gate records retain command counts, Backend-record validation and
+health-match states, not command output, process identities or account data.
+Missing observations remain unknown; collection failures never replace the
+original test failure.
 
 The native suite checks installed plugin discovery and real Claude turns
 against a local deterministic Anthropic Messages
@@ -2044,7 +2050,13 @@ when the Hook ran or finished. Request contexts are classified per source the
 same way. Sessions appear only as check roles (`S1`–`S6`, their subagents or
 `other`). The read has a 2-second budget and the report a 60 KiB ceiling; a
 late, failed or oversized timeline keeps only its collection status and never
-changes the result.
+changes the result. Native scheduling observations also retain fixed request,
+match and execution stages with the observed configuration-reload sequence.
+Repeated request log lines are not treated as separate invocations, and an
+absent match-count line is not a zero-hook result. Synthetic-login start/end
+markers and comparisons of the isolated Hook configuration snapshots help
+distinguish startup changes; configuration contents, hashes and paths stay
+private. These observations do not add a readiness condition or replay a Hook.
 
 Real login, hosted models, OS credential-store isolation, native Continue/Retry/
 Edit, Backend restart, preauthorized tools, running-tool interruption,

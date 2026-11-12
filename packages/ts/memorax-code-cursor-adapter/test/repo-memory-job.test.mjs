@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
+import fs, { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import childProcess, { spawn, spawnSync } from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
@@ -458,20 +458,36 @@ test("Cursor synchronous native startup bounds a stalled Git status and releases
   assert.equal(existsSync(markerPathForRepo(f.home, f.repo).markerPath.replace(/\.json$/, ".lockdir")), false);
 });
 
+for (const claimed of [false, true]) {
+  test(`Cursor fixture cleanup waits for a ${claimed ? "claimed" : "requested"} lease guard before removing directories`, async (t) => {
+    const f = fixture(t), job = prepare(f);
+    if (claimed) claimJob(f, job);
+    const pid = JSON.parse(readFileSync(job.jobPath)).leasePid;
+    assert.doesNotThrow(() => process.kill(pid, 0));
+    let directoryRemoved = false;
+    const original = fs.rmSync;
+    const mocked = t.mock.method(fs, "rmSync", (path, options) => {
+      if (path === f.root) {
+        assert.throws(() => process.kill(pid, 0), { code: "ESRCH" }, "fixture directories must outlive the lease guard");
+        directoryRemoved = true;
+      }
+      return original(path, options);
+    });
+    syncBuiltinESMExports();
+    try {
+      await cleanupFixture(f.root);
+      assert.equal(directoryRemoved, true);
+      assert.equal(existsSync(f.root), false);
+    } finally {
+      mocked.mock.restore();
+      syncBuiltinESMExports();
+    }
+  });
+}
+
 function fixture(t) {
   const root = realpathSync(mkdtempSync(join(tmpdir(), "cursor native memory ")));
-  t.after(async () => {
-    const jobs = join(root, "private state", "repo-memory-jobs");
-    const pids = existsSync(jobs) ? readdirSync(jobs).filter(name => name !== "in-progress").flatMap(name => {
-      const path = join(jobs, name, "job.json");
-      if (!existsSync(path)) return [];
-      const pid = JSON.parse(readFileSync(path)).leasePid;
-      return Number.isSafeInteger(pid) && pid > 0 ? [pid] : [];
-    }) : [];
-    rmSync(root, { recursive: true, force: true });
-    try { await Promise.all(pids.map(waitForProcessExit)); }
-    finally { rmSync(root, { recursive: true, force: true }); }
-  });
+  t.after(() => cleanupFixture(root));
   const repo = join(root, "repo with spaces"), home = join(root, "private state");
   mkdirSync(repo); runGit(repo, ["init", "--quiet"]); runGit(repo, ["config", "user.name", "Cursor Test"]); runGit(repo, ["config", "user.email", "cursor@example.invalid"]);
   writeFileSync(join(repo, "README.md"), "# Isolated test\n"); runGit(repo, ["add", "README.md"]); runGit(repo, ["commit", "--quiet", "-m", "initial"]);
@@ -482,6 +498,18 @@ function fixture(t) {
   writeFileSync(validator, 'import {existsSync} from "node:fs"; import {join} from "node:path"; const repo=process.argv[3]; const ok=existsSync(join(repo,".repo_memory/PROFILE.md"))&&!existsSync(join(repo,".repo_memory/invalid"));console.log(JSON.stringify({ok, errors:ok?[]:["fixture_invalid"]}));process.exitCode=ok?0:1;\n');
   return { root, repo, home, head, validator, options: { memoraxCodeHome: home, validatorPath: validator, helperPath: jobHook, sessionId: "fixture-parent" } };
 }
+async function cleanupFixture(root) {
+  const jobs = join(root, "private state", "repo-memory-jobs");
+  const paths = existsSync(jobs) ? readdirSync(jobs).filter(name => name !== "in-progress")
+    .map(name => join(jobs, name, "job.json")).filter(existsSync) : [];
+  const pids = paths.map(path => JSON.parse(readFileSync(path)).leasePid)
+    .filter(pid => Number.isSafeInteger(pid) && pid > 0);
+  // Retire each guard's input first; an in-flight iteration can still write its lock.
+  for (const path of paths) rmSync(path, { force: true });
+  await Promise.all(pids.map(waitForProcessExit));
+  rmSync(root, { recursive: true, force: true });
+}
+
 function prepare(f) { return runCursorRepoMemoryJob(["start", "--mode", "build", "--repo", f.repo], f.options); }
 function ticket(job) { const line = job.delegation.prompt.split("\n").find(x => x.startsWith('{"executable"')); const args = JSON.parse(line).args; return args[args.indexOf("--ticket") + 1]; }
 function claimJob(f, job) { return transition(f, "claim", job, ["--ticket", ticket(job)]); }

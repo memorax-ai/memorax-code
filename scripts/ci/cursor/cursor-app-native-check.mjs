@@ -20,7 +20,7 @@ import { collectCursorAppDiagnostics, collectCursorAppLaunchDiagnostics, createC
   projectCursorAppShellDiagnostics, collectCursorAppStopDiagnostics } from "./cursor-app-diagnostics.mjs";
 import { collectCursorAppHookDiagnostics, collectCursorAppHookTiming, projectCursorAppHookTiming,
   collectCursorAppSessionHookDiagnostics, projectCursorAppHookReadinessFailure,
-  collectCursorAppHookTimeline, projectCursorAppHookTimeline } from "./cursor-app-hook-diagnostics.mjs";
+  collectCursorAppHookTimeline, projectCursorAppHookTimeline, createCursorAppHookConfigObserver } from "./cursor-app-hook-diagnostics.mjs";
 import { collectCursorAppSkillHookContext } from "./cursor-app-hook-context.mjs";
 
 const [packageRoot, appPath, expectedVersion, playwrightRoot, reportDir, expectedNodeMajor = "24"] = process.argv.slice(2);
@@ -61,6 +61,7 @@ let macos, macosPaths, windows, windowsPaths, backendPort = 18787, debugPort = 9
 let appStartedAt, appLaunch = 0, activeHookTiming;
 const readyHookSessions = new Map();
 const checkTimeline = { launches: [], sessions: [] };
+const hookConfigObserver = createCursorAppHookConfigObserver();
 const observedMacosProcesses = new Map();
 const referenceTexts = new Map();
 const exec = promisify(execFile);
@@ -252,18 +253,25 @@ async function waitForHookReady(phase, sessionId) {
       }
     }
     throw error;
-  } finally { frozen = true; finishHookTiming(); }
+  } finally { frozen = true; finishHookTiming(); recordHookConfig(phase === "config" ? "config-wait-end" : "session-wait-end"); }
+}
+function recordHookConfig(phase) {
+  hookConfigObserver.sample({ home: env?.CURSOR_HOME, launch: appLaunch, startedAt: appStartedAt, phase });
 }
 function markTimeline(kind, sessionId, requestedAt) {
   // Check-side times for hookTimeline on every platform; marking never waits or changes the flow.
   const now = Date.now(), launch = checkTimeline.launches.length;
   if (kind === "launch") checkTimeline.launches.push(now);
+  if (kind === "login-start" || kind === "login-end") {
+    const login = (checkTimeline.logins ??= [])[launch - 1] ??= {};
+    login[kind === "login-start" ? "startedAt" : "endedAt"] = now;
+  }
   if (kind === "create") checkTimeline.sessions.push({ id: sessionId, launch, requestedAt, observedAt: now, submits: [] });
   if (kind === "submit") checkTimeline.sessions.find((session) => session.id === sessionId)?.submits.push({ launch, at: now });
 }
 async function recordHookTimeline() {
   let collection = "completed", value;
-  const pending = collectCursorAppHookTimeline({ home: userData, ...checkTimeline, runs: agent?.runs });
+  const pending = collectCursorAppHookTimeline({ home: userData, ...checkTimeline, runs: agent?.runs, hookConfigs: hookConfigObserver.snapshot() });
   try {
     value = await bounded(pending, "CURSOR_APP_HOOK_TIMELINE_TIMEOUT", 2000, () => { collection = "timeout"; });
   } catch {
@@ -471,6 +479,7 @@ async function assertProcessesStopped(options = {}) {
 async function startApp() {
   appStartedAt = Date.now(); appLaunch += 1; readyHookSessions.clear();
   markTimeline("launch");
+  recordHookConfig("launch");
   appLaunchLog = ""; appSpawnError = undefined; appDebugEndpointSeen = false;
   const driver = createCursorAppDriverDiagnostics({ onUpdate(value) { report.appDriver = value; } });
   let driverReady = false;
@@ -513,12 +522,15 @@ async function startApp() {
     driverReady = true;
   } finally { driver.finish(driverReady ? "ready" : "failed"); }
   page.setDefaultTimeout(10000);
-  await bounded(page.evaluate(async () => {
-    // Keep synthetic login from replacing the IDE window with the Agents window.
-    await window.driver.executeCommand("workbench.action.devSetApplicationStorageForTesting",
-      "cursor.glassDefaultOnLogin.handledAtMs", Date.now(), "application");
-    await window.driver.executeCommand("workbench.action.devAutoLoginFakeForTesting");
-  }), "CURSOR_APP_FAKE_AUTH_TIMEOUT");
+  markTimeline("login-start"); recordHookConfig("login-start");
+  try {
+    await bounded(page.evaluate(async () => {
+      // Keep synthetic login from replacing the IDE window with the Agents window.
+      await window.driver.executeCommand("workbench.action.devSetApplicationStorageForTesting",
+        "cursor.glassDefaultOnLogin.handledAtMs", Date.now(), "application");
+      await window.driver.executeCommand("workbench.action.devAutoLoginFakeForTesting");
+    }), "CURSOR_APP_FAKE_AUTH_TIMEOUT");
+  } finally { markTimeline("login-end"); recordHookConfig("login-end"); }
   await bounded(page.evaluate(() => window.driver.whenWorkbenchRestored()), "CURSOR_APP_WORKBENCH_RESTORE_TIMEOUT", 30000);
   await waitForHookReady("config");
 }

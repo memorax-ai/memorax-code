@@ -21,7 +21,7 @@ function nativeContext(context) {
     process: { platform: "darwin" }, appLaunch: 0, readyHookSessions: new Map(), activeHookTiming: undefined, appStartedAt: 0, userData: undefined,
     bounded: promise => promise, collectCursorAppSessionHookDiagnostics, projectCursorAppHookReadinessFailure,
     safeCode: error => /^CURSOR_(?:APP|AGENT|MOCK)_[A-Z0-9_]+$/.test(error?.code) ? error.code : "CURSOR_APP_CHECK_FAILED",
-    checkpointReport() {}, beginHookTiming() {}, markHookSubmit() {}, markTimeline() {}, async observeHookTiming() {}, finishHookTiming() {}, async waitForHookReady() {}, async recordSubmissionFailure() {}, ...context };
+    hookConfigObserver: { snapshot: () => [] }, recordHookConfig() {}, checkpointReport() {}, beginHookTiming() {}, markHookSubmit() {}, markTimeline() {}, async observeHookTiming() {}, finishHookTiming() {}, async waitForHookReady() {}, async recordSubmissionFailure() {}, ...context };
 }
 function nativeFunction(name, context = {}) {
   const definition = source.match(new RegExp(`(?:async )?function ${name}\\([\\s\\S]*?(?=\\n(?:async )?function )`))?.[0];
@@ -1431,7 +1431,7 @@ test("the final Hook timeline has its own time and size budget and never replace
     assert.equal(hookTimeline.collection, outcome);
     assert.equal(hookTimeline.readStatus, ["completed", "oversized"].includes(outcome) ? "present" : "unavailable");
     assert.equal(hookTimeline.launches.length, outcome === "completed" ? 1 : 0);
-    assert.deepEqual(JSON.parse(JSON.stringify(calls)), [{ home: "/owned/app-data", launches: [1], sessions: [{ id: "first" }], runs: ["run"] },
+    assert.deepEqual(JSON.parse(JSON.stringify(calls)), [{ home: "/owned/app-data", launches: [1], sessions: [{ id: "first" }], runs: ["run"], hookConfigs: [] },
       ["CURSOR_APP_HOOK_TIMELINE_TIMEOUT", 2000]]);
     // A timed-out read gets a bounded chance to close its log before state cleanup.
     assert.deepEqual(waits, outcome === "timeout" ? [5000] : []);
@@ -1440,4 +1440,38 @@ test("the final Hook timeline has its own time and size budget and never replace
   const final = source.slice(source.indexOf("\n}\nfinally {"));
   assert.ok(final.indexOf('report.status = "PASS"') < final.indexOf("await recordHookTimeline()")
     && final.indexOf("await recordHookTimeline()") < final.indexOf("await rm(root"));
+});
+
+
+test("synthetic login timing and pending config samples preserve native command order and the first failure", async () => {
+  for (const failed of [false, true]) {
+    const child = childProcess(), commands = [], samples = [], readiness = [], checkTimeline = { launches: [], sessions: [] };
+    const failure = Object.assign(new Error("synthetic authentication failed"), { code: "CURSOR_APP_FAKE_AUTH_TIMEOUT" });
+    const driver = {
+      async executeCommand(name) { commands.push(name); if (failed && name === "workbench.action.devAutoLoginFakeForTesting") throw failure; },
+      async whenWorkbenchRestored() { commands.push("restored"); },
+    };
+    const page = { url: () => "file:///workbench.html", setDefaultTimeout() {},
+      async evaluate(callback) { return runInNewContext('(' + callback.toString() + ')()', { window: { driver } }); } };
+    const scope = nativeScope(["recordHookConfig", "markTimeline", "startApp"], {
+      process: { platform: "linux" }, checkTimeline, report: {}, macos: undefined, windows: undefined,
+      hookConfigObserver: { sample(input) { samples.push(input); return new Promise(() => {}); } },
+      appPath: "/owned/app", userData: "/owned/data", root: "/owned", workspace: "/owned/workspace",
+      agent: { url: "http://127.0.0.1:12345" }, debugPort: 12346, env: { CURSOR_HOME: "/owned/cursor" }, AbortSignal,
+      fetch: async () => ({ ok: true }), bounded: promise => promise,
+      chromium: { connectOverCDP: async () => ({ contexts: () => [{ pages: () => [page] }] }) },
+      async waitFor(predicate) { assert.equal(await predicate(), true); },
+      async waitForDriverReady(predicate) { assert.equal(await predicate(), true); },
+      async waitForHookReady(phase) { readiness.push(phase); }, spawn: () => child,
+    });
+    if (failed) await assert.rejects(scope.startApp(), error => error === failure); else await scope.startApp();
+    assert.deepEqual(commands, ["workbench.action.devSetApplicationStorageForTesting", "workbench.action.devAutoLoginFakeForTesting", ...failed ? [] : ["restored"]]);
+    assert.deepEqual(readiness, failed ? [] : ["config"]);
+    assert.deepEqual(samples.map(x => x.phase), ["launch", "login-start", "login-end"]);
+    assert.ok(samples.every(x => x.home === "/owned/cursor" && x.launch === 1 && x.startedAt === scope.appStartedAt));
+    assert.equal(checkTimeline.logins.length, 1);
+    assert.ok(checkTimeline.logins[0].startedAt <= checkTimeline.logins[0].endedAt);
+    assert.equal(checkTimeline.sessions.length, 0);
+    child.stdout.end(); child.stderr.end();
+  }
 });

@@ -126,11 +126,19 @@ listed.
 | S39 | `cursor\|ubuntu-24.04\|24\|latest`; stage `native-submit`, phase `select-skill`: `CURSOR_APP_SKILL_MENU` | `client-release` | [Run 42995667184 attempt 1][release-023-1], `Cursor App latest 3.29.15 (ubuntu-24.04, Node 24)`, job 130440072902, 2026-11-11 (release acceptance). Four native runs completed before Skill selection timed out; artifact `cursor-app-ubuntu-24.04-latest-node-24-report-attempt1` preserves the failure and completed cleanup. | None | None | `deferred 3.29.15` |
 | S40 | `cursor\|macos-15\|24\|latest`; stage `native-submit`, phase `select-skill`: `CURSOR_APP_SKILL_MENU` | `client-release` | [Run 42995667184 attempt 1][release-023-1], `Cursor App latest 3.29.15 (macos-15, Node 24)`, job 130440072792, 2026-11-11 (release acceptance). Four native runs completed before Skill selection timed out; artifact `cursor-app-macos-15-latest-node-24-report-attempt1` preserves the failure and completed cleanup. | None | None | `deferred 3.29.15` |
 | S41 | `cursor\|windows-2025\|24\|latest`; stage `native-submit`, phase `select-skill`: `CURSOR_APP_SKILL_MENU` | `client-release` | [Run 42995667184 attempt 1][release-023-1], `Cursor App latest 3.29.15 (windows-2025, Node 24)`, job 130440072914, 2026-11-11 (release acceptance). Four native runs completed before Skill selection timed out; artifact `cursor-app-windows-2025-latest-node-24-report-attempt1` preserves the failure and completed cleanup. | None | None | `deferred 3.29.15` |
+| S42 | `cursor\|ubuntu-24.04\|24\|baseline`; stage `hook-session-ready`, phase `session`: `CURSOR_APP_SESSION_START_READY_TIMEOUT` | `functional` | [Run 43022130320 attempt 1][release-023-2], `Cursor App baseline 3.21.18 (ubuntu-24.04, Node 24)`, job 130528771275, 2026-11-11 (release acceptance). The new Repo Memory session timed out before prompt submission on App launch 4. Required Hook configuration was loaded; no matching owned SessionStart execution was observed. Artifact `cursor-app-ubuntu-24.04-baseline-node-24-report-attempt1` (13856195576) preserves the failure and successful cleanup. The root cause remains undetermined. | None | None | `open` |
+| S43 | `claude\|windows-2025\|24\|latest`; suite `claude_setup_interruption`, case `after-backend-start`, stage `interrupt-setup`: `SETUP_EXITED_BEFORE_INTERRUPTION_STAGE`; cleanup `PASS` | `client-release` | [Run 43022130320 attempt 1][release-023-2], `Claude smoke latest 2.1.322 (windows-2025, Node 24)`, job 130528771221, 2026-11-11 (release acceptance). Setup exited before the intended interruption stage was observed. Installation smoke and the other three interruption cases passed; native conversation and permissions suites did not run. Artifact `native-evidence-claude-windows-2025-latest-node-24-attempt1` (13855906972) records the generic `unknown\|EXIT_1` wrapper signature, also used by S8, while the job log identifies this distinct case and error. Terminal exit details were not retained; the root cause remains undetermined. | None | None | `open` |
 
 [release-023-1]: https://github.com/memorax-ai/memorax-code/actions/runs/42995667184/attempts/1
 [pr266-1]: https://github.com/memorax-ai/memorax-code/actions/runs/42558680779/attempts/1
 [pr266-2]: https://github.com/memorax-ai/memorax-code/actions/runs/42559718504/attempts/1
 [pr266-3]: https://github.com/memorax-ai/memorax-code/actions/runs/42561920030/attempts/1
+
+S43 remains open without a version deferral while its missing diagnostics are
+addressed; this registration changes no acceptance or retry policy. Its generic
+wrapper signature is already represented by S8 in the machine mirror. The two
+detailed cases are not treated as the same failure, and no duplicate or inferred
+machine signature is added for S43. Cursor reports do not use that mirror.
 
 ## Earlier Signatures
 
@@ -145,3 +153,5 @@ only.
 | `CURSOR_APP_WINDOWS_PROCESS_QUERY_TIMEOUT` at stage `workspace-switch` | Run 40623666188 attempt 2, `Cursor App baseline 3.21.18 (windows-2025, Node 24)`, 2026-10-28 | #235 |
 | `BACKGROUND_JOB_DID_NOT_FINISH` | Run 40623666188 attempt 2, `Claude smoke baseline 2.1.277 (windows-2025, Node 24)`, 2026-10-28 | #235 |
 | `CLEANUP_TRACKED_PROCESS_CHECK_FAILED`, after stage `stop and start` found an installation Backend process remaining after stop | Run 40815143686 attempt 1, `Codex accepted 0.165.0 (windows-2025, Node 24)`, 2026-10-29 | #239 |
+
+[release-023-2]: https://github.com/memorax-ai/memorax-code/actions/runs/43022130320/attempts/1
