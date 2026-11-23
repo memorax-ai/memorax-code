@@ -1006,7 +1006,7 @@ uses default mode, independently of explicit Add's configured mode.
 --reason 'User requested storing the report.'` reads an explicit JSON array of
 messages. Do not combine it with `--memory` or `--memory-file`. It defaults to
 auto/default and accepts strings or the backend's text/input_text, input_image,
-and file parts. This is message-shape compatibility, not a complete OpenAI API:
+and input_file parts. This is message-shape compatibility, not a complete OpenAI API:
 the endpoint remains MemoraX Add and requires its user/session/metadata fields.
 For example, the file can contain:
 
@@ -1016,14 +1016,19 @@ For example, the file can contain:
     "role": "user",
     "content": [
       {"type": "text", "text": "Remember this report."},
-      {"type": "file", "file": {"filename": "report.pdf", "file_data": "JVBERi0xLjQ="}}
+      {"type": "input_file", "filename": "report.pdf", "file_data": "JVBERi0xLjQ="}
     ]
   }
 ]
 ```
 
 The Base64 above is illustrative; use real authorized file bytes. Alternatively,
-use a UUID `file_id` from the same server/project/user scope. File parts require
+use `{"type": "input_file", "file_id": "<UUID>"}` with a file ID from the same
+server/project/user scope. An `input_file` part carries either `file_id` or
+`filename` plus `file_data`, and no other fields. The nested
+`{"type": "file", "file": {...}}` form from earlier releases is still accepted;
+the plugin converts it to `input_file` before sending. MemoraX servers that do
+not support `input_file` reject file parts with HTTP 422. File parts require
 user messages and dialogue/work/auto with default mode; they go through the
 document parser. An `input_image` part retains the separate image-understanding
 route. Internal media IDs and unknown part types are rejected. The plugin does

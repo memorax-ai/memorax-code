@@ -63,7 +63,7 @@ test("OpenAI-shaped ordered text, image and file parts survive Add with timestam
   const content = [
     { type: "text", text: "Remember this report." },
     { type: "input_image", image_url: "data:image/png;base64,aW1hZ2U=", detail: "high" },
-    { type: "file", file: { filename: "report.pdf", file_data: "cGRm" } },
+    { type: "input_file", filename: "report.pdf", file_data: "cGRm" },
   ];
   const { result, requests, events } = await invoke("writeback", { contentType: "auto", mode: "default", messages: [{ role: "user", content, timestamp: 1777392000000 }] });
   assert.equal(result.ok, true);
@@ -75,11 +75,64 @@ test("OpenAI-shaped ordered text, image and file parts survive Add with timestam
 });
 
 test("scoped stored file IDs and work text parts are accepted without translating file input to document content_type", async () => {
-  const content = [{ type: "file", file: { file_id: "12345678-1234-4321-8123-123456789abc" } }];
+  const content = [{ type: "input_file", file_id: "12345678-1234-4321-8123-123456789abc" }];
   const { result, requests } = await invoke("writeback", { contentType: "work", messages: [{ role: "user", content }] });
   assert.equal(result.ok, true);
   assert.equal(requests[0].content_type, "work");
   assert.deepEqual(requests[0].messages[0].content, content);
+});
+
+test("nested file parts from earlier releases are sent as flat input_file", async () => {
+  const fileId = "12345678-1234-4321-8123-123456789abc";
+  const { result, requests } = await invoke("writeback", { contentType: "auto", messages: [{ role: "user", content: [
+    { type: "file", file: { filename: "report.pdf", file_data: "cGRm" } },
+    { type: "file", file: { file_id: fileId } },
+  ] }] });
+  assert.equal(result.ok, true);
+  assert.deepEqual(requests[0].messages[0].content, [
+    { type: "input_file", filename: "report.pdf", file_data: "cGRm" },
+    { type: "input_file", file_id: fileId },
+  ]);
+  assert.doesNotMatch(JSON.stringify(requests), /"type":"file"/);
+});
+
+test("malformed input_file parts reject the whole Add before HTTP without echoing file data", async () => {
+  const fileId = "12345678-1234-4321-8123-123456789abc";
+  for (const part of [
+    { type: "input_file", file_data: "cGRm" },
+    { type: "input_file", filename: "private-report.pdf", file_data: "" },
+    { type: "input_file", file_id: fileId, file_data: "cGRm" },
+    { type: "input_file", file_id: fileId, filename: "private-report.pdf" },
+    { type: "input_file", file_id: "file-abc123" },
+    { type: "input_file", file: { filename: "private-report.pdf", file_data: "cGRm" } },
+    { type: "input_file", filename: "private-report.pdf", file_data: "cGRm", file_url: "https://example.test/private-report.pdf" },
+    { type: "file", file: { file_id: "file-abc123" } },
+  ]) {
+    const { result, requests } = await invoke("writeback", { contentType: "auto", messages: [{ role: "user", content: [part] }] });
+    assert.equal(result.ok, false, JSON.stringify(part));
+    assert.equal(requests.length, 0);
+    assert.match(result.error, /Invalid message content part/);
+    assert.doesNotMatch(result.error, /private-report|cGRm|file-abc123|example\.test/);
+  }
+});
+
+test("input_file parts keep the user-message, route, chunk, count and mode limits", async () => {
+  const file = { type: "input_file", filename: "a.pdf", file_data: "cGRm" };
+  for (const [context, error] of [
+    [{ contentType: "dialogue", messages: [{ role: "assistant", content: [file] }] }, /file parts require user messages/],
+    [{ contentType: "code", messages: [{ role: "user", content: [file] }] }, /file parts require user messages/],
+    [{ contentType: "dialogue", chunk: { group_id: "group", index: 0, count: 2 }, messages: [{ role: "user", content: [file] }] }, /file parts require user messages/],
+    [{ contentType: "auto", messages: [{ role: "user", content: Array.from({ length: 11 }, () => file) }] }, /at most 10 files/],
+    [{ contentType: "dialogue", mode: "raw", messages: [{ role: "user", content: [file] }] }, /attachments require default mode/],
+  ]) {
+    const { result, requests } = await invoke("writeback", context);
+    assert.equal(result.ok, false, JSON.stringify(context));
+    assert.equal(requests.length, 0);
+    assert.match(result.error, error);
+  }
+  const { result, requests } = await invoke("writeback", { contentType: "auto", messages: [{ role: "user", content: Array.from({ length: 10 }, () => file) }] });
+  assert.equal(result.ok, true);
+  assert.equal(requests[0].messages[0].content.length, 10);
 });
 
 test("unsupported parts and incompatible modes reject the whole Add before HTTP", async () => {

@@ -291,7 +291,7 @@ function validateMessageAttachments(
         if (part.type === "text") textChars += countAddTextChars(part.text);
         if (part.type === "input_image" && part.caption) textChars += countAddTextChars(part.caption);
       }
-      if (part.type === "file") {
+      if (part.type === "input_file") {
         files++;
         if (message.role !== "user" || options.contentType === "code" || context.chunk !== undefined) {
           throw new Error("file parts require user messages with dialogue/work/auto content and no code chunks");
