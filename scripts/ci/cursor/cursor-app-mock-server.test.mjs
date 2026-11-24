@@ -293,6 +293,21 @@ test("ancillary HTTP routes expose only metadata while Agent transport validatio
   });
 });
 
+test("team RPCs return the empty binary reply of a user without a team", async (t) => {
+  const server = await mock(t);
+  for (const method of ["GetTeams", "GetTeamAdminSettingsOrEmptyIfNotInTeam"]) {
+    const path = `/aiserver.v1.DashboardService/${method}`;
+    assert.deepEqual(await ancillary(server, path, "OPTIONS"), { status: 204, body: "" });
+    const { headers, ...response } = await ancillary(server, path, "POST", { includeHeaders: true });
+    assert.deepEqual(response, { status: 200, body: "" });
+    assert.equal(headers["content-type"], "application/proto");
+    assert.equal(headers["access-control-allow-origin"], "*");
+  }
+  assert.deepEqual(server.errors, []);
+  assert.equal(server.ancillaryRequestCount, 4);
+  assert.equal(server.unsupportedRpcCount, 0);
+});
+
 test("fragmented h2c and gzip require sequential native KV acknowledgements", async (t) => {
   const server = await mock(t), url = await fragmentPreface(t, server);
   const stream = openRun(t, server, { compression: "gzip", url });
