@@ -60,6 +60,9 @@ const ancillaryPaths = new Set([
     ["ServerConfigService", "GetServerConfig"], ["FileSyncService", "FSIsEnabledForUser"],
   ].flatMap(([service, ...methods]) => methods.map((method) => `/aiserver.v1.${service}/${method}`)),
 ]);
+// Cursor rejects JSON on these binary Connect RPCs; an empty message is the backend reply for a user without a team.
+const noTeamPaths = new Set(["GetTeams", "GetTeamAdminSettingsOrEmptyIfNotInTeam"]
+  .map((method) => `/aiserver.v1.DashboardService/${method}`));
 function isAgentPath(path) { return /^\/agent\.v[0-9]+\./.test(path) && !unsupportedAncillaryPaths.has(path); }
 
 export async function startCursorAgentMock({ answer, answers, toolSteps, timeoutMs = 15_000 }) {
@@ -110,8 +113,9 @@ export async function startCursorAgentMock({ answer, answers, toolSteps, timeout
         : !["GET", "POST"].includes(request.method) ? 405 : 200;
       if (isAgentPath(path)) errors.push("CURSOR_AGENT_HTTP2_REQUIRED");
       else if (status >= 400) unsupportedRpcCount++;
-      response.writeHead(status, { "content-type": "application/json", ...corsHeaders });
-      response.end(status === 204 ? undefined : "{}");
+      const proto = status === 200 && noTeamPaths.has(path);
+      response.writeHead(status, { "content-type": proto ? "application/proto" : "application/json", ...corsHeaders });
+      response.end(status === 204 || proto ? undefined : "{}");
     });
   });
   http1.requestTimeout = timeoutMs;
