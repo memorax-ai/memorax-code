@@ -292,6 +292,27 @@ test("native Read must return every reference line in order", () => {
   assert.throws(() => assertNativeReadText(output.split("\n").slice(0, 2).join("\n"), reference), { nativeCode: "NATIVE_READ_REFERENCE_INCOMPLETE" });
 });
 
+test("CodeBuddy Read range notice is accepted only for the complete reference", () => {
+  const reference = "# Reference\n\nComplete 中文 text.\n";
+  const lines = reference.replace(/\n$/, "").split("\n").map((line, index) => `${String(index + 1).padStart(4)}→${line}`);
+  const notice = (shown, total, bytes) => `<system-reminder data-role="tool-hint">Read lines 1-${shown} of ${total} (${bytes} bytes).</system-reminder>`;
+  const bytes = Buffer.byteLength(reference);
+  const output = [...lines, notice(3, 3, bytes)].join("\n");
+  assertNativeReadText(output, reference);
+  assertNativeReadText(output.replaceAll("\n", "\r\n"), reference);
+  for (const changed of [notice(2, 3, bytes), notice(3, 4, bytes), notice(4, 4, bytes), notice(3, 3, bytes - 1),
+    notice(3, 3, bytes + 1), `${notice(3, 3, bytes)}\n${notice(3, 3, bytes)}`]) {
+    assert.throws(() => assertNativeReadText([...lines, changed].join("\n"), reference), { nativeCode: "NATIVE_READ_RANGE_NOTICE_MISMATCH" });
+  }
+  const partial = `<system-reminder data-role="tool-hint">[Truncated: PARTIAL view — reference.md: showing lines 1-3 of 9 (${bytes} bytes). Do NOT answer from this page alone if the answer may be further in the file.]</system-reminder>`;
+  for (const changed of [[...lines, partial], [lines[0], notice(1, 1, bytes), ...lines.slice(1)],
+    [...lines, `${notice(3, 3, bytes)} `], [...lines, notice(3, 3, bytes), ""]]) {
+    assert.throws(() => assertNativeReadText(changed.join("\n"), reference), { nativeCode: "NATIVE_READ_LINES_INVALID" });
+  }
+  assert.throws(() => assertNativeReadText([...lines.slice(0, 2), notice(2, 2, bytes)].join("\n"), reference),
+    { nativeCode: "NATIVE_READ_REFERENCE_INCOMPLETE" });
+});
+
 const bashEnvelope = (command, stdout) => `Command: ${command}\nStdout: ${stdout}\nStderr: (empty)\nExit Code: 0\nSignal: (none)`;
 
 test("native Bash stdout comes only from the exact successful command envelope", () => {

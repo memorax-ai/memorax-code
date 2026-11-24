@@ -143,9 +143,18 @@ export function assertNativeToolCalls(lineage, tools) {
   "NATIVE_TRANSCRIPT_UNEXPECTED_TOOL");
 }
 
+// CodeBuddy 2.184+ ends every Read result with one range notice. Accept only the
+// complete-read form, and only when its counts and size match this reference.
 export function assertNativeReadText(output, expected) {
   check(typeof output === "string" && typeof expected === "string", "NATIVE_READ_CONTENT_INVALID");
   const lines = output.replaceAll("\r\n", "\n").split("\n");
+  const notice = /^<system-reminder data-role="tool-hint">Read lines 1-(\d+) of (\d+) \((\d+) bytes\)\.<\/system-reminder>$/
+    .exec(lines.at(-1));
+  if (notice) {
+    lines.pop();
+    check(Number(notice[1]) === lines.length && Number(notice[2]) === lines.length
+      && Number(notice[3]) === Buffer.byteLength(expected), "NATIVE_READ_RANGE_NOTICE_MISMATCH");
+  }
   const numbered = lines.map((line) => /^\s*(\d+)\u2192(.*)$/.exec(line));
   check(numbered.every((match, index) => match && Number(match[1]) === index + 1), "NATIVE_READ_LINES_INVALID");
   const text = numbered.map((match) => match[2]).join("\n");
