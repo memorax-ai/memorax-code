@@ -64,9 +64,13 @@ memorax-cli add --messages-file /path/to/messages.json --type semantic --reason 
 ```
 
 The array has user/assistant messages with string content or supported content
-parts: `text` (also accepts `input_text`), `input_image`, or `file`. A file part
-contains either the scoped uploaded `file_id`, or `filename` plus Base64
-`file_data`. An image part uses `image_url` with a URL or a Base64 data URL.
+parts: `text` (also accepts `input_text`), `input_image`, or `input_file`. An
+`input_file` part contains either the scoped uploaded `file_id`, or `filename`
+plus Base64 `file_data`, for example
+`{"type": "input_file", "filename": "report.pdf", "file_data": "<Base64>"}`.
+The nested `{"type": "file", "file": {...}}` form is still accepted and sent as
+`input_file`; MemoraX servers without `input_file` support reject file parts
+with HTTP 422. An image part uses `image_url` with a URL or a Base64 data URL.
 File parts belong to user messages and use auto/work/dialogue in default mode.
 Images use the image-understanding path; file parts use the document parser.
 Structured Add defaults to auto/default. This is the MemoraX message contract,

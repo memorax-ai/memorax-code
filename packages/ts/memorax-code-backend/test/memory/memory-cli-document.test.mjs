@@ -68,7 +68,8 @@ test("messages-file Add preserves multimodal parts and submits asynchronous auto
   const path = join(root, "messages.json");
   const messages = [{ role: "user", content: [
     { type: "text", text: "Remember this report." },
-    { type: "file", file: { filename: "report.pdf", file_data: "JVBERi0xLjQ=" } },
+    { type: "input_file", filename: "report.pdf", file_data: "JVBERi0xLjQ=" },
+    { type: "input_file", file_id: "12345678-1234-4321-8123-123456789abc" },
   ], timestamp: 1793779200000 }];
   await writeFile(path, JSON.stringify(messages));
   const result = await runMemoryCli(["add", "--messages-file", path, "--type", "semantic", "--reason", "User requested document storage"], options);
@@ -81,6 +82,45 @@ test("messages-file Add preserves multimodal parts and submits asynchronous auto
   assert.equal(requests[0].user_id, "user-1@workspace");
   assert.ok(requests[0].session_id);
   assert.match(JSON.stringify(result.receipt), /test-task/);
+});
+
+test("messages-file Add sends nested file parts from earlier releases as flat input_file", async (t) => {
+  const { root, options, requests } = await fixture(t);
+  const path = join(root, "messages.json");
+  const fileId = "12345678-1234-4321-8123-123456789abc";
+  await writeFile(path, JSON.stringify([{ role: "user", content: [
+    { type: "text", text: "Remember this report." },
+    { type: "file", file: { filename: "report.pdf", file_data: "JVBERi0xLjQ=" } },
+    { type: "file", file: { file_id: fileId } },
+  ] }]));
+  const result = await runMemoryCli(["add", "--messages-file", path, "--type", "semantic", "--reason", "User requested document storage"], options);
+  assert.equal(result.ok, true, result.error);
+  assert.deepEqual(requests[0].messages[0].content, [
+    { type: "text", text: "Remember this report." },
+    { type: "input_file", filename: "report.pdf", file_data: "JVBERi0xLjQ=" },
+    { type: "input_file", file_id: fileId },
+  ]);
+  assert.doesNotMatch(JSON.stringify(requests), /"type":"file"/);
+});
+
+test("messages-file malformed input_file parts fail locally without exposing file names or data", async (t) => {
+  const { root, options, requests } = await fixture(t);
+  const path = join(root, "messages.json");
+  const base = ["add", "--messages-file", path, "--type", "semantic", "--reason", "test"];
+  for (const part of [
+    { type: "input_file", file_data: "JVBERi0xLjQ=" },
+    { type: "input_file", filename: "private-report.pdf", file_data: "" },
+    { type: "input_file", file_id: "12345678-1234-4321-8123-123456789abc", file_data: "JVBERi0xLjQ=" },
+    { type: "input_file", file_id: "file-abc123" },
+    { type: "input_file", file: { filename: "private-report.pdf", file_data: "JVBERi0xLjQ=" } },
+  ]) {
+    await writeFile(path, JSON.stringify([{ role: "user", content: [part] }]));
+    const result = await runMemoryCli(base, options);
+    assert.equal(result.ok, false, JSON.stringify(part));
+    assert.match(result.error, /Invalid message content part/);
+    assert.doesNotMatch(JSON.stringify(result), /private-report|JVBERi0xLjQ=|file-abc123/);
+  }
+  assert.equal(requests.length, 0);
 });
 
 test("messages-file input failures remain local and do not expose JSON contents", async (t) => {

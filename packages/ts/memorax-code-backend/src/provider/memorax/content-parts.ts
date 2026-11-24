@@ -3,13 +3,14 @@ import { isRecord } from "../../shared/record.js";
 export type MemoraxContentPart =
   | { type: "text"; text: string }
   | { type: "input_image"; image_url: string; detail?: "auto" | "low" | "high" | "original"; caption?: string }
-  | { type: "file"; file: { file_id: string } | { filename: string; file_data: string } };
+  | { type: "input_file"; file_id: string }
+  | { type: "input_file"; filename: string; file_data: string };
 
 export type MemoraxMessageContent = string | MemoraxContentPart[];
 
 function reject(): never {
   // Never include user data, filenames or URLs in validation diagnostics.
-  throw new Error("Invalid message content part; supported types are text, input_text, input_image, and file");
+  throw new Error("Invalid message content part; supported types are text, input_text, input_image, input_file, and file");
 }
 
 function onlyKeys(value: Record<string, unknown>, allowed: string[]): void {
@@ -18,6 +19,19 @@ function onlyKeys(value: Record<string, unknown>, allowed: string[]): void {
 
 function nonblank(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
+}
+
+// A file source is exactly one scoped stored file ID or one inline file.
+// `frameKeys` are the enclosing part's own keys, empty for a nested `file` object.
+function normalizeFileSource(source: Record<string, unknown>, frameKeys: string[]): MemoraxContentPart {
+  if (source.file_id !== undefined) {
+    onlyKeys(source, [...frameKeys, "file_id"]);
+    if (typeof source.file_id !== "string" || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(source.file_id)) reject();
+    return { type: "input_file", file_id: source.file_id };
+  }
+  onlyKeys(source, [...frameKeys, "filename", "file_data"]);
+  if (!nonblank(source.filename) || !nonblank(source.file_data)) reject();
+  return { type: "input_file", filename: source.filename, file_data: source.file_data };
 }
 
 export function normalizeContentParts(value: unknown[]): MemoraxContentPart[] {
@@ -50,18 +64,12 @@ export function normalizeContentParts(value: unknown[]): MemoraxContentPart[] {
         ...(part.caption === undefined ? {} : { caption: part.caption as string }),
       };
     }
+    if (part.type === "input_file") return normalizeFileSource(part, ["type"]);
     if (part.type === "file") {
+      // Nested input from earlier releases is still accepted but sent as flat input_file.
       onlyKeys(part, ["type", "file"]);
       if (!isRecord(part.file)) reject();
-      const file = part.file;
-      if (file.file_id !== undefined) {
-        onlyKeys(file, ["file_id"]);
-        if (typeof file.file_id !== "string" || !/^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/i.test(file.file_id)) reject();
-        return { type: "file", file: { file_id: file.file_id } };
-      }
-      onlyKeys(file, ["filename", "file_data"]);
-      if (!nonblank(file.filename) || !nonblank(file.file_data)) reject();
-      return { type: "file", file: { filename: file.filename, file_data: file.file_data } };
+      return normalizeFileSource(part.file, []);
     }
     return reject();
   });

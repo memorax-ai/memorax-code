@@ -6,6 +6,13 @@ behavior.
 
 ## Unreleased
 
+### Changed
+
+- Structured Add through `--messages-file` now sends file parts as flat
+  `input_file` parts. The nested `{"type": "file", "file": {...}}` form is
+  still accepted and converted before sending. MemoraX servers that do not
+  support `input_file` reject file parts with HTTP 422.
+
 ## [0.1.23] - 2026-11-11
 
 ### Added
