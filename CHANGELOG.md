@@ -6,12 +6,27 @@ behavior.
 
 ## Unreleased
 
+## [0.1.24] - 2026-11-24
+
 ### Changed
 
 - Structured Add through `--messages-file` now sends file parts as flat
   `input_file` parts. The nested `{"type": "file", "file": {...}}` form is
   still accepted and converted before sending. MemoraX servers that do not
   support `input_file` reject file parts with HTTP 422.
+
+### Fixed
+
+- Codex setup now checks plugin registration by listing only the memorax-code
+  marketplace instead of every available plugin, so a slow full listing no
+  longer makes the check time out.
+- When Codex Hook activation or incremental trust does not complete, manual
+  setup and update now report
+  `Backend and selected adapters: Enabled (degraded)` and
+  `Codex Hooks: Not authorized` instead of `Enabled`. They still finish without
+  blocking installation; run `memorax-code codex-plugin trust-hooks` to review
+  and authorize the current Hooks. See
+  [Codex plugin or Hook is inactive](docs/troubleshooting.md#codex-plugin-or-hook-is-inactive).
 
 ## [0.1.23] - 2026-11-11
 
