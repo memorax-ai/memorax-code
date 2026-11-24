@@ -433,7 +433,7 @@ export function selectReportedBashStdout(report, output, command, options) {
 // Diagnostic hints only; acceptance still requires the exact successful Bash envelope.
 export function summarizeNativeSkillBashResult(output, command, { client } = {}) {
   const text = typeof output === "string" ? output.slice(0, 64 * 1024) : "";
-  const pattern = client === "codebuddy" && text.startsWith("Stdout: ")
+  const pattern = (client === "codebuddy" || client === "workbuddy") && text.startsWith("Stdout: ")
     ? /^Stdout: ([\s\S]*?)\nStderr: ([\s\S]*?)\nExit Code: ([^\r\n]*)\nSignal: ([^\r\n]*)$/
     : /^Command: [^\n]*\nStdout: ([\s\S]*?)\nStderr: ([\s\S]*?)\nExit Code: ([^\r\n]*)\nSignal: ([^\r\n]*)$/;
   const envelope = pattern.exec(text);
