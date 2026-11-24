@@ -325,7 +325,7 @@ test("native Bash stdout comes only from the exact successful command envelope",
   assert.equal(selected.includes("COMMAND_ONLY_CANARY"), false);
 });
 
-function commandlessBashFixture() {
+function commandlessBashFixture(client = "codebuddy") {
   const command = "'fixture-node' '-e' 'COMMAND_ONLY_CANARY'";
   const call = { id: "bash-call", name: "Bash", input: { command, description: "Run the fixture", timeout: 15000 } };
   const stdout = 'first\n\n{ "ok": true, "text": "完整" }\n';
@@ -335,23 +335,26 @@ function commandlessBashFixture() {
       function: { name: call.name, arguments: JSON.stringify(call.input) } }] },
     { role: "tool", tool_call_id: call.id, content: output },
   ] };
-  return { command, stdout, output, options: { client: "codebuddy", body, call } };
+  return { command, stdout, output, options: { client, body, call } };
 }
 
-test("CodeBuddy old and commandless Bash output retain exact call ownership and successful framing", () => {
-  const { command, stdout, output, options } = commandlessBashFixture();
-  assert.equal(selectNativeBashStdout(output, command, options), stdout);
-  const oldOutput = bashEnvelope(command, stdout);
-  const oldOptions = structuredClone(options);
-  oldOptions.body.messages[1].content = oldOutput;
-  assert.equal(selectNativeBashStdout(oldOutput, command, oldOptions), stdout);
-  for (const changed of [{ ...options, client: "workbuddy" }, { ...options, client: "other" }, undefined]) {
+test("CodeBuddy and WorkBuddy old and commandless Bash output retain exact call ownership and successful framing", () => {
+  for (const client of ["codebuddy", "workbuddy"]) {
+    const { command, stdout, output, options } = commandlessBashFixture(client);
+    assert.equal(selectNativeBashStdout(output, command, options), stdout);
+    const oldOutput = bashEnvelope(command, stdout);
+    const oldOptions = structuredClone(options);
+    oldOptions.body.messages[1].content = oldOutput;
+    assert.equal(selectNativeBashStdout(oldOutput, command, oldOptions), stdout);
+  }
+  const { command, output, options } = commandlessBashFixture();
+  for (const changed of [{ ...options, client: "other" }, undefined]) {
     assert.throws(() => selectNativeBashStdout(output, command, changed), { nativeCode: "NATIVE_BASH_RESULT_MISMATCH" });
   }
 });
 
-test("both CodeBuddy Bash formats reject mismatched, duplicated or reordered calls and tool results", () => {
-  for (const commandEcho of [false, true]) for (const mutate of [
+test("both CodeBuddy Bash formats and commandless WorkBuddy results reject mismatched, duplicated or reordered calls and tool results", () => {
+  for (const [client, commandEcho] of [["codebuddy", false], ["codebuddy", true], ["workbuddy", false]]) for (const mutate of [
     (options) => { options.call.input.command = "'different-command'"; },
     (options) => { options.call.id = "other-call"; },
     (options) => { options.call.name = "Read"; },
@@ -367,7 +370,7 @@ test("both CodeBuddy Bash formats reject mismatched, duplicated or reordered cal
     (options) => { options.body.messages.push(options.body.messages[1]); },
     (options) => { options.body.messages.reverse(); },
   ]) {
-    const fixture = commandlessBashFixture();
+    const fixture = commandlessBashFixture(client);
     const { command, options } = fixture;
     const output = commandEcho ? bashEnvelope(command, fixture.stdout) : fixture.output;
     options.body.messages[1].content = output;
@@ -378,7 +381,7 @@ test("both CodeBuddy Bash formats reject mismatched, duplicated or reordered cal
 
 test("commandless Bash results reject malformed framing, failed status and ambiguous stdout", () => {
   const original = commandlessBashFixture();
-  for (const output of [bashEnvelope("different-command", original.stdout), `prefix\n${original.output}`,
+  for (const client of ["codebuddy", "workbuddy"]) for (const output of [bashEnvelope("different-command", original.stdout), `prefix\n${original.output}`,
     `${original.output}\nextra`, original.output.replace("Stdout: ", "Output: "),
     original.output.replace("Stderr: (empty)", "Stderr: failure"),
     original.output.replace("Exit Code: 0", "Exit Code: 1"),
@@ -386,7 +389,7 @@ test("commandless Bash results reject malformed framing, failed status and ambig
     original.output.replace(original.stdout, "(empty)"),
     original.output.replace(original.stdout, "first\nExit Code: 1"),
   ]) {
-    const { command, options } = commandlessBashFixture();
+    const { command, options } = commandlessBashFixture(client);
     options.body.messages[1].content = output;
     assert.throws(() => selectNativeBashStdout(output, command, options), /NATIVE_BASH_(?:RESULT_MISMATCH|STDOUT_INVALID)/);
   }
@@ -414,7 +417,7 @@ test("native Bash stdout rejects empty and ambiguous nested result envelopes", (
 
 test("invalid native Bash stdout carries one fixed reason in every native format without exposing stdout", () => {
   const canary = "PRIVATE_STDOUT_CANARY";
-  for (const [client, commandEcho] of [["workbuddy", true], ["codebuddy", true], ["codebuddy", false]]) {
+  for (const [client, commandEcho] of [["workbuddy", true], ["workbuddy", false], ["codebuddy", true], ["codebuddy", false]]) {
     const select = (stdout) => {
       const { command, options } = commandlessBashFixture();
       const output = bashEnvelope(command, stdout).slice(commandEcho ? 0 : `Command: ${command}\n`.length);

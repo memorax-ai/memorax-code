@@ -151,19 +151,21 @@ test("Skill Bash diagnostics distinguish shell startup failures without exposing
   assert.ok(!JSON.stringify(result).includes(command));
 });
 
-test("CodeBuddy commandless Skill diagnostics report status without claiming a command echo", () => {
+test("CodeBuddy and WorkBuddy commandless Skill diagnostics report status without claiming a command echo", () => {
   const command = "memorax-cli search --query fixture --json";
   const output = 'Stdout: {"ok":false,"errorCode":"MEMORY_SCOPE_MISMATCH"}\nStderr: (empty)\nExit Code: 1\nSignal: (none)';
-  const result = summarizeNativeSkillBashResult(output, command, { client: "codebuddy" });
-  assert.equal(result.structuredEnvelopeMatched, true);
-  assert.equal(result.commandEchoMatched, false);
-  assert.equal(result.stderr, "empty");
-  assert.equal(result.exitCode, "nonzero");
-  assert.equal(result.signal, "none");
-  assert.equal(result.stdoutJson, true);
-  assert.equal(result.memoryError, "MEMORY_SCOPE_MISMATCH");
-  assert.deepEqual(result.errorSignatures, []);
-  assert.equal(summarizeNativeSkillBashResult(output, command, { client: "workbuddy" }).structuredEnvelopeMatched, false);
+  for (const client of ["codebuddy", "workbuddy"]) {
+    const result = summarizeNativeSkillBashResult(output, command, { client });
+    assert.equal(result.structuredEnvelopeMatched, true);
+    assert.equal(result.commandEchoMatched, false);
+    assert.equal(result.stderr, "empty");
+    assert.equal(result.exitCode, "nonzero");
+    assert.equal(result.signal, "none");
+    assert.equal(result.stdoutJson, true);
+    assert.equal(result.memoryError, "MEMORY_SCOPE_MISMATCH");
+    assert.deepEqual(result.errorSignatures, []);
+  }
+  assert.equal(summarizeNativeSkillBashResult(output, command).structuredEnvelopeMatched, false);
 });
 
 test("Skill Bash diagnostics preserve only known scope error enums from JSON", () => {

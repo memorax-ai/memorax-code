@@ -164,9 +164,11 @@ export function assertNativeReadText(output, expected) {
 
 export function selectNativeBashStdout(output, command, { client, body, call } = {}) {
   check(typeof output === "string" && identifier(command), "NATIVE_BASH_RESULT_INVALID");
-  // CodeBuddy no longer echoes Command in newer Bash results. Bind both native
-  // formats to the exact assistant invocation before trusting their output.
-  if (client === "codebuddy") {
+  // CodeBuddy 2.173+ and the runtime bundled with WorkBuddy 5.11.3 no longer echo
+  // Command in Bash results. Bind every CodeBuddy result and every commandless
+  // WorkBuddy result to the exact assistant invocation before trusting its output.
+  const commandless = (client === "codebuddy" || client === "workbuddy") && output.startsWith("Stdout: ");
+  if (client === "codebuddy" || commandless) {
     check(identifier(call?.id) && call.name === "Bash" && call.input?.command === command
       && Array.isArray(body?.messages), "NATIVE_BASH_CALL_MISMATCH");
     const calls = body.messages.flatMap((message, index) => message.role === "assistant" && Array.isArray(message.tool_calls)
@@ -181,8 +183,7 @@ export function selectNativeBashStdout(output, command, { client, body, call } =
     catch { check(false, "NATIVE_BASH_CALL_MISMATCH"); }
     check(isDeepStrictEqual(input, call.input), "NATIVE_BASH_CALL_MISMATCH");
   }
-  const prefix = client === "codebuddy" && output.startsWith("Stdout: ")
-    ? "Stdout: " : `Command: ${command}\nStdout: `;
+  const prefix = commandless ? "Stdout: " : `Command: ${command}\nStdout: `;
   const suffix = "\nStderr: (empty)\nExit Code: 0\nSignal: (none)";
   check(output.startsWith(prefix) && output.endsWith(suffix), "NATIVE_BASH_RESULT_MISMATCH");
   const stdout = output.slice(prefix.length, -suffix.length);
