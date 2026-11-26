@@ -935,6 +935,9 @@ document/chunk IDs and score details. Text output preserves Markdown and whole
 document chunks. The `max_context_chars` budget includes the escaped evidence
 and its XML tags. When a whole chunk cannot fit, the plugin appends one
 truncation notice outside that budget. `max_item_chars` applies to facts.
+For fact-only results, the renderer keeps whole formatted entries in order.
+If the next entry exceeds the budget, the renderer adds `...` and closes the
+block. The marker and closing tags count toward the limit.
 JSON output preserves all returned items even if text rendering omits
 some. The client agent uses this result as reference material and generates
 the answer; no second answer model is invoked by the plugin.

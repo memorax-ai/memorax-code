@@ -589,33 +589,48 @@ function renderMemoraxContextBlocks(items: unknown[], config: MemoraxAdapterConf
   if (items.some((item) => isRecord(item) && item.content_type === "document")) {
     return renderDocumentContext(items, config);
   }
-  const renderedItems = items
-    .map((item) => ({ item, line: formatMemoryItemLine(item, config.maxItemChars), memoryType: memoryTypeForItem(item) }))
-    .filter((item) => item.line);
-  if (renderedItems.length === 0) return [];
+  const buckets = new Map<string, string[]>();
+  if (config.renderByMemoryType) {
+    for (const type of config.memoryTypeOrder) buckets.set(type, []);
+  }
+  let total = 0;
+  for (const item of items) {
+    const line = formatMemoryItemLine(item, config.maxItemChars);
+    if (!line) continue;
+    const type = config.renderByMemoryType ? memoryTypeForItem(item) : "";
+    const bucket = buckets.get(type);
+    if (bucket) bucket.push(line);
+    else buckets.set(type, [line]);
+    total++;
+  }
+  if (!total) return [];
 
   const lines = ["<memories>"];
-  if (config.renderByMemoryType) {
-    const buckets = new Map<string, string[]>();
-    for (const type of config.memoryTypeOrder) buckets.set(type, []);
-    for (const rendered of renderedItems) {
-      if (!buckets.has(rendered.memoryType)) buckets.set(rendered.memoryType, []);
-      buckets.get(rendered.memoryType)?.push(rendered.line);
+  const closing = "</memories>";
+  const groupEnd = "  </facts>";
+  const notice = "...";
+  let remaining = config.maxContextChars - lines[0].length - 1 - closing.length;
+  let itemCount = 0;
+  for (const [type, entries] of buckets) {
+    const heading = type ? `  <facts memory_type="${escapeAttribute(type)}">` : "  <facts>";
+    let inGroup = 0;
+    for (const line of entries) {
+      const groupChars = inGroup ? 0 : heading.length + groupEnd.length + 2;
+      const cost = groupChars + line.length + 1;
+      // Leave room for the omission marker until the final entry fits.
+      if (cost + (itemCount + 1 < total ? notice.length + 1 : 0) > remaining) break;
+      if (!inGroup) lines.push(heading);
+      lines.push(line);
+      remaining -= cost;
+      itemCount++;
+      inGroup++;
     }
-    for (const [type, typeLines] of buckets.entries()) {
-      if (typeLines.length === 0) continue;
-      lines.push(`  <facts memory_type="${escapeAttribute(type)}">`);
-      lines.push(...typeLines);
-      lines.push("  </facts>");
-    }
-  } else {
-    lines.push("  <facts>");
-    lines.push(...renderedItems.map((item) => item.line));
-    lines.push("  </facts>");
+    if (inGroup) lines.push(groupEnd);
+    if (inGroup < entries.length) break;
   }
-  lines.push("</memories>");
-  const content = truncate(lines.join("\n"), config.maxContextChars);
-  return [{ type: "memory_context", source: "memorax", content, itemCount: renderedItems.length }];
+  if (itemCount < total) lines.push(notice);
+  lines.push(closing);
+  return [{ type: "memory_context", source: "memorax", content: lines.join("\n"), itemCount }];
 }
 
 function renderDocumentContext(items: unknown[], config: MemoraxAdapterConfig): MemoraxContextBlock[] {
