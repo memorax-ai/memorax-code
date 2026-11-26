@@ -188,6 +188,34 @@ test("document Search uses the full default budget for evidence and reports omis
   assert.deepEqual(clipped.items, items);
 });
 
+test("fact context ends at a complete entry within the character budget", async () => {
+  for (const grouped of [true, false]) {
+    const opening = grouped ? '  <facts memory_type="core">' : "  <facts>";
+    const first = { memory: "Keep the meeting on Tuesday.", metadata: { memory_type: "core" } };
+    const second = { memory: "Lunch ".repeat(50).trim(), metadata: { memory_type: "semantic" } };
+    const items = [first, second];
+    const env = {
+      MEMORAX_CODE_MEMORAX_MAX_CONTEXT_CHARS: "256",
+      MEMORAX_CODE_MEMORAX_RENDER_BY_MEMORY_TYPE: String(grouped),
+    };
+    const { result } = await invoke("query", {}, items, env);
+    const payload = result.result.tool_result_payload;
+    assert.equal(payload.answer, ["<memories>", opening, `   - ${first.memory}`, "  </facts>", "...", "</memories>"].join("\n"));
+    assert.equal(payload.contextBlocks[0].itemCount, 1);
+    assert.deepEqual(payload.items, items);
+
+    const fixedLength = ["<memories>", opening, "   - ", "  </facts>", "</memories>"].join("\n").length;
+    const exact = { ...first, memory: "x".repeat(256 - fixedLength) };
+    const { result: fits } = await invoke("query", {}, [exact], env);
+    assert.equal(fits.result.tool_result_payload.answer.length, 256);
+    assert.ok(fits.result.tool_result_payload.answer.endsWith("  </facts>\n</memories>"));
+
+    const { result: over } = await invoke("query", {}, [{ ...exact, memory: exact.memory + "x" }], env);
+    assert.equal(over.result.tool_result_payload.answer, "<memories>\n...\n</memories>");
+    assert.equal(over.result.tool_result_payload.contextBlocks[0].itemCount, 0);
+  }
+});
+
 test("structured messages are atomic and bounded before sending to MemoraX", async () => {
   for (const messages of [
     [{ role: "user", content: "valid" }, { role: "tool", content: "unsupported" }],
